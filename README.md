@@ -170,7 +170,7 @@ python3 ../generate_maidascore.py example_score.mscz example_rhythm_mode_en --rh
 
 ## Limitations
 
-- Optimized for **4/4 time signature**; other meters may produce suboptimal layout
+- Optimized for **4/4, 3/4, 2/4, and 6/8 time signatures**; other meters may produce suboptimal layout
 - **Tuplets** are not supported
 - Layout constants are tuned for **transverse flute**; other instruments may require
   adjusting parameters in the `CONFIG` section of `generate_maidascore.py`

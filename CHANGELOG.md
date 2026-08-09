@@ -25,7 +25,7 @@ First public release.
 - **7-pipeline architecture**: note extraction → single part → SVG export → post-processor → PDF → validation.
 
 ### Known Limitations
-- Optimized for 4/4 time signature; other meters may produce suboptimal layout.
+- Optimized for 4/4, 3/4, 2/4, and 6/8 time signatures; other meters may produce suboptimal layout.
 - Tuplets are not supported.
 - The generator is a single-file monolith (~7000 lines); modularization is planned for a future 2.0 release.
 - No automated test suite yet; validation relies on the SVG validator and manual review.
