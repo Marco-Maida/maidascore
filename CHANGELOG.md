@@ -17,14 +17,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Previously the color was matched by note X/Y coordinates, which could mismatch in
   rhythm mode (where note Y is remapped to the middle line) and assign the wrong
   color to the flag.
-- **Accidental positioning on the staff**: accidentals (sharps/flats/naturals) are
-  now drawn after the Y-stretch with per-system circle matching, preventing them from
-  landing on the wrong note or in the wrong system. When a note sits directly below
+- **Rhythm mode stems forced upward**: in rhythm mode (`--rhythm`), all stems are
+  now drawn upward regardless of the original MuseScore direction. This simplifies
+  the layout and ensures consistent spacing for rhythmic reading practice.
+- **Key-signature accidentals shown on the staff**: notes altered by the key
+  signature (e.g. F♯, C♯ in G major) now display the accidental (♯/♭) on the
+  staff next to the notehead, not only under the note name in the sound table.
+  Previously only passing accidentals (not key-signature ones) were drawn on the
+  staff.
+- **Accidental positioning relative to stem direction**: accidentals on the staff
+  are now placed ABOVE the circle when the stem points down, and BELOW the circle
+  when the stem points up — following standard engraving convention. Accidentals
+  are drawn after the Y-stretch with per-system circle matching, preventing them
+  from landing on the wrong note or system. When a note sits directly below
   another, the accidental uses a reduced font-size and tighter offset to stay
-  attached to the correct circle.
+  attached to the correct circle. In rhythm mode, accidentals on the staff are
+  suppressed (they remain only under the note names in the blocks).
 - **Enharmonic Y-correction**: notes whose MuseScore rendering uses a different
   enharmonic spelling (e.g. D♯ drawn as E♭ in the 4th space) are corrected to their
-  true staff position based on the actual step+octave from music21.
+  true staff position based on the actual step+octave from music21, using the
+  system's line geometry.
 
 ### Changed
 - **Documented note-value range**: the layout is optimized for durations down to the
