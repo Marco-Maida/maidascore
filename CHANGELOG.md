@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-08-09
+
+### Fixed
+- **Rhythm mode hook direction**: eighth-note flags (uncini) now curve downward
+  when the stem points up, following standard music-notation convention. Previously
+  the flag inherited the MuseScore stem-down path, producing an upward-curving hook
+  on upward stems.
+- **Rhythm mode hook color**: the flag (uncino) now inherits the exact color of its
+  stem, read directly from the stem's `stroke` attribute after the stem-coloring pass.
+  Previously the color was matched by note X/Y coordinates, which could mismatch in
+  rhythm mode (where note Y is remapped to the middle line) and assign the wrong
+  color to the flag.
+- **Accidental positioning on the staff**: accidentals (sharps/flats/naturals) are
+  now drawn after the Y-stretch with per-system circle matching, preventing them from
+  landing on the wrong note or in the wrong system. When a note sits directly below
+  another, the accidental uses a reduced font-size and tighter offset to stay
+  attached to the correct circle.
+- **Enharmonic Y-correction**: notes whose MuseScore rendering uses a different
+  enharmonic spelling (e.g. D♯ drawn as E♭ in the 4th space) are corrected to their
+  true staff position based on the actual step+octave from music21.
+
+### Changed
+- **Documented note-value range**: the layout is optimized for durations down to the
+  sixteenth note (semicroma). Shorter values (biscrome, semibiscrome) are not
+  guaranteed to render correctly. This is now stated in the README and the header
+  docstring of `generate_maidascore.py`.
+
 ## [1.0.0] - 2026-08-09
 
 First public release.
@@ -25,6 +52,7 @@ First public release.
 - **7-pipeline architecture**: note extraction → single part → SVG export → post-processor → PDF → validation.
 
 ### Known Limitations
+- Optimized for note values down to the sixteenth note (semicroma); shorter durations (biscrome, semibiscrome) are not fully supported.
 - Optimized for 4/4, 3/4, 2/4, and 6/8 time signatures; other meters may produce suboptimal layout.
 - Tuplets are not supported.
 - The generator is a single-file monolith (~7000 lines); modularization is planned for a future 2.0 release.

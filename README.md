@@ -8,6 +8,9 @@ and other reading difficulties. Instead of traditional notation on a five-line s
 notes are displayed as **colored circles with note names** — making pitch
 identification intuitive and reducing visual crowding.
 
+> **Note value range:** the layout is optimized for durations down to the **sixteenth
+> note** (semicroma). Shorter values (biscrome, semibiscrome) are not fully supported.
+
 Note names are available in **Italian** (Do Re Mi Fa Sol La Si) and **English**
 (C D E F G A B); pass `--lang it` (default) or `--lang en`.
 
@@ -170,6 +173,10 @@ python3 ../generate_maidascore.py example_score.mscz example_rhythm_mode_en --rh
 
 ## Limitations
 
+- **Optimized for note values down to the sixteenth note (semicroma).** Shorter
+  durations (thirty-second notes / biscrome and sixty-fourth notes / semibiscrome)
+  are not guaranteed to render correctly — flag/beam layout and spacing are tuned
+  for the semicroma as the shortest value.
 - Optimized for **4/4, 3/4, 2/4, and 6/8 time signatures**; other meters may produce suboptimal layout
 - **Tuplets** are not supported
 - Layout constants are tuned for **transverse flute**; other instruments may require

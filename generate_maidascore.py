@@ -41,6 +41,9 @@ Output:
   - file .mscz con layout accessibile (spatium grande, linee spesse)
   - file .pdf con note colorate + nomi note + sfondo quarti + rettangoli durata
 
+Nota sui valori ritmici: il layout è ottimizzato per durate fino alla semicroma
+(sedicesimo). Valori più brevi (biscrome, semibiscrome) non sono garantiti.
+
 Pipeline:
   1. Estrae le note (pitch, durata) dal .mscz
   2. Modifica il .mscz per layout accessibile (spatium, linee spesse)
@@ -445,11 +448,26 @@ def extract_notes_via_music21(mscz_path, part_index=0):
                         if acc_str in ('#', 'b'):
                             passing_acc = acc_str
 
+                    # 9 Ago 2026 (bug diesis pentagramma, Marco): le note
+                    # alterate nell'armatura (es. F#, C# in Re maggiore) devono
+                    # mostrare il diesis ANCHE sul pentagramma (sopra/sotto il
+                    # pallino), non solo sotto il blocco nella tavola.
+                    # staff_acc = alterazione da disegnare sul pentagramma:
+                    # - passing_acc se è un'alterazione di passaggio
+                    # - acc_str se è un'alterazione dell'armatura (# o b)
+                    # - 'natural' (bequadro) solo se di passaggio
+                    staff_acc = passing_acc
+                    if not staff_acc and acc_str in ('#', 'b'):
+                        # Alterazione dell'armatura → mostrala sul pentagramma
+                        staff_acc = acc_str
+
                     notes.append({
                         'pitch': n.pitch.midi,
                         'step': step,          # lettera naturale: C/D/E/F/G/A/B
+                        'octave': n.pitch.octave,  # 9 Ago: per correggere Y con enarmonici
                         'note_name': note_name_full,  # con alterazione: Bb, C#, A
                         'passing_acc': passing_acc,  # 7 Ago: '#', 'b', 'natural', o ''
+                        'staff_acc': staff_acc,  # 9 Ago: alterazione da disegnare sul pentagramma
                         'duration_type': dur_type,
                         'dots': dots,
                         'dur_key': dur_key,
@@ -1693,11 +1711,14 @@ def parse_svg(svg_content):
         # - filled + stem nearby = quarter
         # - filled + no stem = error/very short
         has_stem = False
+        stem_dir = None  # 'up' = gambo verso l'alto, 'down' = gambo verso il basso
         w = 123.453 * scale  # glyph width
         for sx, sy1, sy2 in stem_positions:
             if (x - 40 <= sx <= x + w + 40
                     and min(abs(y - sy1), abs(y - sy2)) < 100):
                 has_stem = True
+                # Direzione del gambo: sy2 < sy1 = stem UP, sy2 > sy1 = stem DOWN
+                stem_dir = 'up' if sy2 < sy1 else 'down'
                 break
         
         if is_open and not has_stem:
@@ -1749,6 +1770,7 @@ def parse_svg(svg_content):
             'system_top': note_system['top'],  # for sorting
             'is_open': is_open,  # True = semibreve/minima (vuota), False = semiminima/croma (piena)
             'duration_type': duration_type,  # 'whole', 'half', 'quarter'
+            'stem_dir': stem_dir,  # 'up', 'down', or None (whole note, no stem)
         })
     
     # Sort notes in score order: system top-to-bottom, then X left-to-right
@@ -2950,10 +2972,31 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                             svg_n['name_it'] = NOTE_NAMES_EN.get(note_name, '?')
                             # propaga passing_acc per modalità rhythm
                             svg_n['passing_acc'] = mscz_n.get('passing_acc', '')
+                            # 9 Ago 2026: propaga staff_acc (alterazione da mostrare
+                            # sul pentagramma, include le note dell'armatura)
+                            svg_n['staff_acc'] = mscz_n.get('staff_acc', '')
                             svg_n['step'] = mscz_n.get('step', note_name)
                             # propaga note_name con alterazione (es. 'C#', 'Bb')
                             # per la tavola sonora (simbolo alterazione a sinistra del nome)
                             svg_n['note_name'] = mscz_n.get('note_name', note_name)
+                            # 9 Ago 2026 (bug enarmonia Re#/Eb): MuseScore a volte
+                            # disegna un enarmonico diverso (es. D#5 come Eb5) nella
+                            # posizione dello step enarmonico (spazio del Mi invece
+                            # che linea del Re). Correggiamo la Y in base allo step
+                            # reale estratto da music21, usando le linee del sistema.
+                            # Formula: half_steps = (octave-4)*7 + step_offset_C[step] - 7
+                            # y_correct = middle_line_y - half_steps * half_step
+                            mscz_octave = mscz_n.get('octave', None)
+                            mscz_step = mscz_n.get('step', None)
+                            sys_info = svg_n.get('system', None)
+                            if (mscz_octave is not None and mscz_step is not None
+                                    and sys_info is not None):
+                                step_offset_C = {'C': 1, 'D': 2, 'E': 3, 'F': 4,
+                                                 'G': 5, 'A': 6, 'B': 7}
+                                if mscz_step in step_offset_C:
+                                    half_steps = (mscz_octave - 4) * 7 + step_offset_C[mscz_step] - 7
+                                    y_correct = sys_info['middle_line_y'] - half_steps * sys_info['half_step']
+                                    svg_n['y'] = y_correct
                         # Build dur_key: 'half' + dots=1 → 'half_dotted'
                         dt = svg_n['duration_type']
                         if svg_n['dots'] > 0:
@@ -4128,10 +4171,10 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 abs(round(sx) - _hx) < 60 and abs(round(_orig_stem_y) - _hy) < 800
                 for _hx, _hy in _hook_positions
             )
-            if _has_hook:
-                stem_up = False  # croma isolata → gambo in giù
-            else:
-                stem_up = True  # forzatura: tutti in su
+            # 9 Ago 2026 (nuova regola Marco): nel Step2 i gambi devono essere
+            # SEMPRE verso l'alto, anche le crome isolate con hook. Questo
+            # semplifica la gestione dello spazio.
+            stem_up = True  # forzatura: tutti in su, sempre
             if stem_up:
                 # Gambo in su: parte dalla testa (middle_line_y), va verso l'alto
                 sy1 = stem_mid_y
@@ -4461,30 +4504,75 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         # negare sy (mirror Y verticale) nella transform matrix. ty = cima del gambo.
         new_ty_str = hm.group(6)
         new_sy_str = hm.group(4)  # scale Y originale (positivo)
+        new_d = None  # path replacement for flag-up hooks (None = keep original)
         if rhythm_mode:
-            # crome isolate → uncino in BASSO (gambo in giù).
-            # L'uncino va alla base del gambo (y maggiore = stem_max_y) con
-            # curva in SU (sy negato = mirror Y). Prima era in cima con curva
-            # in giù, ma Marco vuole l'uncino in basso come nelle partiture
-            # standard per note alte.
-            new_ty = stem_max_y
+            # 9 Ago 2026 (nuova regola Marco): gambi sempre verso l'alto nel Step2.
+            # L'uncino va alla CIMA del gambo (y minore = stem_min_y) con
+            # curva verso il BASSO a destra (come bandiera che pende).
+            #
+            # MuseScore esporta 2 tipi di path per gli hook (uncini di croma):
+            # - "flag UP" (M0,-0.33): per note con gambo in GIÙ, uncino curva verso l'alto
+            # - "flag DOWN" (M0,75.14): per note con gambo in SU, uncino curva verso il basso
+            # Forzando tutti i gambi in SU, gli hook "flag UP" sono SBAGLIATI:
+            # il path curva verso l'alto invece che verso il basso.
+            # Soluzione: sostituire il path "flag UP" con il path "flag DOWN",
+            # mantenendo sy POSITIVO e ty=stem_min_y (cima del gambo).
+            new_ty = stem_min_y
             new_ty_str = f'{new_ty:.2f}'
-            new_sy_str = f'-{float(hm.group(4)):.6f}'  # negate sy (curves up from bottom)
-        # Find owner note color
+            new_sy_str = hm.group(4)  # keep sy positive
+            # Rileva path "flag UP": inizia con M0,NEGATIVE (es. M0,-0.328125)
+            old_d_match = re.search(r'd="([^"]*)"', hm.group(0))
+            if old_d_match:
+                old_d_val = old_d_match.group(1)
+                m_flag = re.match(r'M0,([-\d.]+)', old_d_val)
+                if m_flag and float(m_flag.group(1)) < 0:
+                    # flag UP → sostituisci con flag DOWN (curva verso il basso)
+                    new_d = ('M0,75.1406 C0,76.125 0.328125,77.7813 2.64063,78.7813 '
+                             'C16.875,83.4063 45.3438,101.281 66.8594,138.031 '
+                             'C72.8125,148.281 82.4219,162.516 82.4219,189.984 '
+                             'C82.4219,213.828 76.125,238.313 67.5156,262.141 '
+                             'C66.8594,264.141 66.2031,265.781 66.5313,267.109 '
+                             'C66.5313,269.094 67.8594,270.422 69.8438,270.422 '
+                             'C72.1563,270.422 73.8125,269.094 75.1406,266.781 '
+                             'C90.0313,240.297 95.6563,209.516 95.6563,179.406 '
+                             'C94,136.703 69.5156,105.25 69.5156,105.25 '
+                             'C70.5,105.25 39.0625,64.5469 30.125,50.6406 '
+                             'C17.875,31.7813 12.25,12.9063 11.5781,11.5781 '
+                             'C11.25,10.5938 8.28125,-1.32813 8.28125,-1.32813 '
+                             'C7.9375,-2.64063 6.28125,-3.96875 4.29688,-3.96875 '
+                             'C1.98438,-3.96875 0,-1.98438 0,0.328125 L0,75.1406 ')
+        # Find owner note color — match from the STEM's stroke color (already
+        # set by the stem-coloring pass above), which is more reliable than
+        # matching notes by X/Y (in rhythm mode note Y is remapped and can
+        # mismatch the hook's ty which is at the stem top).
         hook_color = '#000000'
-        # Find the note that owns this hook: match by X (stem position)
-        # AND Y (same system as the hook)
-        h_ty = float(hm.group(6))  # current ty (already Y-remapped)
-        for n in notes:
-            if abs(n['center_x'] - new_sx) < 200 and abs(n['y'] - h_ty) < 2000:
-                hook_color = n['color']
+        stem_color_pat = re.compile(
+            r'<polyline class="Stem"[^>]*stroke="([^"]*)"[^>]*points="([\d.]+),([\d.]+) ([\d.]+),([\d.]+)"'
+        )
+        for scm in stem_color_pat.finditer(modified):
+            ssx = float(scm.group(2))
+            ssy_min = min(float(scm.group(3)), float(scm.group(5)))
+            if abs(ssx - new_sx) < 200 and abs(ssy_min - stem_min_y) < 500:
+                hook_color = scm.group(1)
                 break
+        if hook_color == '#000000':
+            # Fallback: match note by X/Y (original method)
+            h_ty = float(hm.group(6))  # current ty (already Y-remapped)
+            for n in notes:
+                if abs(n['center_x'] - new_sx) < 200 and abs(n['y'] - h_ty) < 2000:
+                    hook_color = n['color']
+                    break
         old_hook = hm.group(0)
         old_transform = f'transform="matrix({hm.group(1)},{hm.group(2)},{hm.group(3)},{hm.group(4)},{hm.group(5)},{hm.group(6)})"'
         new_transform = f'transform="matrix({hm.group(1)},{hm.group(2)},{hm.group(3)},{new_sy_str},{new_tx:.2f},{new_ty_str})"'
         if old_transform not in old_hook:
             continue
         new_hook = old_hook.replace(old_transform, new_transform)
+        # Replace flag-up path with flag-down path (curves DOWN for up-stems)
+        if new_d is not None:
+            old_d_match = re.search(r'd="[^"]*"', new_hook)
+            if old_d_match:
+                new_hook = new_hook.replace(old_d_match.group(0), f'd="{new_d}"')
         new_hook = new_hook.replace('<path class="Hook"', f'<path class="Hook" fill="{hook_color}"')
         if old_hook not in modified:
             continue
@@ -4564,20 +4652,21 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         # Draw accidental (#/b/natural) on the staff,
         # above or below the notehead circle. Same size as tavola accidentals
         # (206px). Position: ABOVE the circle if stem goes DOWN, BELOW if UP.
+        # Regola (Marco, 9 Ago 2026): alterazione SOPRA il pallino se gambo
+        # verso il basso (stem down), SOTTO il pallino se gambo verso l'alto
+        # (stem up). Nei blocchi grigi (tavola) resta SOTTO il nome, sempre.
+        # NOTE (9 Ago): le alterazioni sul pentagramma vengono disegnate DOPO
+        # il Y-stretch (sezione 2e3b) per evitare che lo stretch le sposti in
+        # posizione sbagliata. Qui non disegniamo nulla.
         acc_el = ''
-        p_acc = n.get('passing_acc', '')
+        p_acc = n.get('staff_acc', '') or n.get('passing_acc', '')
+        # Salva p_acc e stem_dir nella nota per disegnarle DOPO il Y-stretch
+        # (sezione 2e3b). Le alterazioni sul pentagramma vengono posizionate
+        # usando le coordinate post-stretch dei cerchi.
         if p_acc and p_acc in ('#', 'b', 'natural'):
-            acc_symbol = '#' if p_acc == '#' else ('\u266d' if p_acc == 'b' else '\u266e')
-            acc_fs = 206  # same as tavola
-            # Position: above (y - disc_r - acc_fs*0.6) or below (y + disc_r + acc_fs*0.6)
-            # Use ABOVE for all notes (more visible, doesn't clash with stem)
-            acc_x = cx
-            acc_y = cy - disc_r - acc_fs * 0.55
-            acc_el = (f'\n<text x="{acc_x:.1f}" y="{acc_y:.1f}" '
-                      f'font-family="Atkinson Hyperlegible,Carlito,DejaVu Sans,sans-serif" '
-                      f'font-size="{acc_fs:.0f}" font-weight="900" '
-                      f'fill="#111111" text-anchor="middle" dy="0.35em">'
-                      f'{acc_symbol}</text>')
+            n['staff_acc_to_draw'] = p_acc
+        else:
+            n['staff_acc_to_draw'] = ''
         
         # Replace the ENTIRE original notehead path with circle + text
         # in modalità rhythm, niente testo (Do/Re/Mi) sulle teste —
@@ -6245,6 +6334,116 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
     modified = acc_pat.sub('', modified)
     if acc_removed > 0:
         print(f"  Accidentals: {acc_removed} rimossi dal pentagramma (confusione visiva per l'allievo)")
+
+    # 2e3b. Disegna alterazioni (#/b/natural) sul pentagramma DOPO il Y-stretch.
+    # Le alterazioni vengono posizionate usando le coordinate POST-stretch dei
+    # cerchi (che sono già stati aggiornati da y_stretch_systems).
+    # Regola (Marco, 9 Ago 2026): SOPRA il pallino se gambo verso il basso
+    # (stem down), SOTTO il pallino se gambo verso l'alto (stem up).
+    # Nei blocchi grigi (tavola) resta SOTTO il nome, sempre (gestito altrove).
+    # Step2 (9 Ago, nuova regola Marco): NON disegnare alterazioni sul pentagramma
+    # in modalità rhythm — le alterazioni restano solo sotto le note dei blocchi.
+    staff_acc_svgs = []
+    disc_r_for_acc = DISC_R_OVERRIDE if DISC_R_OVERRIDE else 130
+    acc_fs_staff = 206  # same as tavola
+    # Prepara la mappatura sistema pre→post per identificare il sistema di
+    # ogni nota. I sistemi pre e post hanno lo stesso ORDINE (ordinati per top),
+    # quindi li abbiniamo per indice.
+    sys_pre_sorted = sorted(systems.items(), key=lambda x: x[1]['top'])
+    sys_post_sorted = sorted(systems_post.items(), key=lambda x: x[1]['top'])
+    # Mappa: system_key (pre) → sistema post (per indice)
+    pre_to_post = {}
+    for i, (sk_pre, _info_pre) in enumerate(sys_pre_sorted):
+        if i < len(sys_post_sorted):
+            pre_to_post[sk_pre] = sys_post_sorted[i][1]
+    # Pre-compila la lista dei cerchi con (cx, cy, r) per evitare re.finditer
+    # ripetuto per ogni nota.
+    all_circles = []
+    for cm in re.finditer(r'<circle\s+cx="([\d.]+)"\s+cy="([\d.]+)"\s+r="([\d.]+)"', modified):
+        all_circles.append((float(cm.group(1)), float(cm.group(2)), float(cm.group(3))))
+    for n in notes:
+        p_acc = n.get('staff_acc_to_draw', '')
+        if not p_acc or p_acc not in ('#', 'b', 'natural'):
+            continue
+        # Trova il cerchio corrispondente a questa nota nel SVG post-stretch.
+        # Il cerchio ha cx = center_x della nota. Cerchiamo il circle più vicino
+        # in X, ma nello STESSO sistema della nota (per evitare di prendere
+        # cerchi in altri sistemi con la stessa cx).
+        cx_note = n.get('center_x', n.get('x', 0))
+        # Identifica il sistema post-stretch di questa nota
+        sys_key = n.get('system_key', '')
+        post_sys = pre_to_post.get(sys_key, None)
+        best_cy = None
+        best_dist = 99999
+        for cx_c, cy_c, r_c in all_circles:
+            dist_x = abs(cx_c - cx_note)
+            if dist_x > 50:
+                continue
+            # Se conosco il sistema post, verifico che il cerchio sia in quel sistema
+            if post_sys is not None:
+                # Usa il range del sistema post-stretch (con un margine per
+                # note sopra/sotto il pentagramma)
+                sys_top = post_sys['top'] - 500
+                sys_bot = post_sys['bottom'] + 500
+                if not (sys_top <= cy_c <= sys_bot):
+                    continue
+            # Tra i cerchi candidati, prendi quello con cx più vicino
+            if dist_x < best_dist:
+                best_dist = dist_x
+                best_cy = cy_c
+        if best_cy is None:
+            continue
+        acc_symbol = '#' if p_acc == '#' else ('\u266d' if p_acc == 'b' else '\u266e')
+        stem_dir = n.get('stem_dir', None)
+        # In modalità rhythm (Step2), tutti i gambi vengono ridisegnati verso
+        # l'ALTO (middle_line_y - STEM_LEN), indipendentemente dalla direzione
+        # originale. Quindi in rhythm mode, l'alterazione va sempre SOTTO.
+        if rhythm_mode:
+            stem_dir = 'up'
+        acc_x = cx_note
+        # Offset verticale del diesis dal pallino. Deve essere PICCOLO per
+        # evitare che il diesis di una nota finisca sopra la nota soprastante
+        # (es. Sol# sopra il pentagramma con La subito sopra: offset troppo
+        # grande mette il diesis sopra il La invece che sopra il Sol).
+        # 9 Ago: ridotto a disc_r + 30px (appena sopra il pallino).
+        acc_offset = disc_r_for_acc + 30
+        # Controlla se c'è un'altra nota subito sopra (entro 250px in x e
+        # 300px in y). Se sì, usa un offset minore per stare vicino al Sol
+        # senza sovrapporsi troppo al La.
+        has_note_above = any(
+            abs(c[0] - cx_note) < 250 and c[1] < best_cy - disc_r_for_acc and c[1] > best_cy - 300
+            for c in all_circles
+            if c[1] != best_cy
+        )
+        # Font-size del diesis: 206 normale, 140 se c'è una nota sopra
+        # (più piccolo per stare nello spazio ridotto).
+        acc_fs_actual = 140 if has_note_above and stem_dir != 'up' else acc_fs_staff
+        if stem_dir == 'up':
+            # Gambo verso l'alto → alterazione SOTTO il pallino
+            acc_y = best_cy + acc_offset
+            acc_x = cx_note
+        elif has_note_above:
+            # Nota sopra → diesis SOPRA ma con offset minore e font più piccolo
+            acc_y = best_cy - disc_r_for_acc - 15
+            acc_x = cx_note
+        else:
+            # Gambo verso il basso (o whole note senza gambo) → alterazione SOPRA
+            acc_y = best_cy - acc_offset
+            acc_x = cx_note
+        # Font-size del diesis: 206 normale, 140 se c'è una nota sopra
+        # (più piccolo per stare nello spazio ridotto).
+        staff_acc_svgs.append(
+            f'<text x="{acc_x:.1f}" y="{acc_y:.1f}" '
+            f'font-family="Atkinson Hyperlegible,Carlito,DejaVu Sans,sans-serif" '
+            f'font-size="{acc_fs_actual:.0f}" font-weight="900" '
+            f'fill="#111111" text-anchor="middle" dy="0.35em">'
+            f'{acc_symbol}</text>'
+        )
+    if staff_acc_svgs and not rhythm_mode:
+        modified = modified.replace('</svg>', '\n' + '\n'.join(staff_acc_svgs) + '\n</svg>')
+        print(f"  Alterazioni pentagramma: {len(staff_acc_svgs)} disegnate (post-stretch, regola gambo)")
+    elif rhythm_mode and staff_acc_svgs:
+        print(f"  Alterazioni pentagramma: {len(staff_acc_svgs)} skip (modalità rhythm — solo sui blocchi)")
     
     # 2f. Enlarge rests to match stretched staff
     # Rests have transform="matrix(a,0,0,d,tx,ty)" with scale ~1.143.
