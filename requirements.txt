@@ -1,0 +1,7 @@
+# Dipendenze Python per MaidaScore
+# Installare con: pip install -r requirements.txt
+
+music21>=9.1
+lxml>=5.0
+CairoSVG>=2.7
+pypdf>=4.0

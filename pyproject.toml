@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "maidascore"
+version = "1.0.0"
+description = "Accessible music notation generator for dyslexic learners — converts MuseScore (.mscz) or MusicXML (.mxl) scores into simplified colored-circle notation (Italian/English note names)"
+readme = "README.md"
+license = {text = "GPL-3.0-or-later"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Marco Maida"}
+]
+keywords = [
+    "music",
+    "accessibility",
+    "dyslexia",
+    "music-education",
+    "musescore",
+    "music-notation",
+    "special-education",
+    "colored-notation"
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: Education",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Education",
+    "Topic :: Multimedia :: Graphics :: Graphics Conversion",
+    "Topic :: Adaptive Technologies",
+]
+dependencies = [
+    "music21>=9.1",
+    "lxml>=5.0",
+    "CairoSVG>=2.7",
+    "pypdf>=4.0",
+]
+
+[project.scripts]
+maidascore = "generate_maidascore:main"
+
+[project.urls]
+"Homepage" = "https://github.com/marcomaida/maidascore"
+"Issues" = "https://github.com/marcomaida/maidascore/issues"
+
+[tool.setuptools]
+py-modules = ["generate_maidascore", "validate_maidascore"]

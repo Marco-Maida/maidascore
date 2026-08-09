@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# MaidaScore generated output (non versionare i file generati)
+*_maidascore.svg
+*_maidascore*.svg
+*.pdf
+# ...tranne gli esempi in examples/
+!examples/*.pdf
+!examples/*.svg
+
+# File temporanei di MuseScore
+*.mscz
+.*.mscz
+~$*.mscz
+# ...tranne gli esempi in examples/
+!examples/*.mscz
+
+# Backup file
+*_backup_*.py
+*.bak
+
+# Log
+*.log
