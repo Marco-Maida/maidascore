@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.0.3] - 2026-08-12
 
 ### Fixed
+
+#### Key signature (armatura) — detection & rendering
+
 - **Key signature detection for C-major scores**: `extract_key_sig_changes`
   no longer registers `None` for every measure when a score has no explicit
   `<KeySig>` elements (C-major / no key signature). Previously, `prev_ks`
@@ -20,10 +23,115 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Per-measure key signature tracking**: `extract_notes_via_music21` now
   returns `key_sigs_per_measure` (key signature active in each measure),
   enabling correct accidental rendering across key changes mid-score.
+- **Intermediate key signature reconstruction**: `extract_single_part_mscz`
+  now accepts a `key_sig_changes` dict and inserts `key.KeySignature` at the
+  start of each measure where the key changes (measure > 0). Previously,
+  music21 did not detect intermediate KeySignatures (offset=0.0 bug), so the
+  reconstructed single-part score lost all mid-score key changes.
+- **Cancel naturals for key changes (MusicXML injection)**: music21 does not
+  export `<cancel>` tags in MusicXML, so MuseScore 4 did not render
+  cancellation naturals when switching from sharps to flats (or vice versa) —
+  residual sharps stayed visible. Now `<cancel location="left">` tags with
+  the previous fifths value are injected manually into every non-first `<key>`
+  block in the exported MusicXML.
+- **KeySig break on system change**: `make_accessible_mscz` now forces a
+  LayoutBreak when the key signature changes mid-system, in addition to time
+  signature changes. The key changes are read from the original file via
+  `extract_key_sig_changes` (the reconstructed .mscx loses intermediate
+  changes).
+- **MuseScore 4 flats rendering bug (workaround)**: MuseScore 4 renders all
+  KeySig accidentals as sharps in the SVG when the .mscz is reconstructed via
+  music21, and does not render cancellation naturals at all. Workaround:
+  all KeySig elements are removed from the SVG and replaced with correct
+  path data (sharp/flat/natural glyphs extracted from the original MuseScore
+  SVG) for each system based on the correct key signature.
+- **Per-system key signature labels**: key signature labels in the tavola
+  sonora are now computed per-system (not just the initial key), using
+  `key_sig_changes_dict` and system-to-measure mapping. Each system shows
+  the accidentals for its active key.
+- **KeySig on all staves of a system**: key signatures are now rendered on
+  all staves (pentagrams) of a system, not just the first. StaffLines are
+  grouped into pentagrams (groups of 5 lines, gap < 400px) and then into
+  systems (gap < 1000px), supporting multi-staff instruments (e.g. piano
+  with brace).
+- **Cancellation natural ordering**: when the key changes, the order is now
+  correct: accidentals that REMAIN (in their original position) are drawn
+  first, then cancellation naturals for the removed accidentals. Covers all
+  4 cases: sharps→sharps (fewer), sharps→flats, flats→sharps, flats→flats
+  (fewer).
+- **KeySig overlap with TimeSig (cancellation naturals)**: the width
+  calculation for scaling the key signature now includes cancellation
+  naturals for the current system (not just the initial key), preventing
+  overlap between the TimeSig and cancellation naturals.
+- **KeySig-to-system Y mapping (pre-stretch)**: KeySig original Y
+  coordinates are pre-stretch and do not match post-stretch system_tops.
+  KeySigs are now grouped by Y (pre-stretch) and assigned to systems by
+  order of appearance, not by nearest post-stretch Y. Each system can have
+  a variable number of KeySigs (0, 1, 2, 3).
+
+#### System layout — architecture (Single Source of Truth)
+
+- **`build_system_layout` (new function, Fable 5 architecture)**: the
+  measure-to-system partition is now computed ONCE from barline counting
+  (primary source: direct observation of MuseScore's layout), not from
+  time-signature-based prediction (which is not deterministic — MuseScore
+  does not always force a break on time-sig change). This Single Source of
+  Truth is consumed by `sys_measure_ranges`, `_sys_to_global_idx`, and
+  `draw_tavola_sonora` instead of each recalculating with local heuristics.
+  Fallback to the old logic (equalized_measures + MMRest + UNIFORM) if
+  `system_layout` is unavailable.
+- **`process_svg` refactored**: the SVG post-processor now builds
+  `_system_layout` once at the start and passes it down to all consumers,
+  eliminating 3 separate recalculations of the same partition.
+
+#### Tavola sonora — rhythm mode time signature rendering
+
+- **Time signature as fraction**: in rhythm mode, the time signature is now
+  rendered as a proper fraction (numerator above, line, denominator below)
+  using `font-family: Atkinson Hyperlegible`, instead of inline text
+  ("4/4"). The fraction fills the full vertical height of the staff +
+  tavola sonora block.
+- **Accidentals in vertical layout (rhythm mode)**: accidentals are now
+  arranged vertically (one below the other) to the left of the time
+  signature fraction, matching standard music notation.
+- **Per-system time signature changes**: subsequent systems show accidentals
+  only if they changed from the previous system, and the time signature only
+  if it changed. Previously, all systems showed the same combined text.
+- **Intra-system time signature changes as small fraction**: when the time
+  signature changes mid-system, the new TS is rendered as a small inline
+  fraction (scale 0.25) instead of large text.
+
+#### Layout & sizing
+
+- **AVAILABLE_WIDTH uses UNIFORM_MUSIC_START**: the width available for
+  clef + key signature + time signature is now measured from
+  `UNIFORM_MUSIC_START` (start of grey sectors), not `MUSIC_START_X`
+  (center of first note, 2650). This follows Marco's directive: do not
+  move the grey sectors, shrink the symbols instead.
+- **KeySig scale gap corrected**: the gap between clef, KeySig, and TimeSig
+  is now 55px (was 40px, leaving 11px of overlap with the grey sector).
+- **TIMESIG_WIDTH_REF corrected**: TimeSig reference width at scale 2.0 is
+  now 334.0 (was 283, underestimated by 18%). STAGGER_REF is now 180.0
+  (measured: 103.6 / 1.1429 × 2.0 = 181.3).
+
+#### Validator
+
 - **Validator prefix matching**: `validate_maidascore.py` now matches SVG
   files with `startswith(prefix_base + '_svg')` instead of
   `startswith(prefix_base)`, preventing false positives when one prefix is
   a substring of another (e.g. `Canzon_v24` matching `Canzon_v24_r`).
+
+### Changed
+- `extract_single_part_mscz` signature: now accepts `key_sig_changes`
+  parameter (dict {measure_idx: n_sharps}) for intermediate key
+  reconstruction.
+- `make_accessible_mscz` signature: now accepts `key_sig_changes` parameter
+  (set of measure indices) to force LayoutBreak on key changes.
+- `process_svg` and `draw_tavola_sonora`: now accept `key_sig_changes_dict`
+  for per-system key signature rendering.
+- `main()`: extracts key signatures from the original file before
+  `extract_single_part_mscz` and `make_accessible_mscz`, passing the dict
+  to both functions.
 
 ## [1.0.2] - 2026-08-12
 
