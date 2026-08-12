@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.3] - 2026-08-12
+
+### Fixed
+- **Key signature detection for C-major scores**: `extract_key_sig_changes`
+  no longer registers `None` for every measure when a score has no explicit
+  `<KeySig>` elements (C-major / no key signature). Previously, `prev_ks`
+  stayed `None` forever, causing every measure to be recorded as a key-signature
+  change — which forced `make_accessible_mscz` to insert a LayoutBreak after
+  every measure, producing 1 measure per system instead of 2. Now, when no
+  `<KeySig>` is found, the key is treated as 0 (C major) and only genuine
+  changes are registered. A `first_ks_seen` flag distinguishes "no KeySig
+  found yet" from "KeySig found and persists".
+- **Per-measure key signature tracking**: `extract_notes_via_music21` now
+  returns `key_sigs_per_measure` (key signature active in each measure),
+  enabling correct accidental rendering across key changes mid-score.
+- **Validator prefix matching**: `validate_maidascore.py` now matches SVG
+  files with `startswith(prefix_base + '_svg')` instead of
+  `startswith(prefix_base)`, preventing false positives when one prefix is
+  a substring of another (e.g. `Canzon_v24` matching `Canzon_v24_r`).
+
 ## [1.0.2] - 2026-08-12
 
 ### Fixed

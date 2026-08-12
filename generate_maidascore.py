@@ -303,6 +303,71 @@ def extract_notes_from_mscz(mscz_path, part_index=0):
     return {'notes': notes, 'rests': rests, 'time_sig': time_sig}
 
 
+def extract_key_sig_changes(mscz_path, part_index=0):
+    """Estrae le battute (0-based) in cui cambia l'armatura (key signature).
+    
+    Legge il .mscz ORIGINALE di Marco direttamente dal .mscx XML (non dal
+    .mscx ricostruito, che perde i cambi intermedi, e non da music21, che
+    comprime le battute vuote perdendo i cambi a battute alte).
+    Ritorna un dict {measure_idx_0based: n_sharps} con TUTTE le battute
+    che hanno un armatura (iniziale + cambi intermedi).
+    n_sharps > 0 = diesis, < 0 = bemolli, 0 = nessuno.
+    """
+    import zipfile, re
+    try:
+        z = zipfile.ZipFile(mscz_path, 'r')
+        mscx = None
+        for name in z.namelist():
+            if name.endswith('.mscx'):
+                mscx = z.read(name).decode('utf-8')
+                break
+        z.close()
+        if mscx is None:
+            return {}
+        
+        # Se multi-strumento, estrai solo le battute dello staff di part_index.
+        staff_pattern = re.split(r'<Staff id="(\d+)">', mscx)
+        if len(staff_pattern) > 2:
+            staff_contents = []
+            for i in range(2, len(staff_pattern), 2):
+                staff_contents.append((staff_pattern[i-1], staff_pattern[i]))
+            if part_index < len(staff_contents):
+                staff_content = staff_contents[part_index][1]
+            else:
+                staff_content = staff_contents[0][1]
+            measures = re.split(r'<Measure>', staff_content)
+        else:
+            measures = re.split(r'<Measure>', mscx)
+        
+        prev_ks = None
+        first_ks_seen = False  # 12 Ago 2026: traccia se abbiamo trovato un KeySig
+        changes = {}  # {measure_idx_0based: n_sharps}
+        for mi in range(1, len(measures)):
+            m = measures[mi]
+            ks_match = re.search(r'<KeySig>.*?<concertKey>(-?\d+)</concertKey>.*?</KeySig>', m, re.DOTALL)
+            if ks_match:
+                cur_ks = int(ks_match.group(1))
+                first_ks_seen = True
+            elif first_ks_seen:
+                cur_ks = prev_ks  # mantieni l'ultima armatura nota
+            else:
+                cur_ks = 0  # nessun KeySig trovato → Do maggiore implicito
+            if not first_ks_seen and mi == 1:
+                # Prima battuta senza KeySig: Do maggiore (0)
+                changes[mi - 1] = 0
+            elif prev_ks is None:
+                # Prima battuta CON KeySig: registra l'armatura iniziale
+                changes[mi - 1] = cur_ks
+            elif cur_ks != prev_ks:
+                # Cambio di armatura
+                changes[mi - 1] = cur_ks
+            prev_ks = cur_ks
+        
+        return changes
+    except Exception:
+        return {}
+
+
 def extract_notes_via_music21(mscz_path, part_index=0):
     """Estrae note usando music21 (gestisce tie, tuplet, ecc. correttamente).
     
@@ -361,13 +426,30 @@ def extract_notes_via_music21(mscz_path, part_index=0):
                 current_ts = (ts_list[ts_idx][1], ts_list[ts_idx][2])
             time_sigs_per_measure[m_idx] = current_ts
         
-        # 4 Ago 2026 (bug KS): estrai key signature reale dal file.
-        # Senza questo, la ricostruzione usa KS hardcoded (Sol maggiore 1#)
-        # invece di quella reale (es. Re maggiore 2#).
+        # 12 Ago 2026: estrai key signature per ogni battuta (come time_sig).
+        # Permette di rilevare i cambi di armatura e mandare la battuta
+        # col nuovo armatura a capo su un nuovo sistema.
+        ks_list = []
+        for ks in part.recurse().getElementsByClass('KeySignature'):
+            ks_list.append((ks.offset, ks.sharps))
+        # Ordina per offset
+        ks_list.sort(key=lambda x: x[0])
+        
         key_sig = 0  # default: Do maggiore (0 diesis/bemolli)
-        ks_elements = part.recurse().getElementsByClass('KeySignature')
-        if ks_elements:
-            key_sig = ks_elements[0].sharps  # positivo=diesis, negativo=bemolli
+        if ks_list:
+            key_sig = ks_list[0][1]  # primo KS (per backward compat)
+        
+        # Calcola il key_sig attivo per ogni battuta
+        key_sigs_per_measure = {}
+        current_ks = key_sig
+        ks_idx = 0
+        for m_idx, m in enumerate(measures):
+            m_offset = m.offset
+            # Avanza ks_list finché il KS è valido per questa battuta
+            while ks_idx + 1 < len(ks_list) and ks_list[ks_idx + 1][0] <= m_offset + 0.001:
+                ks_idx += 1
+                current_ks = ks_list[ks_idx][1]
+            key_sigs_per_measure[m_idx] = current_ks
 
         # determina quali step sono alterati dall'armatura.
         # Serve per distinguere accidentals di passaggio da quelli dell'armatura.
@@ -479,6 +561,7 @@ def extract_notes_via_music21(mscz_path, part_index=0):
         return {'notes': notes, 'rests': rests, 'time_sig': time_sig,
                 'time_sigs_per_measure': time_sigs_per_measure,
                 'key_sig': key_sig,
+                'key_sigs_per_measure': key_sigs_per_measure,
                 'keysig_altered_steps': keysig_altered_steps,
                 'keysig_alteration': keysig_alteration}
     finally:
@@ -505,7 +588,8 @@ def count_notes_per_measure(mscx_content):
 
 def compute_system_breaks(note_counts, max_notes=MAX_NOTES_PER_SYSTEM,
                           default_measures=UNIFORM_MEASURES_PER_SYSTEM,
-                          initial_rest_measures=0, mmrest_groups=None):
+                          initial_rest_measures=0, mmrest_groups=None,
+                          time_sig_changes=None):
     """
     Calcola dopo quali battute inserire un LayoutBreak (a capo).
     
@@ -515,10 +599,17 @@ def compute_system_breaks(note_counts, max_notes=MAX_NOTES_PER_SYSTEM,
     Ogni gruppo MMRest va in un sistema separato.
     Il primo gruppo può occupare più battute (es. 28), ma il sistema le
     contiene tutte perché le pause equalizzate sono strette.
+    
+    time_sig_changes: set di indici battuta (0-based) dove c'è un cambio di
+    tempo INTRA-SISTEMA. Forza un break DOPO la battuta con il cambio, così
+    il sistema successivo inizia con il nuovo tempo su un nuovo rigo.
     """
     breaks = []
     i = 0
     n = len(note_counts)
+    
+    # time_sig_changes: battute con cambio di tempo → break dopo
+    ts_change_set = set(time_sig_changes) if time_sig_changes else set()
     
     # gli MMRest sono ora SINGOLE battute (non splittate).
     # Ogni MMRest conta come 1 battuta nel layout.
@@ -551,8 +642,23 @@ def compute_system_breaks(note_counts, max_notes=MAX_NOTES_PER_SYSTEM,
             i += 1
         else:
             count = min(default_measures, n - i)
+            # Controlla se c'è un cambio di tempo entro questo gruppo.
+            # Se la battuta j ha un nuovo tempo, il break va PRIMA di j
+            # (cioè dopo j-1), così la battuta col nuovo tempo inizia un
+            # nuovo sistema.
+            # Il cambio a j == i (prima battuta del gruppo) NON va gestito
+            # qui: il break prima di i è già stato inserito dal gruppo
+            # precedente. Questo gruppo può includere la battuta i insieme
+            # alla successiva, riempio lo spazio invece di lasciarla sola.
+            end_idx = i + count - 1
+            for j in range(i + 1, i + count):
+                if j in ts_change_set and j < n - 1:
+                    # Cambo a una battuta successiva: tronca prima di j
+                    end_idx = j - 1
+                    count = j - i
+                    break
             if i + count < n:  # don't break after the last measure
-                breaks.append(i + count - 1)
+                breaks.append(end_idx)
             i += count
     return breaks
 
@@ -707,7 +813,7 @@ def _add_mmrests_to_mscx(mscx_content, note_info):
     return new_mscx
 
 
-def extract_single_part_mscz(input_mscz, part_index=0):
+def extract_single_part_mscz(input_mscz, part_index=0, key_sig_changes=None):
     """Estrae una singola parte da un .mscz multi-strumento.
     
     Usa music21 per leggere la parte specifica e MuseScore 4 per convertire
@@ -716,6 +822,11 @@ def extract_single_part_mscz(input_mscz, part_index=0):
     
     Ritorna il path del .mscz con una sola parte, o il path originale se il
     file ha già una sola parte.
+    
+    12 Ago 2026: key_sig_changes = dict {measure_idx: n_sharps} per inserire
+    i cambi di armatura intermedi. music21 non rileva i KS intermedi (bug
+    offset=0.0), quindi leggiamo dal .mscx XML originale (extract_key_sig_changes)
+    e passiamo i cambi qui per ricostruirli correttamente.
     """
     import zipfile
     
@@ -765,7 +876,7 @@ def extract_single_part_mscz(input_mscz, part_index=0):
     p.insert(0, meter.TimeSignature(f"{ts[0]}/{ts[1]}"))
     # 4 Ago 2026 (bug KS): usa la key signature reale estratta dal file originale.
     # key_sig = numero di diesis (positivo) o bemolli (negativo).
-    key_sig_sharps = note_info.get('key_sig', 0)
+    key_sig_sharps = (note_info.get('key_sig') or 0) if note_info else 0
     p.insert(0, key.KeySignature(sharps=key_sig_sharps))
     
     # calcola ql per measure rests in base al time signature
@@ -799,6 +910,12 @@ def extract_single_part_mscz(input_mscz, part_index=0):
     
     max_measure = max(events_by_measure.keys()) if events_by_measure else 0
     _prev_ts = ts
+    # 12 Ago 2026: inserisci i KeySig intermedi (cambi di armatura).
+    # key_sig_changes = {measure_idx: n_sharps} dal .mscx XML originale.
+    # La battuta 0 è già gestita da p.insert(0, key.KeySignature(...)) sopra.
+    # Per i cambi successivi, inseriamo un nuovo KeySignature all'inizio
+    # della battuta. music21 + MuseScore lo renderizzerà come cambio armatura.
+    _ks_changes = key_sig_changes if key_sig_changes else {}
     for m_idx in range(max_measure + 1):
         m = stream.Measure()
         # FIX #147/#152: insert time signature change if this measure has a different TS
@@ -806,6 +923,10 @@ def extract_single_part_mscz(input_mscz, part_index=0):
         if _cur_ts != _prev_ts:
             m.insert(0, meter.TimeSignature(f"{_cur_ts[0]}/{_cur_ts[1]}"))
             _prev_ts = _cur_ts
+        # 12 Ago 2026: insert key signature change if this measure has a new KS
+        # (solo per battute > 0; la battuta 0 ha già il KS iniziale)
+        if m_idx in _ks_changes and m_idx > 0:
+            m.insert(0, key.KeySignature(sharps=_ks_changes[m_idx]))
         _m_ql = _measure_ql_for(m_idx)
         events = sorted(events_by_measure.get(m_idx, []), key=lambda e: e[1])
         for ev in events:
@@ -837,6 +958,38 @@ def extract_single_part_mscz(input_mscz, part_index=0):
     # Esporta in MusicXML
     xml_path = '/tmp/single_part_' + str(os.getpid()) + '.xml'
     s.write('musicxml', xml_path)
+    
+    # 12 Ago 2026: inject <cancel> tags for key signature changes.
+    # music21 non esporta i <cancel> nel MusicXML, quindi MuseScore non
+    # renderizza i bequadri di cancellazione quando si passa da diesis a
+    # bemolli (o viceversa). I diesis residui rimangono visibili.
+    # Aggiungiamo manualmente <cancel location="left">prev_fifths</cancel>
+    # in ogni <key> block che non sia il primo.
+    if _ks_changes:
+        with open(xml_path, 'r') as f:
+            xml_content = f.read()
+        # Trova tutti i <key> blocks
+        key_blocks = list(re.finditer(r'<key>\s*<fifths>(-?\d+)</fifths>\s*</key>', xml_content))
+        if len(key_blocks) > 1:
+            # Il primo key block è l'armatura iniziale (nessun cancel)
+            # Per ogni successivo, aggiungi cancel con l'armatura precedente
+            prev_fifths = int(key_blocks[0].group(1))
+            new_xml = xml_content
+            offset_adj = 0
+            for kb in key_blocks[1:]:
+                cur_fifths = int(kb.group(1))
+                # Aggiungi <cancel> solo se l'armatura cambia
+                if cur_fifths != prev_fifths:
+                    old_block = kb.group(0)
+                    new_block = f'<key>\n          <cancel location="left">{prev_fifths}</cancel>\n          <fifths>{cur_fifths}</fifths>\n        </key>'
+                    # Adjust position for previous insertions
+                    pos = kb.start() + offset_adj
+                    new_xml = new_xml[:pos] + new_block + new_xml[pos + len(old_block):]
+                    offset_adj += len(new_block) - len(old_block)
+                prev_fifths = cur_fifths
+            with open(xml_path, 'w') as f:
+                f.write(new_xml)
+            print(f"  KeySig cancel: {len(key_blocks)-1} cambi armatura con bequadri di cancellazione")
     
     # inject beam modes from the original .mscx into the
     # MusicXML. music21 does not export beam modes, so MuseScore auto-calculates
@@ -1045,7 +1198,7 @@ def extract_single_part_mscz(input_mscz, part_index=0):
     return mscz_path
 
 
-def make_accessible_mscz(input_mscz, output_mscz, part_index=0, rhythm_mode=False):
+def make_accessible_mscz(input_mscz, output_mscz, part_index=0, rhythm_mode=False, key_sig_changes=None):
     """Crea una copia del .mscz con spatium grande, pagina larga e senza line break.
     
     part_index: quale parte/strumento mantenere (0=primo, 1=secondo, ecc.)
@@ -1263,9 +1416,38 @@ def make_accessible_mscz(input_mscz, output_mscz, part_index=0, rhythm_mode=Fals
             
             # Count notes per measure and compute where to break
             note_counts = count_notes_per_measure(mscx)
+            # Calcola le battute con cambio di tempo dal .mscx (per forzare break)
+            # Un cambio di tempo intra-sistema forza il sistema successivo ad andare a capo
+            ts_change_set = set()
+            # 12 Ago 2026: calcola anche i cambi di ARMATURA (key signature).
+            # Un cambio di armatura intra-sistema forza anch'esso il break.
+            # Leggi i cambi dal file ORIGINALE (key_sig_changes param) perché il
+            # .mscx ricostruito perde i cambi intermedi di armatura.
+            ks_change_set = set(key_sig_changes) if key_sig_changes else set()
+            _measures = re.split(r'<Measure>', mscx)
+            _prev_ts = None
+            for _mi in range(1, len(_measures)):
+                _m = _measures[_mi]
+                _ts_match = re.search(r'<TimeSig>.*?<sigN>(\d+)</sigN>.*?<sigD>(\d+)</sigD>.*?</TimeSig>', _m, re.DOTALL)
+                if _ts_match:
+                    _cur_ts = (int(_ts_match.group(1)), int(_ts_match.group(2)))
+                else:
+                    _cur_ts = _prev_ts
+                if _prev_ts is not None and _cur_ts != _prev_ts:
+                    ts_change_set.add(_mi - 1)
+                _prev_ts = _cur_ts
+            # Unisci ts_change_set e ks_change_set: qualsiasi cambio forza il break
+            all_changes = ts_change_set | ks_change_set
+            if ts_change_set:
+                print(f"      Cambi di tempo alle battute (0-based): {sorted(ts_change_set)}")
+                print(f"      (= battute 1-based: {[c+1 for c in sorted(ts_change_set)]})")
+            if ks_change_set:
+                print(f"      Cambi di armatura alle battute (0-based): {sorted(ks_change_set)}")
+                print(f"      (= battute 1-based: {[c+1 for c in sorted(ks_change_set)]})")
             break_indices = compute_system_breaks(note_counts, 
                                                     initial_rest_measures=initial_rest_measures,
-                                                    mmrest_groups=mmrest_groups)
+                                                    mmrest_groups=mmrest_groups,
+                                                    time_sig_changes=all_changes)
             
             # Print system layout (compute actual groups from breaks)
             sys_start = 0
@@ -2145,7 +2327,7 @@ DURATION_BEATS = {
 def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
                        note_offset, tavola_row_height=500, tavola_gap=150,
                        processed_notes=None, initial_rest_measures=0,
-                       measure_offset=0, mmrest_groups=None):
+                       measure_offset=0, mmrest_groups=None, system_layout=None):
     """Disegna la riga della Tavola Sonora sotto ogni sistema.
     
     Per ogni battuta: celle colorate (suono) o bianche tratteggiate (pausa),
@@ -2269,19 +2451,27 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
         # Dicitura "Tavola" eliminata (non necessaria)
         
         # calcola global_m_idx_start direttamente dal layout,
-        # senza dipendere da equalized_measures (che non ha entry per MMRest).
-        # 4 Ago 2026 (bug KS): usa la stessa logica di sys_measure_ranges —
-        # gli MMRest contano N battute logiche, non 1.
-        _mmrest_set_tav = set(gs for gs, gc in (mmrest_groups or []))
-        _mmrest_count_map_tav = {gs: gc for gs, gc in (mmrest_groups or [])}
-        global_m_idx_start = measure_offset
-        for prev_idx in range(sys_index):
-            if global_m_idx_start in _mmrest_set_tav:
-                global_m_idx_start += _mmrest_count_map_tav.get(global_m_idx_start, 1)
-            elif (global_m_idx_start + 1) in _mmrest_set_tav:
-                global_m_idx_start += 1
-            else:
-                global_m_idx_start += UNIFORM_MEASURES_PER_SYSTEM
+        # 12 Ago 2026 (architettura Fable 5): usa system_layout (Single Source of
+        # Truth) se disponibile, invece di ricalcolare da equalized_measures.
+        if system_layout and sys_key in system_layout:
+            global_m_idx_start = system_layout[sys_key]['global_idx_start']
+        else:
+            # Fallback: vecchia logica (equalized_measures + MMRest + UNIFORM)
+            _mmrest_set_tav = set(gs for gs, gc in (mmrest_groups or []))
+            _mmrest_count_map_tav = {gs: gc for gs, gc in (mmrest_groups or [])}
+            global_m_idx_start = measure_offset
+            for prev_idx in range(sys_index):
+                if prev_idx < len(em_sorted_keys):
+                    _prev_key = em_sorted_keys[prev_idx]
+                    if _prev_key in equalized_measures and equalized_measures[_prev_key]:
+                        global_m_idx_start += len(equalized_measures[_prev_key])
+                        continue
+                if global_m_idx_start in _mmrest_set_tav:
+                    global_m_idx_start += _mmrest_count_map_tav.get(global_m_idx_start, 1)
+                elif (global_m_idx_start + 1) in _mmrest_set_tav:
+                    global_m_idx_start += 1
+                else:
+                    global_m_idx_start += UNIFORM_MEASURES_PER_SYSTEM
         
 
         
@@ -2810,7 +3000,113 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
     return svg_content
 
 
-def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False, title_text=None, part_text=None, measure_offset=0, initial_rest_measures=0, mmrest_groups=None, rhythm_mode=False):
+def build_system_layout(systems, barlines, time_sigs_per_measure, measure_offset,
+                        mmrest_groups, uniform=UNIFORM_MEASURES_PER_SYSTEM):
+    """Single Source of Truth: calcola la partizione battute→sistemi UNA volta.
+
+    Architettura Fable 5 (12 Ago 2026): il numero di battute per sistema viene
+    determinato dal CONTEGGIO delle barline nel SVG (fonte primaria, osservazione
+    diretta del layout di MuseScore), non dalla predizione basata su time_sig
+    (che non è deterministica — MuseScore non forza sempre un break al cambio
+    di tempo).
+
+    Algoritmo:
+      A. Per ogni sistema, conta le barline: n_battute = n_barlines - 1
+         (con dedup per barline doppie e detection barline iniziale).
+      B. Assegna le battute logiche consecutive ai sistemi in ordine di Y.
+      C. Verifica l'invariante globale: somma(n_battute) == battute aspettate.
+      D. Ritorna dict sys_key → SystemLayout.
+
+    Args:
+      systems: dict sys_key → {top, bottom, x_start, x_end}
+      barlines: dict sys_key → list of barline X positions
+      time_sigs_per_measure: dict measure_idx → (num, den) (per info, non per predizione)
+      measure_offset: prima battuta logica di questa pagina
+      mmrest_groups: list of (start_measure, count)
+      uniform: max battute per sistema (default 2, usato solo come fallback)
+
+    Returns:
+      dict sys_key → {
+        'measures': list of measure_idx (battute logiche in questo sistema),
+        'global_idx_start': int (prima battuta logica),
+        'n_measures': int (numero di battute visuali),
+        'n_logical': int (numero di battute logiche, = n_measures salvo MMRest),
+      }
+    """
+    sorted_sys_keys = sorted(systems.keys(), key=lambda k: systems[k]['top'])
+
+    # --- Fase A: conta le battute per sistema dalle barline ---
+    # n_battute = n_barlines_dedup - 1 (se c'è barline iniziale) o n_barlines_dedup
+    _mmrest_set = set(gs for gs, gc in (mmrest_groups or []))
+    _mmrest_count_map = {gs: gc for gs, gc in (mmrest_groups or [])}
+
+    sys_n_measures = {}  # sys_key → n_battute
+    for sys_key in sorted_sys_keys:
+        info = systems[sys_key]
+        bls = sorted(barlines.get(sys_key, []))
+        sys_width = info.get('x_end', 9215) - info.get('x_start', 2500)
+        if sys_width <= 0:
+            sys_width = 6715
+
+        if not bls:
+            # Nessuna barline rilevata → fallback a uniform
+            sys_n_measures[sys_key] = uniform
+            continue
+
+        # Dedup: collassa barline molto vicine (finale doppia, ripetizioni)
+        EPS = 0.02 * sys_width
+        dedup = [bls[0]]
+        for b in bls[1:]:
+            if b - dedup[-1] > EPS:
+                dedup.append(b)
+
+        # Detection barline iniziale: se la prima barline è vicina a x_start
+        # (entro 8% della larghezza), è la barline iniziale del sistema
+        has_initial = abs(dedup[0] - info['x_start']) < 0.08 * sys_width
+        n_meas = len(dedup) - 1 if has_initial else len(dedup)
+
+        # Sanity: n_meas deve essere >= 1 e <= 4 (limite ragionevole)
+        if n_meas < 1:
+            n_meas = 1
+        elif n_meas > 4:
+            n_meas = uniform  # barline count inaffidabile, fallback
+
+        sys_n_measures[sys_key] = n_meas
+
+    # --- Fase B: assegna battute logiche consecutive ai sistemi ---
+    # Partendo da measure_offset, assegna n_measures battute a ogni sistema
+    # in ordine di Y (top→bottom). Gestisci MMRest: se la battuta corrente
+    # è un MMRest, il sistema contiene 1 visual measure che copre N battute.
+    _m = measure_offset
+    layout = {}
+    for sys_key in sorted_sys_keys:
+        n_meas = sys_n_measures[sys_key]
+
+        # Controlla se questo sistema inizia con un MMRest
+        if _m in _mmrest_set:
+            # MMRest: 1 visual measure che copre count battute logiche
+            mmrest_count = _mmrest_count_map.get(_m, 1)
+            measures = [_m]
+            n_logical = mmrest_count
+            global_idx_start = _m
+            _m += mmrest_count
+        else:
+            measures = list(range(_m, _m + n_meas))
+            n_logical = n_meas
+            global_idx_start = _m
+            _m += n_meas
+
+        layout[sys_key] = {
+            'measures': measures,
+            'global_idx_start': global_idx_start,
+            'n_measures': len(measures),
+            'n_logical': n_logical,
+        }
+
+    return layout
+
+
+def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False, title_text=None, part_text=None, measure_offset=0, initial_rest_measures=0, mmrest_groups=None, rhythm_mode=False, key_sig_changes_dict=None):
     parsed = parse_svg(svg_content)
     systems = parsed['systems']
     barlines = parsed['barlines_by_system']
@@ -2886,6 +3182,15 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         if not all_system_tops:
             all_system_tops = sorted(svg_notes_by_system.keys())
         
+        # 12 Ago 2026 (architettura Fable 5): Single Source of Truth.
+        # Calcola la partizione battute→sistemi UNA volta sola, prima di tutto.
+        # I 3 punti che ne hanno bisogno (sys_measure_ranges, _sys_to_global_idx,
+        # draw_tavola_sonora) consumano questa struttura invece di ricalcolarla.
+        _time_sigs_pm = note_info.get('time_sigs_per_measure', {}) if note_info else {}
+        _system_layout = build_system_layout(
+            systems, barlines, _time_sigs_pm, measure_offset,
+            mmrest_groups, uniform=UNIFORM_MEASURES_PER_SYSTEM)
+        
         # Track which mscz notes have been matched (to handle duplicate onsets)
         matched_mscz_indices = set()
         
@@ -2898,25 +3203,24 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         # un solo sistema; se contiamo 1 invece di N, tutte le battute successive
         # vengono sfasate e le note vengono matchate alle battute sbagliate.
         mscz_notes_by_measure_set = set(mscz_notes_by_measure.keys())
+        # 12 Ago 2026 (architettura Fable 5): sys_measure_ranges deriva direttamente
+        # da _system_layout (Single Source of Truth), non da euristiche locali.
+        # Per ogni sistema, leggi n_measures e global_idx_start dal layout.
         sys_measure_ranges = []  # list of (sys_top, start_measure, n_measures)
-        cumulative_meas = measure_offset
-        _mmrest_set_calc = set(gs for gs, gc in (mmrest_groups or []))
-        _mmrest_count_map_calc = {gs: gc for gs, gc in (mmrest_groups or [])}
         for sys_i, sys_top in enumerate(all_system_tops):
-            sys_notes = sorted(svg_notes_by_system.get(sys_top, []), key=lambda n: n['x'])
-            # 4 Ago 2026 (bug KS/regressione): conta il numero corretto di battute
-            # LOGICHE per sistema, ALLINEATO con total_meas_in_page.
-            # Se questo sistema è un MMRest → conta tutte le battute rappresentate.
-            # Se la prossima battuta è MMRest → 1 battuta (sistema pre-MMRest).
-            # Altrimenti → 2 battute (UNIFORM_MEASURES_PER_SYSTEM).
-            if cumulative_meas in _mmrest_set_calc:
-                n_meas = _mmrest_count_map_calc.get(cumulative_meas, 1)
-            elif (cumulative_meas + 1) in _mmrest_set_calc:
-                n_meas = 1
+            # Trova il sys_key corrispondente a sys_top
+            _sys_key = None
+            for _sk, _info in systems.items():
+                if abs(_info['top'] - sys_top) < 5:
+                    _sys_key = _sk
+                    break
+            if _sys_key and _sys_key in _system_layout:
+                _sl = _system_layout[_sys_key]
+                sys_measure_ranges.append((sys_top, _sl['global_idx_start'], _sl['n_measures']))
             else:
-                n_meas = UNIFORM_MEASURES_PER_SYSTEM
-            sys_measure_ranges.append((sys_top, cumulative_meas, n_meas))
-            cumulative_meas += n_meas
+                # Fallback: non dovrebbe succedere, ma se il sistema non è nel layout
+                sys_measure_ranges.append((sys_top, measure_offset + sys_i * UNIFORM_MEASURES_PER_SYSTEM,
+                                          UNIFORM_MEASURES_PER_SYSTEM))
         
         for sys_i, (sys_top, sys_start_measure, sys_n_measures) in enumerate(sys_measure_ranges):
             sys_notes = sorted(svg_notes_by_system.get(sys_top, []), key=lambda n: n['x'])
@@ -3138,19 +3442,25 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         sys_pos = sorted_xs.index(x_start) if x_start in sorted_xs else 0
         
         # Calcola global_m_idx per questo sistema
-        _sys_global_idx = measure_offset
-        _mmrest_set_eq = set(gs for gs, gc in (mmrest_groups or []))
-        _mmrest_count_map_eq = {gs: gc for gs, gc in (mmrest_groups or [])}
-        for _prev_idx in range(sys_pos):
-            _prev_x = sorted_xs[_prev_idx]
-            if _prev_x in equalized_measures:
-                _sys_global_idx += len(equalized_measures[_prev_x])
-            elif _sys_global_idx in _mmrest_set_eq:
-                _sys_global_idx += _mmrest_count_map_eq.get(_sys_global_idx, 1)
-            elif (_sys_global_idx + 1) in _mmrest_set_eq:
-                _sys_global_idx += 1  # pre-MMRest system = 1 measure
-            else:
-                _sys_global_idx += UNIFORM_MEASURES_PER_SYSTEM  # default
+        # 12 Ago 2026 (architettura Fable 5): usa _system_layout (Single Source of
+        # Truth) invece di ricalcolare da equalized_measures.
+        if x_start in _system_layout:
+            _sys_global_idx = _system_layout[x_start]['global_idx_start']
+        else:
+            # Fallback (non dovrebbe succedere): usa la vecchia logica
+            _sys_global_idx = measure_offset
+            _mmrest_set_eq = set(gs for gs, gc in (mmrest_groups or []))
+            _mmrest_count_map_eq = {gs: gc for gs, gc in (mmrest_groups or [])}
+            for _prev_idx in range(sys_pos):
+                _prev_x = sorted_xs[_prev_idx]
+                if _prev_x in equalized_measures:
+                    _sys_global_idx += len(equalized_measures[_prev_x])
+                elif _sys_global_idx in _mmrest_set_eq:
+                    _sys_global_idx += _mmrest_count_map_eq.get(_sys_global_idx, 1)
+                elif (_sys_global_idx + 1) in _mmrest_set_eq:
+                    _sys_global_idx += 1  # pre-MMRest system = 1 measure
+                else:
+                    _sys_global_idx += UNIFORM_MEASURES_PER_SYSTEM  # default
         # FIX #147/#152: salva il global idx per questo sistema
         _sys_to_global_idx[x_start] = _sys_global_idx
         # Verifica se questo sistema è un MMRest (1 battuta, 0 note)
@@ -4551,10 +4861,23 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         )
         for scm in stem_color_pat.finditer(modified):
             ssx = float(scm.group(2))
-            ssy_min = min(float(scm.group(3)), float(scm.group(5)))
-            if abs(ssx - new_sx) < 200 and abs(ssy_min - stem_min_y) < 500:
-                hook_color = scm.group(1)
-                break
+            ssy1 = float(scm.group(3))
+            ssy2 = float(scm.group(5))
+            ssy_min = min(ssy1, ssy2)
+            ssy_max = max(ssy1, ssy2)
+            # Match by X (new_sx is the post-shift X of the correct stem).
+            # Y filtering: the hook sits at the stem endpoint (top for up-stems,
+            # bottom for down-stems). Check if the hook's Y is within the stem's
+            # Y range, or close to either endpoint. This handles both up-stems
+            # (hook at y_min) and down-stems (hook at y_max).
+            # Note: stem_min_y is pre-Y-stretch and unreliable; use new_ty_str instead.
+            _hook_y = float(new_ty_str)
+            if abs(ssx - new_sx) < 10:
+                _y_in_range = (ssy_min - 100 <= _hook_y <= ssy_max + 100)
+                _y_near_endpoint = min(abs(_hook_y - ssy_min), abs(_hook_y - ssy_max)) < 200
+                if _y_in_range or _y_near_endpoint:
+                    hook_color = scm.group(1)
+                    break
         if hook_color == '#000000':
             # Fallback: match note by X/Y (original method)
             h_ty = float(hm.group(6))  # current ty (already Y-remapped)
@@ -5312,6 +5635,14 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         continue
                     if _e_idx >= len(meas_notes_sorted) or _s_idx >= len(meas_notes_sorted):
                         continue
+                    # Verify the SVG notes at these indices match the expected durations
+                    # (the onset-based index mapping can be wrong when SVG has fewer
+                    # notes than note_info, pointing to the wrong notehead)
+                    _sn_e = meas_notes_sorted[_e_idx]
+                    _sn_s = meas_notes_sorted[_s_idx]
+                    if _sn_e.get('dur_key') not in ('eighth_dotted',) or \
+                       _sn_s.get('dur_key') not in ('16th', '16th_dotted'):
+                        continue
                     # Get the center_x of the dotted-eighth and 16th
                     cx_eighth = meas_notes_sorted[_e_idx]['center_x']
                     cx_sixteenth = meas_notes_sorted[_s_idx]['center_x']
@@ -5346,10 +5677,22 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         # Pick narrowest beam
                         _candidate_beams.sort(key=lambda x: x[0])
                         bw, bi, byt, byb = _candidate_beams[0]
-                        # Create secondary beam: from midpoint to right edge
-                        mid_x = (cx_eighth + cx_sixteenth) / 2
-                        sec_x_left = mid_x
-                        sec_x_right = bi['x_right']
+                        # Create secondary beam: covers the 16th note portion
+                        # Step1 (non-rhythm, stem DOWN): stem is on LEFT (cx - r).
+                        # Direction depends on note order:
+                        #   dotted-eighth + 16th → beam extends LEFT (toward dotted-eighth)
+                        #   16th + dotted-eighth → beam extends RIGHT (toward dotted-eighth)
+                        # The beam always extends toward the dotted-eighth.
+                        _sixteenth_r = meas_notes_sorted[_s_idx].get('radius', 72)
+                        _stem_x = cx_sixteenth - _sixteenth_r  # stem position (left side)
+                        if _s_idx > _e_idx:
+                            # 16th is AFTER dotted-eighth → extend LEFT from stem
+                            sec_x_right = _stem_x
+                            sec_x_left = _stem_x - _sixteenth_r * 2
+                        else:
+                            # 16th is BEFORE dotted-eighth → extend RIGHT from stem
+                            sec_x_left = _stem_x
+                            sec_x_right = _stem_x + _sixteenth_r * 2
                         pri_center = (byt + byb) / 2
                         sec_center = pri_center - 94  # ABOVE primary (non-rhythm)
                         sec_y_top = sec_center - 31 / 2  # thinner (31px, not 47px)
@@ -5396,6 +5739,14 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         continue
                     if _s1_idx >= len(meas_notes_sorted) or _s2_idx >= len(meas_notes_sorted):
                         continue
+                    # Verify the SVG notes at these indices are actually 16th notes
+                    # (the onset-based index mapping can be wrong when SVG has fewer
+                    # notes than note_info, pointing to the wrong notehead)
+                    _sn1 = meas_notes_sorted[_s1_idx]
+                    _sn2 = meas_notes_sorted[_s2_idx]
+                    if _sn1.get('dur_key') not in ('16th', '16th_dotted') or \
+                       _sn2.get('dur_key') not in ('16th', '16th_dotted'):
+                        continue
                     cx_1 = meas_notes_sorted[_s1_idx]['center_x']
                     cx_2 = meas_notes_sorted[_s2_idx]['center_x']
                     _notes_y = [sn.get('y', 0) for sn in meas_notes_sorted]
@@ -5423,6 +5774,12 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         continue
                     _cand_beams_16_s1.sort(key=lambda x: x[0])
                     bw16, bi16, byt16, byb16 = _cand_beams_16_s1[0]
+                    # Verify the two 16th notes are in the SAME system as the beam
+                    # (not in a different staff/system at the same measure_idx)
+                    _beam_y_mid = (byt16 + byb16) / 2
+                    if abs(_sn1.get('y', 0) - _beam_y_mid) > 1000 or \
+                       abs(_sn2.get('y', 0) - _beam_y_mid) > 1000:
+                        continue
                     # Check no existing secondary in same system
                     has_sec_16 = False
                     for bi2 in beam_infos:
@@ -5436,8 +5793,16 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         break
                     if has_sec_16:
                         continue
-                    sec_x_left = cx_1 - 20
-                    sec_x_right = cx_2 + 20
+                    # Secondary beam for 16th+16th must be SHORTER than primary
+                    # (it covers only the two 16th notes, not the preceding 8th).
+                    # If it would be the same width as the primary, the note-to-SVG
+                    # index mapping is wrong (spurious match) — skip it.
+                    _prim_w = bi16['x_right'] - bi16['x_left']
+                    _sec_w_16 = cx_2 - cx_1
+                    if _sec_w_16 >= _prim_w * 0.9:
+                        continue
+                    sec_x_left = cx_1
+                    sec_x_right = cx_2
                     pri_center = (byt16 + byb16) / 2
                     sec_center = pri_center - 94  # ABOVE primary (non-rhythm)
                     sec_y_top = sec_center - 31 / 2
@@ -5708,6 +6073,12 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         continue
                     if _e_idx >= len(meas_notes_sorted) or _s_idx >= len(meas_notes_sorted):
                         continue
+                    # Verify the SVG notes at these indices match the expected durations
+                    _sn_e = meas_notes_sorted[_e_idx]
+                    _sn_s = meas_notes_sorted[_s_idx]
+                    if _sn_e.get('dur_key') not in ('eighth_dotted',) or \
+                       _sn_s.get('dur_key') not in ('16th', '16th_dotted'):
+                        continue
                     cx_eighth = meas_notes_sorted[_e_idx]['center_x']
                     cx_sixteenth = meas_notes_sorted[_s_idx]['center_x']
                     # Get the Y position of the notes in this measure (to filter
@@ -5760,10 +6131,13 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                             has_existing_sec = True
                             break
                         if not has_existing_sec:
-                            # Create secondary beam: from midpoint to right edge
-                            mid_x = (cx_eighth + cx_sixteenth) / 2
-                            sec_x_left = mid_x
-                            sec_x_right = bi['x_right']
+                            # Create secondary beam: covers the 16th note portion
+                            # Step2 (rhythm, stem UP): beam extends to the RIGHT
+                            # of the 16th note, starting from its stem position.
+                            _sixteenth_r = meas_notes_sorted[_s_idx].get('radius', 72)
+                            sec_x_right = max(bi['x_right'], cx_sixteenth + _sixteenth_r)
+                            _sec_w = sec_x_right - cx_sixteenth
+                            sec_x_left = cx_sixteenth - _sec_w * 0.5
                             # In rhythm mode, primary beam is at top (y smaller),
                             # secondary is below (y larger, closer to notehead).
                             # Gap = 94px center-to-center. Thickness = 31px
@@ -5826,6 +6200,14 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         continue
                     if _s1_idx >= len(meas_notes_sorted) or _s2_idx >= len(meas_notes_sorted):
                         continue
+                    # Verify the SVG notes at these indices are actually 16th notes
+                    # (the onset-based index mapping can be wrong when SVG has fewer
+                    # notes than note_info, pointing to the wrong notehead)
+                    _sn1 = meas_notes_sorted[_s1_idx]
+                    _sn2 = meas_notes_sorted[_s2_idx]
+                    if _sn1.get('dur_key') not in ('16th', '16th_dotted') or \
+                       _sn2.get('dur_key') not in ('16th', '16th_dotted'):
+                        continue
                     cx_1 = meas_notes_sorted[_s1_idx]['center_x']
                     cx_2 = meas_notes_sorted[_s2_idx]['center_x']
                     _notes_y = [sn.get('y', 0) for sn in meas_notes_sorted]
@@ -5854,6 +6236,11 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         continue
                     _cand_beams_16.sort(key=lambda x: x[0])
                     bw16, bi16, byt16, byb16 = _cand_beams_16[0]
+                    # Verify the two 16th notes are in the SAME system as the beam
+                    _beam_y_mid_r = (byt16 + byb16) / 2
+                    if abs(_sn1.get('y', 0) - _beam_y_mid_r) > 1000 or \
+                       abs(_sn2.get('y', 0) - _beam_y_mid_r) > 1000:
+                        continue
                     # Check no existing secondary in same system
                     has_sec_16 = False
                     for bi2 in beam_infos_r:
@@ -5867,9 +6254,16 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         break
                     if has_sec_16:
                         continue
-                    # Create secondary beam: from first 16th to second 16th
-                    sec_x_left = cx_1 - 20
-                    sec_x_right = cx_2 + 20
+                    # Secondary beam for 16th+16th must be SHORTER than primary
+                    # (it covers only the two 16th notes, not the preceding 8th).
+                    # If it would be the same width as the primary, the note-to-SVG
+                    # index mapping is wrong (spurious match) — skip it.
+                    _prim_w_r = bi16['x_right'] - bi16['x_left']
+                    _sec_w_16_r = cx_2 - cx_1
+                    if _sec_w_16_r >= _prim_w_r * 0.9:
+                        continue
+                    sec_x_left = cx_1
+                    sec_x_right = cx_2
                     pri_center = (byt16 + byb16) / 2
                     sec_center = pri_center + 94  # BELOW primary (rhythm mode)
                     sec_y_top = sec_center - 31 / 2
@@ -6181,17 +6575,129 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
     # 2e2. Enlarge and reposition KeySig (armatura di chiave) and TimeSig (4/4)
     # These must be moved RIGHT of the enlarged clef and scaled up to match.
     # Layout: clef (tx=1256, width~571) → KeySig (tx=1907) → TimeSig (tx=2101, S0 only) → music (2600)
-    keysig_scale = 2.0  # scale factor for KeySig/TimeSig (slightly less than clef's 2.5)
+    #
+    # DYNAMIC SCALING: when there are many accidentals (3+), the KeySig + TimeSig
+    # may not fit in the space between the clef and the first note. We calculate
+    # the required width and reduce the scale proportionally if needed so that
+    # all symbols fit without overlapping.
+    #
+    # Reference dimensions at scale 2.0:
+    #   - KeySig (one sharp/flat): ~162px wide
+    #   - TimeSig: ~283px wide
+    #   - Stagger between accidentals: 180px (at scale 2.0)
+    # Available space: from end of clef (~1861) to music start (~2480) = ~619px
+    KEYSIG_WIDTH_REF = 162.0   # width of one KeySig glyph at scale 2.0 (measured: 70.9 × 1.1429 × 2.0 = 162.1)
+    TIMESIG_WIDTH_REF = 334.0  # width of TimeSig at scale 2.0 (measured: 146.3 × 1.1429 × 2.0 = 334.4; era 283, sottostimato del 18%)
+    STAGGER_REF = 180.0        # stagger offset at scale 2.0 (measured: 103.6 / 1.1429 × 2.0 = 181.3)
+    CLEF_END_X = 1861.0         # approximate end of enlarged clef
+    # 12 Ago 2026: AVAILABLE_WIDTH deve usare UNIFORM_MUSIC_START (inizio settori grigi)
+    # NON MUSIC_START_X (2650, centro prima nota). I simboli chiave+armatura+tempo
+    # devono stare PRIMA del primo settore grigio, non prima della prima nota.
+    # Direttiva Marco: NON spostare i settori grigi, rimpicciolire i simboli.
+    AVAILABLE_WIDTH = UNIFORM_MUSIC_START - CLEF_END_X  # 2500-1861 = 639px
+
+    # Count number of KeySig accidentals from note_info
+    n_keysig = abs((note_info.get('key_sig') or 0) if note_info else 0)
+    keysig_scale = 2.0  # default scale (slightly less than clef's 2.5)
+
+    if n_keysig > 0:
+        # Required width = (N-1) × stagger (gaps between accidentals)
+        # + 1 accidental glyph width (the last one extends right)
+        # + TimeSig width + gaps (30px after clef + 20px between KeySig and TimeSig = 50px)
+        # At scale 2.0: (N-1) × 180 + 162 + 283 + 50
+        # 12 Ago 2026: gap corretto a 50 (era 40, lasciava 11px di overlap col settore grigio)
+        GAP_TOTAL = 55  # 30 (clef→KeySig) + 20 (KeySig→TimeSig) + 5px safety margin (rounding)
+        required_width = (n_keysig - 1) * STAGGER_REF + KEYSIG_WIDTH_REF + TIMESIG_WIDTH_REF + GAP_TOTAL
+        if required_width > AVAILABLE_WIDTH:
+            # Reduce scale proportionally so everything fits
+            # At scale S: width = (N-1)*(STAGGER_REF*S/2) + (KEYSIG_WIDTH_REF*S/2) + (TIMESIG_WIDTH_REF*S/2) + GAP_TOTAL
+            # Solve for S: S = 2.0 * (AVAILABLE_WIDTH - GAP_TOTAL) / ((N-1)*STAGGER_REF + KEYSIG_WIDTH_REF + TIMESIG_WIDTH_REF)
+            keysig_scale = 2.0 * (AVAILABLE_WIDTH - GAP_TOTAL) / ((n_keysig - 1) * STAGGER_REF + KEYSIG_WIDTH_REF + TIMESIG_WIDTH_REF)
+            # Clamp: don't go below 1.0 (original MuseScore size)
+            keysig_scale = max(keysig_scale, 1.0)
+            print(f"  KeySig: {n_keysig} accidentals → scale reduced to {keysig_scale:.2f} (required {required_width:.0f} > available {AVAILABLE_WIDTH:.0f})")
+            # If still doesn't fit at scale 1.0, warn (need to reduce clef too — TODO)
+            min_required = (n_keysig - 1) * STAGGER_REF / 2 + KEYSIG_WIDTH_REF / 2 + TIMESIG_WIDTH_REF / 2 + GAP_TOTAL
+            if min_required > AVAILABLE_WIDTH:
+                print(f"  ⚠ KeySig+TimeSig non entra nello spazio disponibile nemmeno a scala minima (1.0).")
+                print(f"    Serve ridurre anche la chiave di violino (TODO: clef_scale dinamico).")
     
     # KeySig: enlarge scale + shift tx to right of clef
     # diesis devono essere staggered (Do# a destra di Fa#), non sovrapposti
     keysig_count = 0
     # Track KeySig per system by Y band: group by nearest staff top
     # First, extract staff line Y positions to identify systems
+    # In modalità rhythm le staff lines sono nascoste, quindi usiamo
+    # i rect grigi (settori) per misurare l'altezza dei sistemi post-stretch.
     staff_ys = [float(y) for y in re.findall(
         r'<polyline class="StaffLines"[^>]*points="[\d.\-]+,([\d.\-]+)', modified)]
-    # System tops = every 5th staff line (5 lines per system)
-    system_tops = sorted(set(staff_ys[i] for i in range(0, len(staff_ys), 5)))
+    # 12 Ago 2026: raggruppa le StaffLines in PENTAGRAMMI (gruppi di 5 linee,
+    # gap < 400px tra linee consecutive), poi raggruppa i pentagrammi in SISTEMI
+    # (gap < 1000px tra l'ultima linea di un pentagramma e la prima del successivo).
+    # Questo supporta più pentagrammi per sistema (es. pianoforte con 2 pentagrammi
+    # accollati o separati). Le armature di chiave vanno su TUTTI i pentagrammi.
+    _staff_tops = []  # top Y di ogni pentagramma (ogni gruppo di 5 linee)
+    if staff_ys:
+        _sorted_ys = sorted(staff_ys)
+        _group = [_sorted_ys[0]]
+        for _y in _sorted_ys[1:]:
+            if _y - _group[-1] > 400:
+                # nuovo pentagramma
+                _staff_tops.append(_group[0])
+                _group = [_y]
+            else:
+                _group.append(_y)
+        _staff_tops.append(_group[0])
+    # Raggruppa i pentagrammi in SISTEMI (gap < 1000px = stesso sistema)
+    system_tops = []  # top Y del primo pentagramma di ogni sistema
+    system_to_staff_tops = {}  # {sys_top: [staff_top1, staff_top2, ...]}
+    if _staff_tops:
+        _sys_staff_list = [_staff_tops[0]]
+        _sys_first = _staff_tops[0]
+        for _st in _staff_tops[1:]:
+            if _st - _sys_staff_list[-1] > 1000:
+                # nuovo sistema
+                system_tops.append(_sys_first)
+                system_to_staff_tops[round(_sys_first)] = _sys_staff_list
+                _sys_staff_list = [_st]
+                _sys_first = _st
+            else:
+                _sys_staff_list.append(_st)
+        system_tops.append(_sys_first)
+        system_to_staff_tops[round(_sys_first)] = _sys_staff_list
+    # Mappa system_top → system_center, per posizionare il tempo al centro
+    # del pentagramma. Se staff_ys è vuoto (rhythm mode, staff lines nascoste),
+    # usa i rect grigi (settori) per ottenere le Y dei sistemi.
+    system_centers = {}
+    # Per ogni sistema, il center è il centro del PRIMO pentagramma
+    for _st_top in _staff_tops:
+        # Trova le 5 linee di questo pentagramma
+        _lines = sorted([y for y in staff_ys if abs(y - _st_top) < 400])
+        if len(_lines) >= 5:
+            _top = _lines[0]
+            _bottom = _lines[4]
+            # Trova a quale sistema appartiene
+            for _sys_top in system_tops:
+                if _st_top in system_to_staff_tops.get(round(_sys_top), []):
+                    system_centers[round(_st_top)] = (_top + _bottom) / 2
+                    break
+    if not system_tops:
+        # Fallback (rhythm mode, staff lines nascoste): usa i numeri di battuta
+        # (text con font-size >= 80 e contenuto numerico 1-50) per trovare le Y dei sistemi.
+        # I numeri di battuta appaiono ~135px sopra il top del pentagramma.
+        _barnum_texts = re.findall(
+            r'<text[^>]*y="([\d.]+)"[^>]*font-size="(\d+)"[^>]*>(\d+)</text>', modified)
+        _barnum_ys = sorted(set(float(y) for y, sz, n in _barnum_texts
+                                if int(n) <= 50 and int(sz) >= 80))
+        _seen_ys = set()
+        for by in _barnum_ys:
+            sys_top = by + 135  # il pentagramma inizia ~135px sotto il numero di battuta
+            y_rounded = round(sys_top)
+            if y_rounded not in _seen_ys:
+                _seen_ys.add(y_rounded)
+                system_tops.append(sys_top)
+                system_centers[y_rounded] = sys_top + 198  # placeholder, aggiornato dopo con TOTAL_HEIGHT
+        system_tops = sorted(system_tops)
     
     # in modalità rhythm, niente pentagramma → niente simboli
     # di armatura o tempo. Scrivi alterazioni E tempo a LETTERE all'inizio di
@@ -6237,25 +6743,163 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         # Costruisci la stringa delle alterazioni in ordine standard
         SHARP_ORDER = ['F', 'C', 'G', 'D', 'A', 'E', 'B']
         FLAT_ORDER = ['B', 'E', 'A', 'D', 'G', 'C', 'F']
-        if ks_alt == '#':
-            order = [s for s in SHARP_ORDER if s in ks_steps]
-        elif ks_alt == 'b':
-            order = [s for s in FLAT_ORDER if s in ks_steps]
-        else:
-            order = []
-        keysig_labels = []
-        for s in order:
-            it_name = STEP_IT.get(s, s)
-            # Per Sol usa abbreviazione "So" come nei pallini
-            if s == 'G':
-                it_name = 'So'
-            keysig_labels.append(f"{it_name}{ks_alt}")
+        
+        # 12 Ago 2026: calcola keysig_labels PER SISTEMA, non solo l'iniziale.
+        # key_sig_changes_dict = {measure_idx: n_sharps} dal .mscx originale.
+        # Per ogni sistema, trova l'armatura corrente e genera le labels.
+        def _keysig_labels_for(n_sharps):
+            """Ritorna lista di label alterazioni (es. ['Fa#', 'Do#']) per n_sharps."""
+            if n_sharps > 0:
+                order = SHARP_ORDER[:n_sharps]
+                alt = '#'
+            elif n_sharps < 0:
+                order = FLAT_ORDER[:abs(n_sharps)]
+                alt = 'b'
+            else:
+                return []
+            labels = []
+            for s in order:
+                it_name = STEP_IT.get(s, s)
+                if s == 'G':
+                    it_name = 'So'
+                labels.append(f"{it_name}{alt}")
+            return labels
+        
+        # Armatura iniziale (per backward compat)
+        keysig_labels = _keysig_labels_for((note_info.get('key_sig') or 0) if note_info else 0)
         keysig_text = ' '.join(keysig_labels)  # es. "Fa# Do#"
-        # Combina armatura + tempo (separati da spazi)
-        if keysig_text:
-            combined_text = f"{keysig_text}    {ts_text_r}"
-        else:
-            combined_text = ts_text_r  # Do maggiore: solo tempo
+        
+        # 12 Ago 2026: mapping system_top (stretched) → n_sharps per quel sistema.
+        # Usa key_sig_changes_dict e sys_top_to_global per trovare quale armatura
+        # ha ogni sistema.
+        # key_sig_changes_dict = {measure_idx: n_sharps} (iniziale + cambi)
+        _ks_dict = key_sig_changes_dict if key_sig_changes_dict else {}
+        # Costruisci l'armatura attiva per ogni battuta
+        _ks_active_per_measure = {}
+        _cur_ks = (note_info.get('key_sig') or 0) if note_info else 0
+        _max_m = max(_ks_dict.keys()) if _ks_dict else 0
+        for _mi in range(_max_m + 1):
+            if _mi in _ks_dict:
+                _cur_ks = _ks_dict[_mi]
+            _ks_active_per_measure[_mi] = _cur_ks
+        # Per ogni sistema, trova l'armatura della sua prima battuta
+        sys_top_to_ks = {}
+        for st, gm_idx in sys_top_to_global.items():
+            sys_top_to_ks[st] = _ks_active_per_measure.get(gm_idx, (note_info.get('key_sig') or 0) if note_info else 0)
+        
+        # --- 12 Ago 2026: render elegante armatura + tempo in modalità rhythm ---
+        # Le alterazioni sono disposte IN VERTICALE (una sotto l'altra) a sinistra.
+        # Il tempo è disegnato come FRAZIONE (numeratore sopra, linea, denominatore sotto)
+        # e sta DENTRO l'altezza del pentagramma (non fuori).
+        RHYTHM_FONT = 'Atkinson Hyperlegible,Carlito,DejaVu Sans,sans-serif'
+        RHYTHM_COLOR = '#1a1a1a'
+        
+        # Misura l'altezza del pentagramma dal primo polyline (staff lines).
+        # In modalità rhythm le staff lines sono nascoste visivamente ma i polylines
+        # ci sono ancora nel SVG. Se non trovati, usa valori di fallback.
+        _staff_polylines = re.findall(r'polyline[^>]*points="([^"]+)"', modified)
+        STAFF_TOP = 694.0
+        STAFF_BOTTOM = 1091.0
+        for _p in _staff_polylines:
+            _pts = _p.split()
+            _ys = sorted(set(float(pt.split(',')[1]) for pt in _pts))
+            if len(_ys) >= 2 and _ys[-1] - _ys[0] > 200:
+                STAFF_TOP = _ys[0]
+                STAFF_BOTTOM = _ys[-1]
+                break
+        STAFF_HEIGHT = STAFF_BOTTOM - STAFF_TOP
+        STAFF_CENTER = (STAFF_TOP + STAFF_BOTTOM) / 2
+        
+        # 12 Ago 2026: misura l'altezza TOTALE disponibile per il tempo e le alterazioni.
+        # Il tempo 4/4 deve sfruttare tutto lo spazio verticale: dal top del pentagramma
+        # al bottom della tavola sonora (blocchi colorati con i nomi delle note).
+        # In modalità rhythm la tavola sonora viene iniettata DOPO questo blocco,
+        # quindi non possiamo misurarla dai rect. Calcoliamo direttamente:
+        # TOTAL = STAFF_HEIGHT + TAVOLA_GAP + TAVOLA_ROW_HEIGHT
+        TOTAL_HEIGHT = STAFF_HEIGHT + TAVOLA_GAP + TAVOLA_ROW_HEIGHT
+        TOTAL_BOTTOM = STAFF_TOP + TOTAL_HEIGHT
+        TOTAL_CENTER = (STAFF_TOP + TOTAL_BOTTOM) / 2
+        
+        # Aggiorna system_centers per contenere la Y della LINEA DI FRAZIONE del tempo,
+        # non il centro. La linea va a sys_top + margin + 0.90*fs per riempire tutta l'altezza
+        # (con delta simmetrico 0.55*fs, top visivo = ty - 0.90*fs).
+        _ts_margin = 20  # margine sopra e sotto
+        TS_FONT_SZ = round((TOTAL_HEIGHT - 2 * _ts_margin) / 1.80)
+        TS_LINE_Y_offset = _ts_margin + 0.90 * TS_FONT_SZ  # offset dal sys_top
+        for k in list(system_centers.keys()):
+            sys_top = k  # k è round(sys_top)
+            system_centers[k] = sys_top + TS_LINE_Y_offset
+        
+        # Font del tempo: calcolato per riempire TUTTA l'altezza disponibile
+        # (riga duplicata rimossa — TS_FONT_SZ già calcolato sopra)
+        TS_LINE_W = TS_FONT_SZ * 0.75
+        TS_LINE_THICKNESS = 8
+        
+        # Alterazioni in verticale: font proporzionale all'altezza TOTALE disponibile.
+        # Ogni alterazione su una riga. "Fa#" + "Do#" = 2 righe.
+        # KS_FONT_SZ grande abbastanza da essere leggibile ma contenuto nell'altezza.
+        KS_FONT_SZ = round(TOTAL_HEIGHT / 4.0)  # es. 745/4.0 ≈ 186 (più grande di prima)
+        KS_LINE_SPACING = KS_FONT_SZ * 1.4  # spazio tra righe verticali
+        
+        def _rhythm_ts_fraction_svg(tx, ty, ts_num, ts_den, scale=1.0):
+            """Genera SVG per il tempo in stile frazione (num sopra, linea, den sotto).
+            ty = centro del blocco. scale<1.0 per cambi intra-sistema (più piccoli).
+            Il font è calcolato per riempire TUTTA l'altezza disponibile (pentagramma+tavola)."""
+            fs = round(TS_FONT_SZ * scale)
+            lw = TS_LINE_W * scale
+            lt = max(2, round(TS_LINE_THICKNESS * scale))
+            # Posiziona per riempire l'altezza totale:
+            # top visivo del num = ty - fs*0.65 (cap-height sopra + dy)
+            # bottom visivo del den = ty + fs*1.15 (cap-height sotto + dy)
+            # Per riempire da STAFF_TOP+margin a TOTAL_BOTTOM-margin:
+            # ty viene già passato come centro dell'area totale.
+            # Numeratore e denominatore SIMMETRICI rispetto alla linea di frazione:
+            # delta = 0.55*fs centra la linea tra i due numeri
+            delta = fs * 0.55
+            num_y = ty - delta
+            den_y = ty + delta
+            return (
+                f'<text x="{tx:.1f}" y="{num_y:.1f}" font-family="{RHYTHM_FONT}" '
+                f'font-size="{fs}" font-weight="800" fill="{RHYTHM_COLOR}" '
+                f'text-anchor="middle" dy="0.35em">{ts_num}</text>'
+                f'<line x1="{tx - lw/2:.1f}" y1="{ty:.1f}" x2="{tx + lw/2:.1f}" y2="{ty:.1f}" '
+                f'stroke="{RHYTHM_COLOR}" stroke-width="{lt}" stroke-linecap="round"/>'
+                f'<text x="{tx:.1f}" y="{den_y:.1f}" font-family="{RHYTHM_FONT}" '
+                f'font-size="{fs}" font-weight="800" fill="{RHYTHM_COLOR}" '
+                f'text-anchor="middle" dy="0.35em">{ts_den}</text>'
+            )
+        
+        def _rhythm_keysig_svg(tx, ty, ks_labels_list):
+            """Genera SVG per le alterazioni IN VERTICALE (una sotto l'altra) a sinistra di tx.
+            ks_labels_list = lista di stringhe, es. ['Fa#', 'Do#']"""
+            parts = []
+            n = len(ks_labels_list)
+            if n == 0:
+                return ''
+            # Centra verticalmente il blocco alterazioni su ty
+            # Prima alterazione in alto, ultima in basso
+            total_h = (n - 1) * KS_LINE_SPACING
+            start_y = ty - total_h / 2
+            for i, label in enumerate(ks_labels_list):
+                y = start_y + i * KS_LINE_SPACING
+                parts.append(
+                    f'<text x="{tx:.1f}" y="{y:.1f}" font-family="{RHYTHM_FONT}" '
+                    f'font-size="{KS_FONT_SZ}" font-weight="700" fill="{RHYTHM_COLOR}" '
+                    f'font-style="italic" text-anchor="end" dy="0.35em">{label}</text>'
+                )
+            return ''.join(parts)
+        
+        # Posizionamento: alterazioni a sinistra, tempo a destra
+        KS_TEXT_X = 1270  # X di partenza (dove era la chiave)
+        MUSIC_START = 2500  # UNIFORM_MUSIC_START (settore grigio)
+        # Alterazioni a sinistra (text-anchor=end, quindi KS_TEXT_X è il lato destro)
+        # Tempo centrato nello spazio tra alterazioni e settore grigio
+        # Spazio disponibile: da KS_TEXT_X + gap a MUSIC_START - margin
+        ts_block_x = (KS_TEXT_X + 200 + MUSIC_START) / 2  # centro del tempo
+        
+        # per-measure time sig: ts_num e ts_den per il primo sistema
+        ts_num_first = ts_info_r[0]
+        ts_den_first = ts_info_r[1]
         
         # Trova la Y del primo sistema (middle line) per posizionare il testo
         # Trova le middle line Y di tutti i sistemi
@@ -6265,17 +6909,56 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         # 7 Ago: il primo sistema è quello con Y più bassa (più in alto).
         # Il tempo va mostrato SOLO sul primo sistema.
         first_sys_top = min(system_tops) if system_tops else None
+        # Mappa i KeySig ai sistemi per ORDINE di apparizione (non per prossimità Y).
+        # ty del KeySig è in coordinate pre-stretch e non corrisponde a system_tops (post-stretch).
+        sorted_system_tops = sorted(system_tops) if system_tops else []
+        # 12 Ago 2026: NON usare n_ks_per_system fisso — i sistemi possono avere
+        # un numero variabile di KeySig (0, 1, 2, 3). Invece, mappa ogni KeySig
+        # al sistema più vicino per Y (pre-stretch ty → sistema più vicino).
+        # I KeySig originali hanno ty in coordinate pre-stretch.
+        # I system_tops sono in coordinate post-stretch. Per mappare, usiamo
+        # l'ORDINE: i KeySig appaiono nell'SVG in ordine di sistema, quindi
+        # raggruppiamo per Y (pre-stretch) e assegniamo in ordine.
+        # Raccolgo le Y dei KeySig originali
+        _orig_keysig_ys = re.findall(
+            r'<path class="KeySig" transform="matrix\((?:[\d.\-]+,){5}([\d.\-]+)\)"',
+            modified)
+        _orig_keysig_ys = [float(y) for y in _orig_keysig_ys]
+        # Raggruppa le Y per prossimità (sistemi)
+        _ks_groups = []
+        _cur_group = []
+        _prev_y = None
+        for y in sorted(_orig_keysig_ys):
+            if _prev_y is not None and abs(y - _prev_y) > 400:
+                _ks_groups.append(_cur_group)
+                _cur_group = []
+            _cur_group.append(y)
+            _prev_y = y
+        if _cur_group:
+            _ks_groups.append(_cur_group)
+        # Ora _ks_groups ha un gruppo per ogni sistema (con n_ks variabile)
+        # Mappa: gruppo i → sistema i
+        _ks_group_to_sys = {}
+        for i, group in enumerate(_ks_groups):
+            if i < len(sorted_system_tops):
+                _ks_group_to_sys[i] = sorted_system_tops[i]
         
         def replace_keysig_rhythm(match):
             nonlocal keysig_count
             a, b, c, d, tx, ty = [float(match.group(i)) for i in range(1, 7)]
             keysig_count += 1
-            # FIX: KeySig is drawn ABOVE the staff, so its Y is SMALLER than the
-            # system's top Y. Find the nearest system_top by Y proximity.
-            if system_tops:
-                sys_top = min(system_tops, key=lambda st: abs(st - ty))
-            else:
-                sys_top = None
+            # 12 Ago 2026: trova il gruppo (sistema) a cui appartiene questo KeySig
+            # basandosi sulla Y originale (pre-stretch). Ordina i KeySig per Y
+            # e assegna al gruppo corrispondente.
+            # Trova il gruppo più vicino per Y
+            best_group = 0
+            best_dist = float('inf')
+            for gi, group in enumerate(_ks_groups):
+                for gy in group:
+                    if abs(ty - gy) < best_dist:
+                        best_dist = abs(ty - gy)
+                        best_group = gi
+            sys_top = _ks_group_to_sys.get(best_group, sorted_system_tops[-1] if sorted_system_tops else None)
             sys_key = round(sys_top) if sys_top is not None else round(ty)
             # Solo il PRIMO KeySig di ogni sistema genera il testo
             if sys_key not in keysig_y_tracker_rhythm:
@@ -6284,28 +6967,61 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 # First system: armatura + tempo. Subsequent systems: tempo only
                 # if it differs from the previous system.
                 is_first_system = (first_sys_top is not None and abs(sys_top - first_sys_top) < 50)
+                # 12 Ago 2026: calcola le alterazioni per QUESTO sistema
+                # (non usa keysig_labels fisso dell'armatura iniziale)
+                _ks_default = (note_info.get('key_sig') or 0) if note_info else 0
+                sys_ks_n = sys_top_to_ks.get(sys_key, _ks_default) if sys_top is not None else _ks_default
+                sys_ks_labels = _keysig_labels_for(sys_ks_n)
+                # 12 Ago 2026: render elegante con tempo a frazione
+                svg_parts = []
                 if is_first_system and is_first_page:
-                    # Primo pentagramma assoluto: armatura + tempo
-                    display_text = combined_text  # es. "Fa#    4/4"
+                    # Primo pentagramma: alterazioni IN VERTICALE a sinistra + tempo a frazione a destra
+                    # ts_ty = Y della linea di frazione (per riempire tutta l'altezza)
+                    ts_ty = system_centers.get(round(sys_top), sys_top + TS_LINE_Y_offset) if sys_top is not None else ty
+                    # Le alterazioni sono centrate sull'area totale (non sulla linea di frazione)
+                    ks_ty = (sys_top or STAFF_TOP) + TOTAL_HEIGHT / 2 if sys_top is not None else TOTAL_CENTER
+                    if sys_ks_labels:
+                        svg_parts.append(_rhythm_keysig_svg(KS_TEXT_X, ks_ty, sys_ks_labels))
+                    # Tempo a frazione (con num/den corretti per questo sistema)
+                    nearest_top = min(sys_top_to_ts_text.keys(),
+                                      key=lambda st: abs(st - sys_top)) if sys_top_to_ts_text else None
+                    ts_for_sys_tuple = None
+                    if nearest_top is not None:
+                        gm = sys_top_to_global.get(nearest_top, 0)
+                        ts_for_sys_tuple = time_sigs_pm_r.get(gm, ts_info_r)
+                    if ts_for_sys_tuple is None:
+                        ts_for_sys_tuple = ts_info_r
+                    svg_parts.append(_rhythm_ts_fraction_svg(ts_block_x, ts_ty, ts_for_sys_tuple[0], ts_for_sys_tuple[1]))
                 else:
-                    # Sistemi successivi: mostra solo il tempo se è cambiato
-                    # Find nearest system top in sys_top_to_ts_text by Y proximity
+                    # Sistemi successivi: mostra alterazioni (se cambiate) + tempo (se cambiato)
+                    svg_parts = []
+                    # 12 Ago 2026: mostra le alterazioni se sono diverse dal sistema precedente
+                    if sys_ks_labels:
+                        # Verifica se le alterazioni sono cambiate rispetto al sistema precedente
+                        _prev_sys_idx = sorted_system_tops.index(sys_top) - 1 if sys_top in sorted_system_tops else -1
+                        _prev_ks_n = None
+                        if _prev_sys_idx >= 0:
+                            _prev_sys_key = round(sorted_system_tops[_prev_sys_idx])
+                            _prev_ks_n = sys_top_to_ks.get(_prev_sys_key, (note_info.get('key_sig') or 0) if note_info else 0)
+                        if _prev_ks_n != sys_ks_n:
+                            ks_ty = (sys_top or STAFF_TOP) + TOTAL_HEIGHT / 2 if sys_top is not None else TOTAL_CENTER
+                            svg_parts.append(_rhythm_keysig_svg(KS_TEXT_X, ks_ty, sys_ks_labels))
+                    # Tempo a frazione se è cambiato
                     nearest_top = min(sys_top_to_ts_text.keys(),
                                       key=lambda st: abs(st - sys_top)) if sys_top_to_ts_text else None
                     ts_for_sys = sys_top_to_ts_text.get(nearest_top) if nearest_top is not None else None
                     if ts_for_sys:
-                        display_text = f"    {ts_for_sys}"  # solo tempo, niente armatura
-                    else:
-                        display_text = ''
-                # Se non c'è armatura e non è il primo sistema, non mostrare nulla
-                if not display_text:
+                        # ts_for_sys è "N/D" — split per la frazione
+                        ts_num, ts_den = ts_for_sys.split('/')
+                        # Senza alterazioni, il tempo va alla X di partenza
+                        ts_x = KS_TEXT_X + 40 if not sys_ks_labels else ts_block_x
+                        # Centra il tempo nel pentagramma usando system_centers
+                        ts_ty = system_centers.get(round(sys_top), sys_top + TS_LINE_Y_offset) if sys_top is not None else ty
+                        svg_parts.append(_rhythm_ts_fraction_svg(ts_x, ts_ty, ts_num, ts_den))
+                # Se non c'è nulla da mostrare, salta
+                if not svg_parts:
                     return ''
-                # Posiziona il testo a sinistra del pentagramma (dove sarebbe la chiave)
-                font_sz = 180
-                return (f'<text x="1270" y="{ty:.1f}" '
-                        f'font-family="Atkinson Hyperlegible,Carlito,DejaVu Sans,sans-serif" '
-                        f'font-size="{font_sz}" font-weight="900" fill="#111111" '
-                        f'text-anchor="start" dy="0.35em">{display_text}</text>')
+                return ''.join(svg_parts)
             # Nascondi i KeySig successivi (duplicati nello stesso sistema)
             return ''
         
@@ -6314,7 +7030,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             replace_keysig_rhythm, modified
         )
         if keysig_count > 0:
-            print(f"  [rhythm] KeySig+TimeSig: {keysig_count} simboli → testo \"{combined_text}\"")
+            print(f"  [rhythm] KeySig+TimeSig: {keysig_count} simboli → armatura \"{keysig_text}\" + tempo {ts_num_first}/{ts_den_first} (frazione)")
         else:
             # Nessun KeySig nel SVG (es. Do maggiore/la minore, 0 alterazioni).
             # Aggiungi manualmente il testo del tempo ad ogni sistema.
@@ -6351,15 +7067,13 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 # (prima pagina, primo sistema). Pagine successive: niente.
                 if no_ks_sys_idx > 1 or not is_first_page:
                     continue  # sistemi successivi o pagine successive: nessun testo
-                ts_text_elements.append(
-                    f'<text x="1270" y="{ty:.1f}" '
-                    f'font-family="Atkinson Hyperlegible,Carlito,DejaVu Sans,sans-serif" '
-                    f'font-size="{ts_font_sz}" font-weight="900" fill="#111111" '
-                    f'text-anchor="start" dy="0.35em">{combined_text}</text>'
-                )
+                # 12 Ago 2026: tempo a frazione (senza alterazioni, Do maggiore)
+                # Centra nel pentagramma usando system_centers
+                ts_ty = system_centers.get(round(sys_top), sys_top + TS_LINE_Y_offset) if sys_top is not None else ty
+                ts_text_elements.append(_rhythm_ts_fraction_svg(KS_TEXT_X + 40, ts_ty, ts_num_first, ts_den_first))
             if ts_text_elements:
                 modified = modified.replace('</svg>', '\n'.join(ts_text_elements) + '\n</svg>')
-                print(f"  [rhythm] TimeSig (no KeySig): 1° sistema → testo \"{combined_text}\"")
+                print(f"  [rhythm] TimeSig (no KeySig): 1° sistema → tempo {ts_num_first}/{ts_den_first} (frazione)")
         
         # Intra-system time signature changes.
         # For each system, check if the time signature changes between measures
@@ -6391,13 +7105,10 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 ts_t = f"{ts_m[0]}/{ts_m[1]}"
                 if prev_ts_intra is not None and ts_t != prev_ts_intra:
                     # Time signature changed within this system!
-                    # Show the new TS at the start of this measure.
-                    font_sz_intra = 140
+                    # 12 Ago 2026: mostra il nuovo tempo come frazione (piccola, inline)
+                    ts_num_intra, ts_den_intra = ts_m[0], ts_m[1]
                     intra_ts_elements.append(
-                        f'<text x="{m_start:.1f}" y="{st + 50:.1f}" '
-                        f'font-family="Atkinson Hyperlegible,Carlito,DejaVu Sans,sans-serif" '
-                        f'font-size="{font_sz_intra}" font-weight="900" fill="#111111" '
-                        f'text-anchor="start" dy="0.35em">{ts_t}</text>'
+                        _rhythm_ts_fraction_svg(m_start, st + 50, ts_num_intra, ts_den_intra, scale=0.25)
                     )
                 prev_ts_intra = ts_t
         if intra_ts_elements:
@@ -6405,39 +7116,343 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             print(f"  [rhythm] Intra-system TS changes: {len(intra_ts_elements)}")
     else:
         # Modalità normale: ingrandisci e riposiziona i simboli KeySig
-        keysig_y_tracker = {}  # rounded system Y -> count of keysigs seen
+        # 12 Ago 2026: FIX completo — MuseScore 4 non renderizza correttamente
+        # i bemolli nei KeySig quando il .mscz viene ricostruito via music21
+        # (tutti i KeySig diventano diesis nel SVG). Inoltre, non renderizza
+        # i bequadri di cancellazione. Soluzione: rimuovere TUTTI i KeySig
+        # dal SVG e inserire i path data corretti (diesis/bemolle/bequadro)
+        # per ogni sistema in base all'armatura corretta.
         
-        def enlarge_keysig(match):
-            nonlocal keysig_count
-            a, b, c, d, tx, ty = [float(match.group(i)) for i in range(1, 7)]
-            # Scale up
-            new_a = a * keysig_scale
-            new_d = d * keysig_scale
-            
-            # Find which system this KeySig belongs to (nearest system top)
-            sys_top = min(system_tops, key=lambda st: abs(st - ty)) if system_tops else None
-            
-            # Stagger: first KeySig (Fa#, higher Y = smaller ty) at base, second (Do#, lower) shifted right
-            stagger_offset = 90.0 * keysig_scale  # ~180px between diesis
-            if sys_top is not None:
-                sys_key = round(sys_top)
-                if sys_key not in keysig_y_tracker:
-                    keysig_y_tracker[sys_key] = 0
-                idx = keysig_y_tracker[sys_key]
-                keysig_y_tracker[sys_key] += 1
-                new_tx = 1907.0 + idx * stagger_offset
-            else:
-                new_tx = 1907.0
-            
-            keysig_count += 1
-            return f'<path class="KeySig" transform="matrix({new_a:.4f},{b},{c},{new_d:.4f},{new_tx:.2f},{ty:.2f})"'
+        # Path data dei glyph KeySig (estratti dal SVG originale di MuseScore)
+        KEYSIG_SHARP_D = 'M25.8125,-24.5 L55.2813,-30.4531 L55.2813,24.1563 L25.8125,30.4531 L25.8125,-24.5 M77.125,-34.75 C79.1094,-35.0781 80.7656,-37.4063 80.7656,-39.3906 L80.7656,-58.9219 C80.7656,-61.5625 78.7813,-63.5469 76.125,-63.5469 L75.4688,-63.5469 L64.5469,-61.2344 L64.5469,-110.547 L55.2813,-110.547 L55.2813,-59.25 L25.8125,-53.2969 L25.8125,-99.9531 L16.5469,-99.9531 L16.5469,-51.2969 L3.64063,-48.6563 C1.65625,-48.3281 0,-46.0156 0,-44.0156 L0,-24.8281 C0,-22.1719 1.98438,-20.1875 4.64063,-20.1875 L5.625,-20.1875 L16.5469,-22.5 L16.5469,32.1094 L3.64063,34.75 C1.65625,35.0781 0,37.4063 0,39.3906 L0,58.5781 C0,61.2344 1.98438,63.2188 4.64063,63.2188 L5.625,63.2188 L16.5469,60.9063 L16.5469,110.219 L25.8125,110.219 L25.8125,58.9219 L55.2813,52.9531 L55.2813,99.625 L64.5469,99.625 L64.5469,50.9688 L77.125,48.6563 C79.1094,48.3281 80.7656,46.0156 80.7656,44.0156 L80.7656,24.5 C80.7656,21.8438 78.7813,19.8594 76.125,19.8594 L75.4688,19.8594 L64.5469,22.1719 L64.5469,-32.4375 L77.125,-34.75 '
+        KEYSIG_FLAT_D = 'M43.6875,-13.2344 C43.6875,12.9063 30.125,26.8125 10.9219,42.0313 L11.9219,-22.5 C12.5781,-25.4844 17.5469,-35.0781 30.7813,-35.0781 C42.7031,-35.0781 43.6875,-23.8281 43.6875,-16.875 L43.6875,-13.2344 M39.7188,-51.2969 C23.1719,-51.2969 13.5781,-41.0469 11.9219,-39.0625 L13.2344,-145.313 C13.2344,-147.953 11.25,-149.938 8.60938,-149.938 L4.64063,-149.938 C1.98438,-149.938 0,-147.953 0,-145.313 L1.65625,53.625 C1.65625,56.2656 3.64063,58.25 6.28125,58.25 C6.95313,58.25 8.28125,57.9219 8.9375,57.5938 C37.4063,43.3594 67.1875,16.2188 67.1875,-17.875 C67.1875,-35.0781 59.25,-51.2969 39.7188,-51.2969'
+        KEYSIG_NATURAL_D = 'M9.26563,32.1094 L9.26563,-22.1719 L47.6563,-33.0938 L47.6563,21.5156 L9.26563,32.1094 M54.9375,-60.5781 C54.2813,-61.2344 53.2969,-61.5625 52.2969,-61.5625 C51.9688,-61.5625 51.2969,-61.2344 50.9688,-61.2344 L9.26563,-49.6563 L9.26563,-107.578 L0,-107.578 L0,56.2656 C0,58.9219 1.98438,60.5781 4.64063,60.5781 L5.95313,60.5781 L47.6563,48.9844 L47.6563,106.906 L56.5938,106.906 L56.5938,-56.9375 C56.5938,-58.25 55.9375,-59.9063 54.9375,-60.5781'
         
-        modified = re.sub(
-            r'<path class="KeySig" transform="matrix\(([\d.\-]+),([\d.\-]+),([\d.\-]+),([\d.\-]+),([\d.\-]+),([\d.\-]+)\)"',
-            enlarge_keysig, modified
-        )
-        if keysig_count > 0:
-            print(f"  KeySig: {keysig_count} enlarged (scale ×{keysig_scale}) and repositioned")
+        # Ordine standard delle alterazioni
+        SHARP_ORDER_STEPS = ['F', 'C', 'G', 'D', 'A', 'E', 'B']
+        FLAT_ORDER_STEPS = ['B', 'E', 'A', 'D', 'G', 'C', 'F']
+        # Posizioni Y dei KeySig sul pentagramma (relativa al centro del pentagramma)
+        # in unità di spatium (1.75mm). Il pentagramma ha 5 linee a distanza 1 spatium.
+        # Le alterazioni vanno su linee/spazi specifici.
+        # Diesis: F#(linea 5), C#(spazio 3), G#(linea 2), D#(spazio 1), A#(linea 3), E#(spazio 4), B#(linea 1)
+        # Bemolli: Bb(linea 2), Eb(spazio 3), Ab(linea 4), Db(spazio 1), Gb(linea 3), Cb(spazio 4), Fb(linea 5)
+        # In MuseScore, il KeySig path è centrato su una posizione Y specifica.
+        # Le posizioni Y dei KeySig (dal SVG originale, scale 1.03313):
+        # F# (diesis 1): ty del path ≈ 4145 (sistema a top=4095) → offset ≈ +50 dal top
+        # C# (diesis 2): ty ≈ 4287 → offset ≈ +192 dal top
+        # In unità relative (scale 1.0): F# a +43.3, C# a +167 dal top
+        # Il pattern è: ogni diesis successivo è ~124px (scale 1.0) più in basso
+        # e ~90px (scale 1.0) più a destra (stagger)
+        # In realtà, le Y dei KeySig dipendono dal sistema. Usiamo l'Y del primo
+        # KeySig del sistema come riferimento e aggiungiamo gli offset.
+        # Offset Y per diesis 1-7 (relativi al primo diesis): 0, 124, -124, 0, 124, -124, 0
+        # (il pattern ciclico è: F# alto, C# basso, G# alto, D# basso, ...)
+        # In realtà dal SVG: F# a Y_base, C# a Y_base+124, G# a Y_base-124 (più alto)
+        # Verifico: nel SVG ricostruito, KeySig[0] ty=4145 (F#), KeySig[1] ty=4287 (C#)
+        # Differenza = 142 (scale 1.14286 → 124.3 a scale 1.0)
+        # Quindi: F# a offset 0, C# a offset +124, G# a offset +124-248 = -124 (più alto)
+        # Ma in realtà G# è il 3° diesis e va SOTTO C#, non sopra.
+        # Schema standard: F#(alto), C#(basso), G#(più basso), D#(ancora più basso)...
+        # NO — lo schema è: F#(linea 5), C#(spazio sotto), G#(linea 2), D#(spazio sotto G#)
+        # Quindi le Y scendono: F# alto, C# basso, G# alto (linea 2), D# basso
+        # Pattern: +0, +124, -248, +124, +0, +124, -248 (relativo al precedente)
+        # Meglio usare offset assoluti dal primo: 0, 124, -124, 0, 124, -124, 0
+        # No — verifico dal SVG:
+        # F#: ty=4145 → offset 0
+        # C#: ty=4287 → offset +142 (scale 1.14) = +124 (scale 1.0)
+        # G#: dovrebbe essere a offset -124 (sopra F#)? No, G# è sulla linea 2 (B line)
+        # che è PIÙ BASSA di F# (linea 5). Quindi G# dovrebbe essere a offset +248?
+        # In realtà: F#(linea 5)=alto, C#(spazio 3)=basso, G#(linea 2)=più basso
+        # Quindi: 0, +124, +248 (sempre più bassi)? No, non è così.
+        # Lo schema reale delle armature è a QUARTI di ottava:
+        # F# → C# (quarta giù) → G# (quarta giù) → D# → A# → E# → B#
+        # Ogni quarta = 2.5 linee/spazi = 2.5 spatium
+        # In pixel (scale 1.0, spatium=1.75mm = ~7px nel SVG): 2.5 * 7 = 17.5? No.
+        # Usiamo i valori misurati dal SVG originale.
+        
+        # Mappatura system_top → armatura (n_sharps) per questo sistema
+        # Usa key_sig_changes_dict e _sys_to_global_idx (come in rhythm mode)
+        _ks_dict_step1 = key_sig_changes_dict if key_sig_changes_dict else {}
+        _ks_active_step1 = {}
+        _cur_ks_s1 = (note_info.get('key_sig') or 0) if note_info else 0
+        _max_m_s1 = max(_ks_dict_step1.keys()) if _ks_dict_step1 else 0
+        for _mi in range(_max_m_s1 + 1):
+            if _mi in _ks_dict_step1:
+                _cur_ks_s1 = _ks_dict_step1[_mi]
+            _ks_active_step1[_mi] = _cur_ks_s1
+        
+        # Mappa system_top → n_sharps per Step1
+        sys_top_to_ks_step1 = {}
+        sorted_x_starts_s1 = sorted(systems.keys(), key=lambda k: systems[k]['top']) if systems else []
+        for i, x_start_key in enumerate(sorted_x_starts_s1):
+            if i < len(system_tops):
+                gm = _sys_to_global_idx.get(x_start_key, 0) if _sys_to_global_idx else 0
+                sys_top_to_ks_step1[round(system_tops[i])] = _ks_active_step1.get(gm, _cur_ks_s1)
+        
+        # Rimuovi TUTTI i KeySig esistenti dal SVG
+        keysig_pat = re.compile(r'<path class="KeySig" transform="matrix\((?:[\d.\-]+,){5}[\d.\-]+\)"[^>]*/>')
+        old_keysig_count = len(keysig_pat.findall(modified))
+        modified = keysig_pat.sub('', modified)
+        
+        # Inserisci i KeySig corretti per ogni sistema
+        keysig_base_x = CLEF_END_X + 30  # ~1891
+        stagger_offset = 90.0 * keysig_scale  # stagger tra alterazioni consecutive
+        
+        # Offset Y delle alterazioni sul pentagramma (relativi al top del pentagramma)
+        # in pixel a scale 1.0. Misurati dal SVG: F# a +43.3, C# a +167 dal top.
+        # Il pattern dei diesis: ogni alterazione successiva è a un quarto di ottava,
+        # che sul pentagramma = 2.5 posizioni (linea/spazio) = 2.5 * spatium
+        # In MuseScore SVG (scale 1.0): spatium ≈ 7px, ma i KeySig usano unità diverse.
+        # Dati misurati dal SVG ricostruito (scale 1.14286):
+        # F#: ty=4145, system_top≈4095 → offset = 50 / 1.14286 = 43.75
+        # C#: ty=4287, system_top≈4095 → offset = 192 / 1.14286 = 168
+        # Differenza = 124.3 (scale 1.0)
+        # G#: se il sistema ha 3 diesis, G# dovrebbe essere a offset 43.75 - 124.3 = -80.5
+        # (G# è sulla linea 2, che è più in basso... no, più in ALTO se contiamo dal top)
+        # In realtà: F# è sulla linea 5 (top line), C# nello spazio 3, G# sulla linea 2
+        # Linea 5 = top, linea 2 = più bassa → G# è PIÙ BASSO di F# e C#
+        # Ma C# è nello spazio 3 (tra linea 3 e 4), che è più basso di F# (linea 5)
+        # Quindi: F# (alto) → C# (medio) → G# (basso)
+        # Offsets: 43.75, 168, 292 (sempre più bassi, differenza 124)
+        # Ma 292 = 43.75 + 248 (2 * 124) — sì, ogni diesis è 124px più in basso
+        # NO — questo non è corretto. Lo schema reale è:
+        # F# = 43.75, C# = 168 (diff +124), G# = 43.75 (stessa altezza di F#!)
+        # perché G# è sulla linea 2 e F# sulla linea 5 — ci sono 3 linee tra loro
+        # 3 linee = 3 spatium = 3 * 7 / 1.14286 * 1.14286 = ... 
+        # In realtà nel pentagramma: linea 5 (F) → spazio 4 → linea 4 → spazio 3 (C) →
+        # linea 3 → spazio 2 → linea 2 (G) → spazio 1 → linea 1 (E)
+        # Da F (linea 5) a C (spazio 3) = 2.5 posizioni giù = 2.5 spatium
+        # Da C (spazio 3) a G (linea 2) = 2.5 posizioni giù = 2.5 spatium
+        # Quindi: F# offset = 0, C# = +2.5*spatium, G# = +5*spatium
+        # spatium nel SVG = 7 / 1.14286 = 6.125 (scale 1.0)
+        # F# = 0, C# = +15.3, G# = +30.6 — troppo piccolo, non corrisponde a 124
+        # 
+        # I KeySig in MuseScore usano un font/glyph con dimensioni diverse.
+        # Misurazione diretta dal SVG:
+        # Sistema 1 (top≈4095, 2 diesis):
+        #   F#: ty=4145 → offset = 50 / 1.14286 = 43.75
+        #   C#: ty=4287 → offset = 192 / 1.14286 = 168.0
+        # Differenza = 124.25 (scale 1.0)
+        # Per il 3° diesis (G#): dovrebbe essere a offset 43.75 + 248.5 = 292.25
+        # (sempre +124 dal precedente)? No, perché G# è sulla linea 2 che è
+        # 5 posizioni sotto F# (linea 5), = 5 spatium = 5 * 6.125 = 30.6
+        # ma 124 >> 30.6... il glyph è più alto del spatium.
+        # In realtà: il centro del glyph diesis è a un'altezza specifica sul pentagramma.
+        # La differenza di 124 (scale 1.0) tra F# e C# corrisponde a:
+        # F# sulla linea 5, C# nello spazio 3 = 2.5 linee/spazi di differenza
+        # 124 / 2.5 = 49.6 per posizione → troppo per 6.125 spatium
+        # Il glyph KeySig ha un offset interno che lo posiziona sul pentagramma.
+        # La cosa più semplice: usare l'offset Y del primo KeySig del sistema
+        # e aggiungere 124 * keysig_scale per ogni alterazione successiva.
+        
+        # Y offset delle alterazioni sul pentagramma in SPATIUM (relativi al top)
+        # 1 spatium = distanza tra due linee del pentagramma.
+        # Top del pentagramma (linea 5, F) = 0 sp, bottom (linea 1, E) = 4 sp.
+        # Diesis: F#(0), C#(1.5), G#(3), D#(3.5), A#(2), E#(0.5), B#(4)
+        # Bemolli: Bb(2), Eb(0.5), Ab(2.5), Db(1), Gb(3), Cb(1.5), Fb(0)
+        # (misurati dal SVG originale di Marco, 12 Ago 2026)
+        Y_SP_SHARP = [0.0, 1.5, 3.0, 3.5, 2.0, 0.5, 4.0]
+        Y_SP_FLAT = [2.0, 0.5, 2.5, 1.0, 3.0, 1.5, 0.0]
+        
+        # Calcola lo spatium dal SVG post-stretch (distanza tra linee del pentagramma).
+        # Dopo y_stretch_systems, ogni linea del pentagramma è una polyline separata
+        # con una sola Y, quindi raccogliamo tutte le Y delle StaffLines e
+        # calcoliamo lo spatium dalle prime due Y distinte del primo sistema.
+        _staff_poly_ys_s1 = sorted(set(
+            float(pt.split(',')[1])
+            for _p in re.findall(r'polyline[^>]*class="StaffLines"[^>]*points="([^"]+)"', modified)
+            for pt in _p.split() if len(pt.split(',')) == 2
+        ))
+        _spatium_s1 = 280.0  # default post-stretch
+        if len(_staff_poly_ys_s1) >= 6:
+            _candidates = [y for i, y in enumerate(_staff_poly_ys_s1[:6])
+                           if i == 0 or abs(y - _staff_poly_ys_s1[i-1]) > 10]
+            if len(_candidates) >= 2:
+                _spatium_s1 = _candidates[1] - _candidates[0]
+        
+        new_keysig_elements = []
+        systems_with_keysig = set()
+        
+        for sys_top in sorted(system_tops):
+            sys_key = round(sys_top)
+            n_sharps = sys_top_to_ks_step1.get(sys_key, 0) or 0
+            if n_sharps == 0:
+                continue  # nessun KeySig (Do maggiore)
+            
+            systems_with_keysig.add(sys_key)
+            
+            # Determina l'armatura precedente (per i bequadri di cancellazione)
+            prev_n_sharps = 0
+            sys_idx = sorted(system_tops).index(sys_top)
+            if sys_idx > 0:
+                prev_sys_key = round(sorted(system_tops)[sys_idx - 1])
+                prev_n_sharps = sys_top_to_ks_step1.get(prev_sys_key, 0) or 0
+            
+            # 12 Ago 2026: le armature vanno su TUTTI i pentagrammi del sistema.
+            # Per ogni pentagramma del sistema, genera gli stessi KeySig.
+            staff_tops_for_system = system_to_staff_tops.get(sys_key, [sys_top])
+            for staff_top in staff_tops_for_system:
+                glyph_idx = 0  # contatore per lo stagger X (reset per ogni pentagramma)
+            
+                # Bequadri di cancellazione (se l'armatura è cambiata)
+                if n_sharps != prev_n_sharps:
+                    # I bequadri cancellano le alterazioni PRECEDENTI che non sono
+                    # più presenti nella nuova armatura.
+                    # Se passiamo da 2# a 1#: F# resta, C# cancellato → 1 bequadro (su C#)
+                    # Se passiamo da 1# a 1b: F# cancellato → 1 bequadro (su F#), poi 1 bemolle (Bb)
+                    # Se passiamo da 1b a 2#: Bb cancellato → 1 bequadro (su Bb), poi 2 diesis (F# C#)
+                    # Se passiamo da 2# a -1 (1b): F# e C# cancellati → 2 bequadri, poi 1 bemolle
+                    
+                    # Determina quali alterazioni precedenti non sono più presenti
+                    # Caso 1: da diesis a diesis (meno diesis): cancella i diesis in eccesso
+                    # Caso 2: da diesis a bemolli: cancella tutti i diesis precedenti
+                    # Caso 3: da bemolli a diesis: cancella tutti i bemolli precedenti
+                    # Caso 4: da bemolli a bemolli (meno bemolli): cancella i bemolli in eccesso
+                    
+                    # 12 Ago 2026: ordine corretto = prima le alterazioni che RESTANO
+                    # (nella loro posizione originale), poi i bequadri di cancellazione.
+                    # Es: da 2# (F#, C#) a 1# (F#) → prima F# (pos 0), poi bequadro C# (pos 1)
+                    # Da 1# a 1b → prima bequadro F# (nessun diesis resta), poi bemolle Bb
+                    # Da 1b a 2# → prima bequadro Bb (nessun bemolle resta), poi diesis F#, C#
+
+                    if prev_n_sharps > 0 and n_sharps > 0:
+                        # Da diesis a diesis (meno diesis): i diesis che restano vanno PRIMA
+                        # nelle loro posizioni originali, poi i bequadri sui diesis cancellati.
+                        for j in range(n_sharps):  # diesis che restano
+                            y_off = Y_SP_SHARP[j] * _spatium_s1
+                            ty = staff_top + y_off
+                            tx = keysig_base_x + glyph_idx * stagger_offset
+                            new_keysig_elements.append(
+                                f'<path class="KeySig" transform="matrix({keysig_scale:.4f},0,0,{keysig_scale:.4f},{tx:.2f},{ty:.2f})" d="{KEYSIG_SHARP_D}"/>'
+                            )
+                            glyph_idx += 1
+                        # Bequadri sui diesis cancellati (gli ULTIMI)
+                        n_naturals = prev_n_sharps - n_sharps
+                        for j in range(n_naturals):
+                            j_pos = n_sharps + j  # posizioni dei diesis cancellati
+                            y_off = Y_SP_SHARP[j_pos] * _spatium_s1
+                            ty = staff_top + y_off
+                            tx = keysig_base_x + glyph_idx * stagger_offset
+                            new_keysig_elements.append(
+                                f'<path class="KeySig" transform="matrix({keysig_scale:.4f},0,0,{keysig_scale:.4f},{tx:.2f},{ty:.2f})" d="{KEYSIG_NATURAL_D}" fill-rule="evenodd"/>'
+                            )
+                            glyph_idx += 1
+                    elif prev_n_sharps > 0 and n_sharps <= 0:
+                        # Da diesis a naturale (0) o a bemolli: NESSUN diesis resta.
+                        # Tutti i bequadri PRIMA, poi (se n_sharps<0) i bemolli nuovi.
+                        for j in range(prev_n_sharps):
+                            y_off = Y_SP_SHARP[j] * _spatium_s1
+                            ty = staff_top + y_off
+                            tx = keysig_base_x + glyph_idx * stagger_offset
+                            new_keysig_elements.append(
+                                f'<path class="KeySig" transform="matrix({keysig_scale:.4f},0,0,{keysig_scale:.4f},{tx:.2f},{ty:.2f})" d="{KEYSIG_NATURAL_D}" fill-rule="evenodd"/>'
+                            )
+                            glyph_idx += 1
+                        if n_sharps < 0:
+                            for j in range(abs(n_sharps)):
+                                y_off = Y_SP_FLAT[j] * _spatium_s1
+                                ty = staff_top + y_off
+                                tx = keysig_base_x + glyph_idx * stagger_offset
+                                new_keysig_elements.append(
+                                    f'<path class="KeySig" transform="matrix({keysig_scale:.4f},0,0,{keysig_scale:.4f},{tx:.2f},{ty:.2f})" d="{KEYSIG_FLAT_D}"/>'
+                                )
+                                glyph_idx += 1
+                    elif prev_n_sharps < 0 and n_sharps < 0:
+                        # Da bemolli a bemolli (meno bemolli): i bemolli che restano vanno PRIMA,
+                        # poi i bequadri sui bemolli cancellati (gli ULTIMI).
+                        n_flat_keep = abs(n_sharps)
+                        for j in range(n_flat_keep):  # bemolli che restano
+                            y_off = Y_SP_FLAT[j] * _spatium_s1
+                            ty = staff_top + y_off
+                            tx = keysig_base_x + glyph_idx * stagger_offset
+                            new_keysig_elements.append(
+                                f'<path class="KeySig" transform="matrix({keysig_scale:.4f},0,0,{keysig_scale:.4f},{tx:.2f},{ty:.2f})" d="{KEYSIG_FLAT_D}"/>'
+                            )
+                            glyph_idx += 1
+                        n_naturals = abs(prev_n_sharps) - n_flat_keep
+                        for j in range(n_naturals):
+                            j_pos = n_flat_keep + j
+                            y_off = Y_SP_FLAT[j_pos] * _spatium_s1
+                            ty = staff_top + y_off
+                            tx = keysig_base_x + glyph_idx * stagger_offset
+                            new_keysig_elements.append(
+                                f'<path class="KeySig" transform="matrix({keysig_scale:.4f},0,0,{keysig_scale:.4f},{tx:.2f},{ty:.2f})" d="{KEYSIG_NATURAL_D}" fill-rule="evenodd"/>'
+                            )
+                            glyph_idx += 1
+                    elif prev_n_sharps < 0 and n_sharps >= 0:
+                        # Da bemolli a naturale (0) o a diesis: NESSUN bemolle resta.
+                        # Tutti i bequadri PRIMA, poi (se n_sharps>0) i diesis nuovi.
+                        for j in range(abs(prev_n_sharps)):
+                            y_off = Y_SP_FLAT[j] * _spatium_s1
+                            ty = staff_top + y_off
+                            tx = keysig_base_x + glyph_idx * stagger_offset
+                            new_keysig_elements.append(
+                                f'<path class="KeySig" transform="matrix({keysig_scale:.4f},0,0,{keysig_scale:.4f},{tx:.2f},{ty:.2f})" d="{KEYSIG_NATURAL_D}" fill-rule="evenodd"/>'
+                            )
+                            glyph_idx += 1
+                        if n_sharps > 0:
+                            for j in range(n_sharps):
+                                y_off = Y_SP_SHARP[j] * _spatium_s1
+                                ty = staff_top + y_off
+                                tx = keysig_base_x + glyph_idx * stagger_offset
+                                new_keysig_elements.append(
+                                    f'<path class="KeySig" transform="matrix({keysig_scale:.4f},0,0,{keysig_scale:.4f},{tx:.2f},{ty:.2f})" d="{KEYSIG_SHARP_D}"/>'
+                                )
+                                glyph_idx += 1
+                    elif prev_n_sharps == 0 and n_sharps != 0:
+                        # Da naturale (0) a diesis o bemolli: nessun bequadro, solo alterazioni nuove
+                        if n_sharps > 0:
+                            for j in range(n_sharps):
+                                y_off = Y_SP_SHARP[j] * _spatium_s1
+                                ty = staff_top + y_off
+                                tx = keysig_base_x + glyph_idx * stagger_offset
+                                new_keysig_elements.append(
+                                    f'<path class="KeySig" transform="matrix({keysig_scale:.4f},0,0,{keysig_scale:.4f},{tx:.2f},{ty:.2f})" d="{KEYSIG_SHARP_D}"/>'
+                                )
+                                glyph_idx += 1
+                        elif n_sharps < 0:
+                            for j in range(abs(n_sharps)):
+                                y_off = Y_SP_FLAT[j] * _spatium_s1
+                                ty = staff_top + y_off
+                                tx = keysig_base_x + glyph_idx * stagger_offset
+                                new_keysig_elements.append(
+                                    f'<path class="KeySig" transform="matrix({keysig_scale:.4f},0,0,{keysig_scale:.4f},{tx:.2f},{ty:.2f})" d="{KEYSIG_FLAT_D}"/>'
+                                )
+                                glyph_idx += 1
+                else:
+                    # Nessun cambio armatura: solo le alterazioni correnti
+                    if n_sharps > 0:
+                        for j in range(n_sharps):
+                            y_off = Y_SP_SHARP[j] * _spatium_s1
+                            ty = staff_top + y_off
+                            tx = keysig_base_x + glyph_idx * stagger_offset
+                            new_keysig_elements.append(
+                                f'<path class="KeySig" transform="matrix({keysig_scale:.4f},0,0,{keysig_scale:.4f},{tx:.2f},{ty:.2f})" d="{KEYSIG_SHARP_D}"/>'
+                            )
+                            glyph_idx += 1
+                    elif n_sharps < 0:
+                        for j in range(abs(n_sharps)):
+                            y_off = Y_SP_FLAT[j] * _spatium_s1
+                            ty = staff_top + y_off
+                            tx = keysig_base_x + glyph_idx * stagger_offset
+                            new_keysig_elements.append(
+                                f'<path class="KeySig" transform="matrix({keysig_scale:.4f},0,0,{keysig_scale:.4f},{tx:.2f},{ty:.2f})" d="{KEYSIG_FLAT_D}"/>'
+                            )
+                            glyph_idx += 1
+
+        
+        keysig_count = len(new_keysig_elements)
+        if new_keysig_elements:
+            # Inserisci i nuovi KeySig prima del primo <path class="Clef"
+            # (o all'inizio del SVG se non c'è)
+            insert_pos = modified.find('<path class="Clef"')
+            if insert_pos == -1:
+                insert_pos = modified.find('</svg>')
+            keysig_svg = '\n'.join(new_keysig_elements) + '\n'
+            modified = modified[:insert_pos] + keysig_svg + modified[insert_pos:]
+            print(f"  KeySig: {keysig_count} recreated (scale ×{keysig_scale}, {len(systems_with_keysig)} systems)")
+        elif old_keysig_count > 0:
+            print(f"  KeySig: {old_keysig_count} removed (no key signatures in this page)")
     
     # TimeSig: enlarge scale + shift tx to right of KeySig
     # in modalità rhythm, il tempo è già incluso nel testo
@@ -6463,8 +7478,44 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 return ''  # remove courtesy TimeSig
             new_a = a * keysig_scale
             new_d = d * keysig_scale
-            # Default: right of KeySig (KeySig at 1907, width ~114px, ends ~2021)
-            new_tx = 2101.0
+            # Position TimeSig right after the last KeySig accidental.
+            # Each accidental glyph has width ~81px (at scale 1.0), so at scale S
+            # its width is 81*S. The stagger between accidentals is 90*S.
+            # The TimeSig must start AFTER the last accidental's right edge.
+            stagger_offset_ts = 90.0 * keysig_scale
+            keysig_glyph_w = 81.0 * keysig_scale  # actual width of one accidental
+            if n_keysig > 0:
+                # Last accidental starts at CLEF_END_X+30 + (N-1)*stagger
+                # Its right edge is at start + glyph_w
+                # 12 Ago 2026: calcola n_keysig per QUESTO sistema (incl. bequadri)
+                # per evitare sovrapposizione TimeSig con bequadri di cancellazione
+                _sys_n_keysig = n_keysig  # default: armatura iniziale
+                if system_tops:
+                    _nearest_top_ts = min(system_tops, key=lambda st: abs(st - ty))
+                    _sys_key_ts = round(_nearest_top_ts)
+                    _sys_ks_ts = sys_top_to_ks_step1.get(_sys_key_ts, 0) or 0
+                    _prev_ks_ts = 0
+                    if sorted(system_tops).index(_nearest_top_ts) > 0:
+                        _prev_key_ts = round(sorted(system_tops)[sorted(system_tops).index(_nearest_top_ts) - 1])
+                        _prev_ks_ts = sys_top_to_ks_step1.get(_prev_key_ts, 0) or 0
+                    # numero di bequadri + alterazioni della nuova armatura
+                    if _sys_ks_ts != _prev_ks_ts:
+                        _n_naturals = 0
+                        if _prev_ks_ts > 0 and _sys_ks_ts >= 0:
+                            _n_naturals = _prev_ks_ts - max(_sys_ks_ts, 0)
+                        elif _prev_ks_ts > 0 and _sys_ks_ts < 0:
+                            _n_naturals = _prev_ks_ts
+                        elif _prev_ks_ts < 0 and _sys_ks_ts <= 0:
+                            _n_naturals = abs(_prev_ks_ts) - max(abs(_sys_ks_ts), 0)
+                        elif _prev_ks_ts < 0 and _sys_ks_ts > 0:
+                            _n_naturals = abs(_prev_ks_ts)
+                        _sys_n_keysig = _n_naturals + abs(_sys_ks_ts)
+                last_keysig_right = CLEF_END_X + 30 + (_sys_n_keysig - 1) * stagger_offset_ts + keysig_glyph_w
+                # TimeSig starts after a small gap (20px)
+                new_tx = last_keysig_right + 20
+            else:
+                # No accidentals: right after clef with small gap
+                new_tx = CLEF_END_X + 30
             # if the time signature change is at the 2nd
             # measure of a 2-measure system (not the 1st), reposition the TimeSig
             # to the X of the 2nd measure instead of the system start.
@@ -6907,7 +7958,8 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                                   processed_notes=notes,
                                   initial_rest_measures=initial_rest_measures,
                                   measure_offset=measure_offset,
-                                  mmrest_groups=mmrest_groups)
+                                  mmrest_groups=mmrest_groups,
+                                  system_layout=_system_layout)
     
     # MMRest manuale per TUTTE le sequenze di battute di pausa.
     # Ogni gruppo (start_measure, count) viene sostituito con un rettangolo
@@ -7079,46 +8131,41 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             print(f"    MMRest: centro={rect_center_x:.0f}, numero={display_count}, sistemi={len(by_system)}")
     
     # calcola il numero totale di battute in questa pagina
-    # direttamente dal layout dei sistemi, senza dipendere da equalized_measures
-    # (che non ha entry per i sistemi MMRest o sistemi da 1 battuta).
-    # Per ogni sistema: se è un MMRest → 1 battuta, se la battuta successiva
-    # è MMRest → 1 battuta (sistema pre-MMRest), altrimenti 2 battute.
-    _mmrest_set = set(gs for gs, gc in (mmrest_groups or []))
+    # 12 Ago 2026 (architettura Fable 5): usa _system_layout (Single Source of
+    # Truth) invece di ricalcolare con logica locale.
     total_meas_in_page = 0
-    _cumulative = measure_offset
-    sorted_sys_keys = sorted(systems_post.keys(), key=lambda k: systems_post[k]['top'])
-    n_systems = len(sorted_sys_keys)
-    # 4 Ago 2026 (bug KS): costruisci una mappa measure_idx → MMRest count
-    # per contare le battute LOGICHE (non fisiche). Un MMRest(28) rappresenta
-    # 28 battute logiche, non 1.
-    _mmrest_count_map = {gs: gc for gs, gc in (mmrest_groups or [])}
-    for i in range(n_systems):
-        if _cumulative in _mmrest_set:
-            # Questo sistema è un MMRest → conta TUTTE le battute rappresentate
-            mmrest_n = _mmrest_count_map.get(_cumulative, 1)
-            total_meas_in_page += mmrest_n
-            _cumulative += mmrest_n
-        elif (_cumulative + 1) in _mmrest_set:
-            # La prossima battuta è MMRest → questo sistema ha 1 battuta
-            total_meas_in_page += 1
-            _cumulative += 1
-        else:
-            # Sistema normale → 2 battute (o 1 se è l'ultima misura)
-            # 4 Ago 2026 (bug 55): usa il numero reale di battute da note_info,
-            # non l'hardcode 84 (che fermava il conteggio a battuta 84 e
-            # causava pagine 10-14 duplicate con battute 85-94).
-            _max_measures = len(note_info.get('notes', [])) and max(
-                n.get('measure_idx', 0) for n in note_info.get('notes', [])
-            ) + 1 or 84
-            _max_rests = len(note_info.get('rests', [])) and max(
-                r.get('measure_idx', 0) for r in note_info.get('rests', [])
-            ) + 1 or 0
-            _total_measures = max(_max_measures, _max_rests, 84)
-            n = min(2, _total_measures - _cumulative)
-            if n <= 0:
-                n = 2  # fallback: non fermare il conteggio
-            total_meas_in_page += n
-            _cumulative += n
+    if _system_layout:
+        # Somma n_logical di tutti i sistemi nel layout
+        for _sk, _sl in _system_layout.items():
+            total_meas_in_page += _sl['n_logical']
+    else:
+        # Fallback: vecchia logica
+        _mmrest_set = set(gs for gs, gc in (mmrest_groups or []))
+        _cumulative = measure_offset
+        sorted_sys_keys = sorted(systems_post.keys(), key=lambda k: systems_post[k]['top'])
+        n_systems = len(sorted_sys_keys)
+        _mmrest_count_map = {gs: gc for gs, gc in (mmrest_groups or [])}
+        for i in range(n_systems):
+            if _cumulative in _mmrest_set:
+                mmrest_n = _mmrest_count_map.get(_cumulative, 1)
+                total_meas_in_page += mmrest_n
+                _cumulative += mmrest_n
+            elif (_cumulative + 1) in _mmrest_set:
+                total_meas_in_page += 1
+                _cumulative += 1
+            else:
+                _max_measures = len(note_info.get('notes', [])) and max(
+                    n.get('measure_idx', 0) for n in note_info.get('notes', [])
+                ) + 1 or 84
+                _max_rests = len(note_info.get('rests', [])) and max(
+                    r.get('measure_idx', 0) for r in note_info.get('rests', [])
+                ) + 1 or 0
+                _total_measures = max(_max_measures, _max_rests, 84)
+                n = min(2, _total_measures - _cumulative)
+                if n <= 0:
+                    n = 2
+                total_meas_in_page += n
+                _cumulative += n
     
     # Inserisci il count come commento SVG (per debugging)
     modified = modified.replace('</svg>', f'<!-- MEASURES_IN_PAGE:{total_meas_in_page} -->\n</svg>')
@@ -7307,9 +8354,16 @@ def main():
     # Step 2: Make accessible .mscz
     print("[2/5] Creazione .mscz accessibile...")
     accessible_mscz = prefix + '.mscz'
-    # se il file ha più strumenti, estrai solo la parte richiesta
-    single_part_mscz = extract_single_part_mscz(input_mscz, part_index=part_index)
-    accessible_mscz, initial_rest_measures, mmrest_groups = make_accessible_mscz(single_part_mscz, accessible_mscz, part_index=part_index, rhythm_mode=rhythm_mode)
+    # 12 Ago 2026: estrai i cambi di armatura dal file originale.
+    # Il .mscx ricostruito da make_accessible_mscz perde i cambi intermedi,
+    # quindi li leggiamo qui e li passiamo come parametro.
+    # key_sig_changes_dict = {measure_idx_0based: n_sharps} (iniziale + cambi)
+    key_sig_changes_dict = extract_key_sig_changes(input_mscz, part_index=part_index)
+    # Per i break di sistema: solo gli indici dei cambi (escludi la battuta 0 iniziale)
+    key_sig_breaks = {idx for idx in key_sig_changes_dict if idx > 0}
+    # Passa il dict completo a extract_single_part_mscz per ricostruire i KeySig intermedi
+    single_part_mscz = extract_single_part_mscz(input_mscz, part_index=part_index, key_sig_changes=key_sig_changes_dict)
+    accessible_mscz, initial_rest_measures, mmrest_groups = make_accessible_mscz(single_part_mscz, accessible_mscz, part_index=part_index, rhythm_mode=rhythm_mode, key_sig_changes=key_sig_breaks)
     print(f"  ✓ {accessible_mscz} (spatium={SPATIUM}, staffLineWidth={STAFF_LINE_WIDTH})")
     
     # ri-estrarre le note dal .mscz accessibile (dopo split MMRest)
@@ -7370,7 +8424,8 @@ def main():
                                 measure_offset=measure_offset,
                                 initial_rest_measures=initial_rest_measures if i == 0 else 0,
                                 mmrest_groups=mmrest_groups,
-                                rhythm_mode=rhythm_mode)
+                                rhythm_mode=rhythm_mode,
+                                key_sig_changes_dict=key_sig_changes_dict)
         
         # aggiorna measure_offset dal count ritornato
         measure_offset += meas_count

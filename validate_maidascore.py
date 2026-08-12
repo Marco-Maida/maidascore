@@ -579,8 +579,11 @@ def validate_all_pages(svg_pattern_dir, mscz_path=None, prefix=None):
     svg_files = globmod.glob(pattern)
     if prefix:
         # Match files like {prefix}_svg-N_maidascore.svg
+        # 12 Ago 2026: usa startswith(prefix_base + '_svg') per evitare che
+        # prefix 'Canzon_v24' matchi anche 'Canzon_v24_r' (falsi positivi).
         prefix_base = os.path.basename(prefix)
-        svg_files = [f for f in svg_files if os.path.basename(f).startswith(prefix_base)]
+        svg_files = [f for f in svg_files
+                     if os.path.basename(f).startswith(prefix_base + '_svg')]
     # Sort numerically by page number
     def page_num(path):
         m = re.search(r'-(\d+)_maidascore\.svg$', path)
