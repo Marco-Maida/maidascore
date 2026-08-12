@@ -42,3 +42,4 @@ env/
 
 # Log
 *.log
+.local/

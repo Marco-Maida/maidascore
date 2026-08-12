@@ -5351,10 +5351,106 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         sec_x_left = mid_x
                         sec_x_right = bi['x_right']
                         pri_center = (byt + byb) / 2
-                        sec_center = pri_center - 94
-                        sec_y_top = sec_center - 47 / 2
-                        sec_y_bot = sec_center + 47 / 2
+                        sec_center = pri_center - 94  # ABOVE primary (non-rhythm)
+                        sec_y_top = sec_center - 31 / 2  # thinner (31px, not 47px)
+                        sec_y_bot = sec_center + 31 / 2
                         _new_secondary_beams.append((sec_x_left, sec_y_top, sec_x_right, sec_y_bot))
+
+        # Create secondary beams for 8th+16th+16th figures (Step1, non-rhythm)
+        # The two 16th notes need a secondary beam connecting them.
+        if note_info:
+            _ni_notes_s1b = note_info.get('notes', [])
+            _sixteenth_pairs_s1 = []
+            for i, n in enumerate(_ni_notes_s1b):
+                if (n.get('dur_key') == '16th' and i + 1 < len(_ni_notes_s1b)
+                        and _ni_notes_s1b[i + 1].get('dur_key') == '16th'
+                        and _ni_notes_s1b[i + 1]['measure_idx'] == n['measure_idx']
+                        and _ni_notes_s1b[i + 1]['onset'] == n['onset'] + 0.25):
+                    # Only create secondary beam if preceded by an 8th
+                    if i > 0 and _ni_notes_s1b[i - 1].get('dur_key') == 'eighth':
+                        _sixteenth_pairs_s1.append((n['measure_idx'], n['onset'],
+                                                   _ni_notes_s1b[i + 1]['onset']))
+            if _sixteenth_pairs_s1:
+                _svg_notes_by_meas_s1b = {}
+                for sn in notes:
+                    m_idx = sn.get('measure_idx')
+                    if m_idx is not None:
+                        _svg_notes_by_meas_s1b.setdefault(m_idx, []).append(sn)
+                _new_sec_16_s1 = []
+                for m_idx, s1_onset, s2_onset in _sixteenth_pairs_s1:
+                    meas_notes = _svg_notes_by_meas_s1b.get(m_idx, [])
+                    if len(meas_notes) < 2:
+                        continue
+                    meas_notes_sorted = sorted(meas_notes, key=lambda n: n['center_x'])
+                    _ni_meas_s1b = sorted(
+                        [n for n in _ni_notes_s1b if n['measure_idx'] == m_idx],
+                        key=lambda n: n['onset'])
+                    _s1_idx = None
+                    _s2_idx = None
+                    for j, n in enumerate(_ni_meas_s1b):
+                        if n['onset'] == s1_onset and n.get('dur_key') == '16th':
+                            _s1_idx = j
+                        if n['onset'] == s2_onset and n.get('dur_key') == '16th':
+                            _s2_idx = j
+                    if _s1_idx is None or _s2_idx is None:
+                        continue
+                    if _s1_idx >= len(meas_notes_sorted) or _s2_idx >= len(meas_notes_sorted):
+                        continue
+                    cx_1 = meas_notes_sorted[_s1_idx]['center_x']
+                    cx_2 = meas_notes_sorted[_s2_idx]['center_x']
+                    _notes_y = [sn.get('y', 0) for sn in meas_notes_sorted]
+                    _notes_y_mid = (min(_notes_y) + max(_notes_y)) / 2 if _notes_y else 0
+                    _cand_beams_16_s1 = []
+                    for bi in beam_infos:
+                        if id(bi) in beam_is_secondary:
+                            continue
+                        bl = bi['x_left']
+                        br = bi['x_right']
+                        byt = bi['y_top']
+                        byb = bi['y_bot']
+                        bw = br - bl
+                        if bw < 200 or bw > 800:
+                            continue
+                        bi_y_mid = (byt + byb) / 2
+                        if abs(bi_y_mid - _notes_y_mid) > 2000:
+                            continue
+                        if not (bl - 100 <= cx_1 <= br + 100):
+                            continue
+                        if not (bl - 100 <= cx_2 <= br + 100):
+                            continue
+                        _cand_beams_16_s1.append((bw, bi, byt, byb))
+                    if not _cand_beams_16_s1:
+                        continue
+                    _cand_beams_16_s1.sort(key=lambda x: x[0])
+                    bw16, bi16, byt16, byb16 = _cand_beams_16_s1[0]
+                    # Check no existing secondary in same system
+                    has_sec_16 = False
+                    for bi2 in beam_infos:
+                        if id(bi2) not in beam_is_secondary:
+                            continue
+                        if min(bi2['x_right'], bi16['x_right']) - max(bi2['x_left'], bi16['x_left']) <= 50:
+                            continue
+                        if abs(bi2['y_top'] - byt16) > 500:
+                            continue
+                        has_sec_16 = True
+                        break
+                    if has_sec_16:
+                        continue
+                    sec_x_left = cx_1 - 20
+                    sec_x_right = cx_2 + 20
+                    pri_center = (byt16 + byb16) / 2
+                    sec_center = pri_center - 94  # ABOVE primary (non-rhythm)
+                    sec_y_top = sec_center - 31 / 2
+                    sec_y_bot = sec_center + 31 / 2
+                    _new_sec_16_s1.append((sec_x_left, sec_y_top, sec_x_right, sec_y_bot))
+                if _new_sec_16_s1:
+                    for sx1, syt, sx2, syb in _new_sec_16_s1:
+                        new_sec = (f'<path class="Beam" fill="#000000" fill-rule="evenodd" '
+                                   f'd="M{sx1:.2f},{syt:.2f} L{sx2:.2f},{syt:.2f} '
+                                   f'L{sx2:.2f},{syb:.2f} L{sx1:.2f},{syb:.2f} '
+                                   f'L{sx1:.2f},{syt:.2f}"/>')
+                        modified = modified.replace('</svg>', new_sec + '\n</svg>')
+                    print(f"  [Step1] Created {len(_new_sec_16_s1)} secondary beams for 16th+16th")
         if _new_secondary_beams:
             for sx1, syt, sx2, syb in _new_secondary_beams:
                 new_sec = (f'<path class="Beam" fill="#000000" fill-rule="evenodd" '
@@ -5614,7 +5710,13 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         continue
                     cx_eighth = meas_notes_sorted[_e_idx]['center_x']
                     cx_sixteenth = meas_notes_sorted[_s_idx]['center_x']
+                    # Get the Y position of the notes in this measure (to filter
+                    # beams in the same system — avoid matching beams from
+                    # other systems with similar X).
+                    _notes_y = [sn.get('y', 0) for sn in meas_notes_sorted]
+                    _notes_y_mid = (min(_notes_y) + max(_notes_y)) / 2 if _notes_y else 0
                     # Find the primary beam that spans these 2 notes
+                    _candidate_beams_r = []
                     for bi in beam_infos_r:
                         if id(bi) in beam_is_secondary_r:
                             continue
@@ -5625,6 +5727,10 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         bw = br - bl
                         if bw < 200 or bw > 800:
                             continue
+                        # Beam must be in the same system as the notes
+                        bi_y_mid = (byt + byb) / 2
+                        if abs(bi_y_mid - _notes_y_mid) > 2000:
+                            continue
                         if not (bl - 100 <= cx_eighth <= br + 100):
                             continue
                         if not (bl - 100 <= cx_sixteenth <= br + 100):
@@ -5633,36 +5739,40 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                                        if bl - 100 <= sn2['center_x'] <= br + 100]
                         if len(notes_under) != 2:
                             continue
+                        _candidate_beams_r.append((bw, bi, byt, byb))
+                    if _candidate_beams_r:
+                        # Pick narrowest beam (closest to just these 2 notes)
+                        _candidate_beams_r.sort(key=lambda x: x[0])
+                        bw, bi, byt, byb = _candidate_beams_r[0]
                         # FIX: Check if there's already a secondary beam for this
-                        # primary. If so, don't create another (would make 3 lines).
+                        # primary IN THE SAME SYSTEM. If so, don't create another.
                         has_existing_sec = False
                         for bi2 in beam_infos_r:
                             if id(bi2) not in beam_is_secondary_r:
                                 continue
                             bl2 = bi2['x_left']
                             br2 = bi2['x_right']
-                            x_overlap = min(br2, br) - max(bl2, bl)
+                            x_overlap = min(br2, bi['x_right']) - max(bl2, bi['x_left'])
                             if x_overlap <= 50:
                                 continue
                             if abs(bi2['y_top'] - byt) > 500:
                                 continue
                             has_existing_sec = True
                             break
-                        if has_existing_sec:
-                            break  # skip, secondary already exists
-                        # Create secondary beam: from midpoint to right edge
-                        mid_x = (cx_eighth + cx_sixteenth) / 2
-                        sec_x_left = mid_x
-                        sec_x_right = br
-                        # In rhythm mode, primary beam is at top (y smaller),
-                        # secondary is below (y larger, closer to notehead).
-                        # Gap = 47px (same as other sixteenth beam pairs).
-                        pri_center = (byt + byb) / 2
-                        sec_center = pri_center + 94  # BELOW primary in rhythm mode
-                        sec_y_top = sec_center - 47 / 2
-                        sec_y_bot = sec_center + 47 / 2
-                        _new_sec_beams_r.append((sec_x_left, sec_y_top, sec_x_right, sec_y_bot))
-                        break
+                        if not has_existing_sec:
+                            # Create secondary beam: from midpoint to right edge
+                            mid_x = (cx_eighth + cx_sixteenth) / 2
+                            sec_x_left = mid_x
+                            sec_x_right = bi['x_right']
+                            # In rhythm mode, primary beam is at top (y smaller),
+                            # secondary is below (y larger, closer to notehead).
+                            # Gap = 94px center-to-center. Thickness = 31px
+                            # (thinner than primary's 49px, matching MuseScore).
+                            pri_center = (byt + byb) / 2
+                            sec_center = pri_center + 94  # BELOW primary
+                            sec_y_top = sec_center - 31 / 2
+                            sec_y_bot = sec_center + 31 / 2
+                            _new_sec_beams_r.append((sec_x_left, sec_y_top, sec_x_right, sec_y_bot))
                 if _new_sec_beams_r:
                     for sx1, syt, sx2, syb in _new_sec_beams_r:
                         new_sec = (f'<path class="Beam" fill="#000000" fill-rule="evenodd" '
@@ -5671,6 +5781,108 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                                    f'L{sx1:.2f},{syt:.2f}"/>')
                         modified = modified.replace('</svg>', new_sec + '\n</svg>')
                     print(f"  [Step2] Created {len(_new_sec_beams_r)} secondary beams for dotted-eighth+16th")
+
+        # Create secondary beams for 8th+16th+16th figures
+        # (croma + semicroma + semicroma). The two 16th notes need a secondary
+        # beam connecting them (La-Si pattern, battuta 17). This is a separate
+        # block from dotted-eighth+16th because the 8th+16th+16th figure does
+        # NOT have a dotted eighth — it's a plain eighth followed by two 16ths.
+        if note_info:
+            _ni_notes_r2 = note_info.get('notes', [])
+            _sixteenth_pairs_r = []
+            for i, n in enumerate(_ni_notes_r2):
+                if (n.get('dur_key') == '16th' and i + 1 < len(_ni_notes_r2)
+                        and _ni_notes_r2[i + 1].get('dur_key') == '16th'
+                        and _ni_notes_r2[i + 1]['measure_idx'] == n['measure_idx']
+                        and _ni_notes_r2[i + 1]['onset'] == n['onset'] + 0.25):
+                    # Only create secondary beam if preceded by an 8th
+                    # (8th+16th+16th figure). Skip if part of 4+ sixteenth group.
+                    if i > 0 and _ni_notes_r2[i - 1].get('dur_key') == 'eighth':
+                        _sixteenth_pairs_r.append((n['measure_idx'], n['onset'],
+                                                   _ni_notes_r2[i + 1]['onset']))
+            if _sixteenth_pairs_r:
+                _svg_notes_by_meas_r2 = {}
+                for sn in notes:
+                    m_idx = sn.get('measure_idx')
+                    if m_idx is not None:
+                        _svg_notes_by_meas_r2.setdefault(m_idx, []).append(sn)
+                _new_sec_16_beams = []
+                for m_idx, s1_onset, s2_onset in _sixteenth_pairs_r:
+                    meas_notes = _svg_notes_by_meas_r2.get(m_idx, [])
+                    if len(meas_notes) < 2:
+                        continue
+                    meas_notes_sorted = sorted(meas_notes, key=lambda n: n['center_x'])
+                    _ni_meas_notes_r2 = sorted(
+                        [n for n in _ni_notes_r2 if n['measure_idx'] == m_idx],
+                        key=lambda n: n['onset'])
+                    _s1_idx = None
+                    _s2_idx = None
+                    for j, n in enumerate(_ni_meas_notes_r2):
+                        if n['onset'] == s1_onset and n.get('dur_key') == '16th':
+                            _s1_idx = j
+                        if n['onset'] == s2_onset and n.get('dur_key') == '16th':
+                            _s2_idx = j
+                    if _s1_idx is None or _s2_idx is None:
+                        continue
+                    if _s1_idx >= len(meas_notes_sorted) or _s2_idx >= len(meas_notes_sorted):
+                        continue
+                    cx_1 = meas_notes_sorted[_s1_idx]['center_x']
+                    cx_2 = meas_notes_sorted[_s2_idx]['center_x']
+                    _notes_y = [sn.get('y', 0) for sn in meas_notes_sorted]
+                    _notes_y_mid = (min(_notes_y) + max(_notes_y)) / 2 if _notes_y else 0
+                    # Find primary beam spanning these 2 notes
+                    _cand_beams_16 = []
+                    for bi in beam_infos_r:
+                        if id(bi) in beam_is_secondary_r:
+                            continue
+                        bl = bi['x_left']
+                        br = bi['x_right']
+                        byt = bi['y_top']
+                        byb = bi['y_bot']
+                        bw = br - bl
+                        if bw < 200 or bw > 800:
+                            continue
+                        bi_y_mid = (byt + byb) / 2
+                        if abs(bi_y_mid - _notes_y_mid) > 2000:
+                            continue
+                        if not (bl - 100 <= cx_1 <= br + 100):
+                            continue
+                        if not (bl - 100 <= cx_2 <= br + 100):
+                            continue
+                        _cand_beams_16.append((bw, bi, byt, byb))
+                    if not _cand_beams_16:
+                        continue
+                    _cand_beams_16.sort(key=lambda x: x[0])
+                    bw16, bi16, byt16, byb16 = _cand_beams_16[0]
+                    # Check no existing secondary in same system
+                    has_sec_16 = False
+                    for bi2 in beam_infos_r:
+                        if id(bi2) not in beam_is_secondary_r:
+                            continue
+                        if min(bi2['x_right'], bi16['x_right']) - max(bi2['x_left'], bi16['x_left']) <= 50:
+                            continue
+                        if abs(bi2['y_top'] - byt16) > 500:
+                            continue
+                        has_sec_16 = True
+                        break
+                    if has_sec_16:
+                        continue
+                    # Create secondary beam: from first 16th to second 16th
+                    sec_x_left = cx_1 - 20
+                    sec_x_right = cx_2 + 20
+                    pri_center = (byt16 + byb16) / 2
+                    sec_center = pri_center + 94  # BELOW primary (rhythm mode)
+                    sec_y_top = sec_center - 31 / 2
+                    sec_y_bot = sec_center + 31 / 2
+                    _new_sec_16_beams.append((sec_x_left, sec_y_top, sec_x_right, sec_y_bot))
+                if _new_sec_16_beams:
+                    for sx1, syt, sx2, syb in _new_sec_16_beams:
+                        new_sec = (f'<path class="Beam" fill="#000000" fill-rule="evenodd" '
+                                   f'd="M{sx1:.2f},{syt:.2f} L{sx2:.2f},{syt:.2f} '
+                                   f'L{sx2:.2f},{syb:.2f} L{sx1:.2f},{syb:.2f} '
+                                   f'L{sx1:.2f},{syt:.2f}"/>')
+                        modified = modified.replace('</svg>', new_sec + '\n</svg>')
+                    print(f"  [Step2] Created {len(_new_sec_16_beams)} secondary beams for 16th+16th")
     
     # Re-parse systems AFTER Y-stretch (coordinates have changed!)
     # This is needed for enlarge_clef, rests, and accidentals which use system Y ranges

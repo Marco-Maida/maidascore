@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "maidascore"
-version = "1.0.1"
+version = "1.0.2"
 description = "Accessible music notation generator for dyslexic learners — converts MuseScore (.mscz) or MusicXML (.mxl) scores into simplified colored-circle notation (Italian/English note names)"
 readme = "README.md"
 license = {text = "GPL-3.0-or-later"}

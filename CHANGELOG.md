@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.2] - 2026-08-12
+
+### Fixed
+- **Secondary beams for dotted-eighth + sixteenth**: secondary beams (beam
+  secondario) are now correctly created for the dotted-eighth + sixteenth figure
+  (croma puntata + semicroma) in both standard and rhythm modes. The secondary
+  beam is thin (31px, matching MuseScore's style) and spans from the midpoint
+  between the two notes to the right edge of the primary beam. Previously the
+  code failed to find the correct primary beam because it matched beams from
+  other systems with similar X coordinates (missing Y-system filter), and the
+  secondary beam was drawn with the same thickness as the primary (47px instead
+  of 31px), making it invisible.
+- **Secondary beams for eighth + sixteenth + sixteenth**: secondary beams are
+  now created for the 8th + 16th + 16th figure (croma + semicroma + semicroma),
+  connecting the two sixteenth notes. This is handled in a separate code block
+  independent of the dotted-eighth logic, so measures without dotted-eighths are
+  also processed. A filter ensures the secondary beam is only created when the
+  two sixteenths are preceded by an eighth (not in runs of 4+ sixteenths).
+
 ## [1.0.1] - 2026-08-09
 
 ### Fixed
