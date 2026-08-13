@@ -3804,10 +3804,9 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     # are sorted by onset. Match the i-th SVG rest to the i-th
                     # .mscz rest. This is robust because MuseScore renders rests
                     # left-to-right in onset order.
-                    # TYPE-AWARE matching. MuseScore 4
-                    # non rende le half rest nell'SVG → l'ordered matching matchava
-                    # la half rest .mscz alla pausa SVG sbagliata (es. semicroma di
-                    # battuta successiva). Ora verifica che il tipo SVG corrisponda.
+                    # TYPE-AWARE matching. MuseScore 4 PUÒ renderizzare half rest
+                    # nell'SVG (path "M0,-3.3125..."). L'ordered matching verifica
+                    # che il tipo SVG corrisponda al tipo .mscz per evitare match errati.
                     if m_rests:
                         # Count how many rests have already been matched in this measure
                         n_matched = len(_matched_rest_indices.get(current_measure_idx, set()))
@@ -3833,8 +3832,14 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                             elif rest_dtype_val == 'whole' and not svg_d.startswith('M4.64'):
                                 type_match = False
                             elif rest_dtype_val == 'half':
-                                # Half rest non è nell'SVG (bug MuseScore 4) → mai match
-                                type_match = False
+                                # 13 Ago 2026: MuseScore 4 PUÒ renderizzare half rest
+                                # nell'SVG (path "M0,-3.3125..."). Se il path SVG
+                                # corrisponde a una half rest, matchala; altrimenti
+                                # type_match=False (verrà clonata).
+                                if svg_d.startswith('M0,-3.3125'):
+                                    type_match = True
+                                else:
+                                    type_match = False
                             
                             if type_match:
                                 if current_measure_idx not in _matched_rest_indices:
@@ -4098,8 +4103,10 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         expected_x += beat_w * 0.3
                     # Clone the first SVG rest of the same type
                     # Quarter rest: d starts with "M76.125", eighth rest: d starts with "M88.375"
-                    # Half rest: MuseScore 4 BUG — non rende le half rest nell'SVG export!
-                    # Dobbiamo clonarle noi con un path generato (rettangolo nero sulla 3ª linea).
+                    # Half rest: MuseScore 4 PUÒ renderizzare half rest nell'SVG export
+                    # (path "M0,-3.3125..."). Se la pausa è già stata matchata,
+                    # non clonarla. Se non è matchata (MuseScore non l'ha resa),
+                    # clonala con un rettangolo nero sulla 3ª linea.
                     HALF_REST_PATH = 'M-3.29688,-0.890625 L3.29688,-0.890625 L3.29688,1.890625 L-3.29688,1.890625 Z'
                     if svg_rests_after:
                         template_d = None
@@ -4112,16 +4119,17 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                             if sr_d:
                                 is_quarter = sr_d.startswith('M76')
                                 is_eighth = sr_d.startswith('M88')
-                                # half rest non ha template SVG (bug MuseScore 4),
-                                # non cercare un template generico per le half rest.
+                                # 13 Ago 2026: half rest di MuseScore 4 ha path M0,-3.3125
+                                # ma usiamo il rettangolo nero hardcoded (più leggibile).
                                 if (r_dtype == 'quarter' and is_quarter) or \
                                    (r_dtype == 'eighth' and is_eighth) or \
                                    (r_dtype not in ('quarter', 'eighth', 'half')):
                                     template_d = sr_d
                                     template_scale = float(sr.group(1))
                                     break
-                        # Half rest: nessun template nell'SVG (bug MuseScore 4).
-                        # Usa path hardcoded con scale pieno (NON rimpicciolito).
+                        # Half rest: usa rettangolo nero hardcoded (più leggibile
+                        # del path SVG di MuseScore, e funziona anche se MuseScore
+                        # non ha reso la half rest nell'SVG).
                         if r_dtype == 'half' and template_d is None:
                             template_d = HALF_REST_PATH
                             template_scale = 3.386  # scale pieno come semiminime
@@ -7740,11 +7748,18 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         # Eighth rest: d starts with "M88" → rimpicciolisci (0.65)
         # 16th rest: d starts with "M0," or "M113" → rimpicciolisci ancora di più (0.33)
         # Quarter rest: d starts with "M76" → scale normale
+        # Half rest (MuseScore 4): d starts with "M0,-3.3125" → scale pieno
         # semicroma ~metà della croma, molto più piccola
+        # 13 Ago 2026: half rest di MuseScore 4 inizia con M0,-3.3125, stesso
+        # prefisso M0, della 16th rest. Distinguere tramite il valore -3.3125.
         is_eighth_rest = path_d.startswith('M88')
-        is_sixteenth_rest = path_d.startswith('M0,') or path_d.startswith('M113')
+        is_half_rest = path_d.startswith('M0,-3.3125') or path_d.startswith('M-3.29688')
+        is_sixteenth_rest = (path_d.startswith('M0,') or path_d.startswith('M113')) and not is_half_rest
         
-        if is_sixteenth_rest:
+        if is_half_rest:
+            # Half rest: scale pieno come semiminime (non rimpicciolita)
+            effective_scale = rest_scale_factor * REST_QUARTER_SCALE
+        elif is_sixteenth_rest:
             effective_scale = rest_scale_factor * REST_SIXTEENTH_SCALE
             rest_eighth_count += 1
         elif is_eighth_rest:
