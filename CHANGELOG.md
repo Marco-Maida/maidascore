@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.4] - 2026-08-13
+
+### Fixed
+- **Half rest (pausa di minima) invisible on staff**: MuseScore 4 renders
+  half rests (2-quarter / half-measure rests) with an SVG path starting
+  with `M0,-3.3125`, which the code mistook for a 16th rest (also starting
+  with `M0,`) and shrank to 33% scale — making the rest glyph invisible on
+  the staff. The type-aware rest matching also assumed half rests are never
+  rendered in the SVG (an outdated assumption from an earlier MuseScore 4
+  bug). Fix applied in three points: (1) `enlarge_rest` now identifies half
+  rests via `M0,-3.3125` before the 16th-rest check and applies the correct
+  scale; (2) type-aware matching matches `M0,-3.3125` SVG paths as half
+  rests instead of always returning `type_match=False`; (3) the clone
+  step only clones unmatched rests (matched half rests are no longer
+  duplicated). Result: 20/20 rests visible on the staff (was 16/20), zero
+  false clones.
+
 ## [1.0.3] - 2026-08-12
 
 ### Fixed
