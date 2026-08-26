@@ -5068,7 +5068,9 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
     # TAVOLA constants — definiti qui (prima dell'uso nelle sezioni grigi riga ~3975)
     # per permettere alle sezioni grigie di estendersi fino alla tavola.
     TAVOLA_ROW_HEIGHT = 175  # SVG units height of tavola sonora row
-    TAVOLA_GAP = 280  # gap between staff bottom and tavola row top (era 180, +100 per distanziare i blocchi dal pentagramma — riduce confusione visiva nei dislessici)
+    # In modalità ritmo i blocchi sono attaccati alle sezioni grigie (gap minimo).
+    # In modalità normale, gap ampio (280) per separare i blocchi dal pentagramma.
+    TAVOLA_GAP = 50 if rhythm_mode else 280
     bg_elements = []
     for x_start, info in systems.items():
         notes_in_sys = [n for n in notes if n['system_key'] == x_start]
@@ -5099,10 +5101,14 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     max_stem_y_grey = stem_max_y_g
         dynamic_gap_grey = max(TAVOLA_GAP, max_stem_y_grey - bottom_y + 50)
         tavola_top_grey = bottom_y + dynamic_gap_grey
-        # Estendi le sezioni grigie fino al bottom del pentagramma (non oltre).
-        # Lo spazio tra pentagramma e tavola sonora resta bianco, per non confondere
-        # i dislessici con rumore visivo tra le linee del pentagramma e i blocchi.
-        grey_height = bottom_y - staff_top + 6  # +6 = stessa estensione del pentagramma (staff_height)
+        # In modalità ritmo: estendi le sezioni grigie fino alla tavola sonora
+        # (blocchi attaccati alle sezioni grigie, nessuno spazio bianco).
+        # In modalità normale: ferma al bottom del pentagramma, spazio bianco
+        # tra pentagramma e tavola per ridurre rumore visivo.
+        if rhythm_mode:
+            grey_height = tavola_top_grey - staff_top
+        else:
+            grey_height = bottom_y - staff_top + 6
         
         # salta i settori grigi per le battute MMRest (1 battuta)
         # 4 Ago 2026 (bug KS): sys_global_start deve contare battute LOGICHE
@@ -5336,7 +5342,10 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         # Gap = gambo (360) + tavola (175) + margine (300) = 835.
         # distanza pentagrammi +50% → margine 300→717px
         # era 835px (margine 300), target 835*1.5=1252 → margine 717
-        rhythm_fixed_gap = 360 + TAVOLA_ROW_HEIGHT + 717
+        # Gap fisso: gambo (360) + tavola (175) + margine.
+        # Margine ridotto in modalità ritmo (TAVOLA_GAP=50 invece di 280):
+        # 717 - 230 = 487 per compensare il gap pentagramma→tavola ridotto.
+        rhythm_fixed_gap = 360 + TAVOLA_ROW_HEIGHT + 487
         modified = y_stretch_systems(modified, systems, target_line_spacing=no_stretch_target,
                                      extra_system_gap=0,
                                      fixed_system_gap=rhythm_fixed_gap,

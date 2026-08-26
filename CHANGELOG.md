@@ -34,6 +34,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as in full notation mode. This allows learners to identify notes by
   name even in the rhythm-focused view.
 
+- **Mode-dependent staff/table spacing (rhythm vs. full)**: the gap
+  between the staff and the sound table is now conditional on the mode.
+  In full notation mode, the wide gap (280) and white space below the
+  staff are preserved as introduced above, keeping the blocks clearly
+  separated from the staff lines. In rhythm mode (`--rhythm`), the gap
+  is reduced to 50 and the grey beat sectors are extended down to the
+  top of the sound table, so the colored blocks are attached directly
+  to the grey sectors with no white space between them. This gives the
+  rhythm view a compact, unified layout where beat sectors and note
+  blocks form a single visual band under the staff.
+  (`--rhythm`), the colored notehead circles previously showed only the
+  color (no note name). They now display the note name (Do/Re/Mi/Fa/
+  Sol/La/Si, or C/D/E/F/G/A/B in English) inside the circle, the same
+  as in full notation mode. This allows learners to identify notes by
+  name even in the rhythm-focused view.
+
 ## [1.0.4] - 2026-08-13
 
 ### Fixed
