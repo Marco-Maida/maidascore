@@ -5374,6 +5374,17 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             _max_x_end = max(_all_x_ends) if _all_x_ends else 0
             # Find StaffLines that are shorter than max (last system)
             _short_sl = [m for m in _sl_matches if float(m.group(4)) < _max_x_end - 1000]
+            if not _short_sl:
+                # All staff lines on this page are the same (short) length —
+                # this happens when the last system is alone on a page.
+                # Use the rightmost barline as the target width instead.
+                _all_barlines = []
+                for _bls in barlines.values():
+                    _all_barlines.extend(_bls)
+                if _all_barlines:
+                    _max_barline = max(_all_barlines)
+                    _max_x_end = max(_max_x_end, _max_barline)
+                    _short_sl = [m for m in _sl_matches if float(m.group(4)) < _max_x_end - 1000]
             if _short_sl:
                 # Extend short StaffLines to the max x_end
                 for m in reversed(_short_sl):
