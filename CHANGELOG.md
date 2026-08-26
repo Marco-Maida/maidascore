@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.5] - 2026-08-26
+
+### Changed
+- **Increased gap between staff and sound table (tavola sonora)**: the
+  vertical distance between the bottom of the staff and the top of the
+  colored sound-table blocks was increased from 180 to 280 SVG units
+  (+55%). This separates the colored note-name blocks further from the
+  staff lines, reducing visual confusion for dyslexic learners who
+  struggled to distinguish the blocks from the staff lines. The
+  inter-system gap (`TAVOLA_GAP_DYNAMIC`) was increased correspondingly
+  from 170 to 270 to prevent the sound table of one system from
+  overlapping the staff of the next.
+
+- **Removed grey background sectors below the staff**: the alternating
+  grey/white beat sectors previously extended from the top of the staff
+  down to the top of the sound table, filling the entire space between
+  them with visual noise. The sectors now stop at the bottom of the
+  staff, leaving the space between the staff and the sound table clean
+  and white. The grey sectors on the staff itself (beat alternation)
+  are preserved. This further reduces visual clutter between the staff
+  lines and the colored blocks.
+
+- **Note names inside circles in rhythm mode**: in rhythm mode
+  (`--rhythm`), the colored notehead circles previously showed only the
+  color (no note name). They now display the note name (Do/Re/Mi/Fa/
+  Sol/La/Si, or C/D/E/F/G/A/B in English) inside the circle, the same
+  as in full notation mode. This allows learners to identify notes by
+  name even in the rhythm-focused view.
+
 ## [1.0.4] - 2026-08-13
 
 ### Fixed
