@@ -813,6 +813,51 @@ def _add_mmrests_to_mscx(mscx_content, note_info):
     return new_mscx
 
 
+def _fix_beam_modes_mscx(mscx_content):
+    """Corregge i BeamMode mancanti nell'.mscx intermedio.
+
+    Quando MuseScore importa il MusicXML generato (con i <beam> iniettati),
+    converte 'begin16' in 'begin' ma omette il BeamMode della nota finale
+    del gruppo (che nel MusicXML era 'end'). Un BeamMode assente = 'auto'
+    per MuseScore, e l'auto-beam ricalcola la travatura sbagliando i gruppi
+    misti (es. croma + 2 semicrome → beam secondario esteso a tutto il
+    gruppo, o croma finale non travata). Ricostruiamo i BeamMode a partire
+    dai <Beam> elementi: la nota successiva all'ultimo <Beam> senza
+    BeamMode deve essere 'end'.
+    """
+    import re as _re
+    # elabora battuta per battuta
+    def _fix_measure(m):
+        # trova tutti i Chord con o senza BeamMode
+        chords = list(_re.finditer(r'<Chord>(.*?)</Chord>', m, _re.DOTALL))
+        if not chords:
+            return m
+        # determina per ogni chord se ha BeamMode e se è preceduto da <Beam>
+        out = m
+        for i, cm in enumerate(chords):
+            has_beam_mode = '<BeamMode>' in cm.group(1)
+            if has_beam_mode:
+                continue
+            # nota senza BeamMode: se il chord precedente ha BeamMode begin/mid
+            # e un <Beam> tag li separa, questa nota CHIUDE il gruppo → 'end'
+            if i == 0:
+                continue
+            prev = chords[i-1].group(1)
+            prev_bm = _re.search(r'<BeamMode>(\w+)</BeamMode>', prev)
+            if prev_bm and prev_bm.group(1) in ('begin', 'mid', 'begin16', 'mid16'):
+                # inserisci <BeamMode>end</BeamMode> dopo <durationType>
+                cm_content = cm.group(1)
+                new_content = _re.sub(
+                    r'(<durationType>\w+</durationType>)',
+                    r'\1<BeamMode>end</BeamMode>',
+                    cm_content, count=1)
+                out = out.replace('<Chord>' + cm.group(1) + '</Chord>',
+                                  '<Chord>' + new_content + '</Chord>', 1)
+        return out
+    # il .mscx ha una sola parte estratta; processa ogni <Measure>
+    return _re.sub(r'<Measure>.*?</Measure>', lambda m: _fix_measure(m.group(0)), mscx_content, flags=_re.DOTALL)
+
+
 def extract_single_part_mscz(input_mscz, part_index=0, key_sig_changes=None):
     """Estrae una singola parte da un .mscz multi-strumento.
     
@@ -1168,6 +1213,13 @@ def extract_single_part_mscz(input_mscz, part_index=0, key_sig_changes=None):
         # Rimuovi tutti gli elementi <Accidental>...</Accidental>
         import re as _re
         cleaned = _re.sub(r'<Accidental>.*?</Accidental>', '', mscx_content, flags=_re.DOTALL)
+        # 9 Set 2026 (bug doppia travatura): correggi i BeamMode mancanti.
+        # MuseScore, importando il MusicXML con i <beam> iniettati, omette il
+        # BeamMode 'end' sulla nota finale dei gruppi travati (begin/mid espliciti
+        # vengono mantenuti, 'end' viene perso). Un BeamMode assente = 'auto'
+        # → auto-beam ricalcola il gruppo in modo errato (es. croma + 2 semicrome
+        # renderizzate come 3 crome a travatura singola, battuta 17 Canzon).
+        cleaned = _fix_beam_modes_mscx(cleaned)
         with open(mscx_path, 'w') as f:
             f.write(cleaned)
         
@@ -1182,6 +1234,10 @@ def extract_single_part_mscz(input_mscz, part_index=0, key_sig_changes=None):
         
         # Ri-comprimi in .mscz
         os.unlink(mscz_path)
+        import os as _os
+        _os.makedirs('/tmp/beam_debug', exist_ok=True)
+        import shutil as _sh
+        _sh.copy(mscx_path, '/tmp/beam_debug/last_intermediate.mscx')
         with zipfile.ZipFile(mscz_path, 'w', zipfile.ZIP_DEFLATED) as zf:
             for root_dir, dirs, files in os.walk(tmp_dir):
                 for file in files:
@@ -1488,25 +1544,38 @@ def make_accessible_mscz(input_mscz, output_mscz, part_index=0, rhythm_mode=Fals
                 for page_end in range(systems_per_page, n_systems, systems_per_page):
                     if page_end - 1 < len(break_indices):
                         page_break_set.add(break_indices[page_end - 1])
-            def add_linebreak(match):
-                measure_count[0] += 1
-                measure_xml = match.group(0)
-                idx = measure_count[0] - 1
-                if idx in page_break_set:
-                    # PAGE break (new page)
-                    insert_pos = measure_xml.rfind('</Measure>')
-                    if insert_pos > 0:
-                        lb = '<LayoutBreak><subtype>page</subtype><name></name></LayoutBreak>'
-                        measure_xml = measure_xml[:insert_pos] + lb + measure_xml[insert_pos:]
-                elif idx in break_set:
-                    # LINE break (same page, next system)
-                    insert_pos = measure_xml.rfind('</Measure>')
-                    if insert_pos > 0:
-                        lb = '<LayoutBreak><subtype>line</subtype><name></name></LayoutBreak>'
-                        measure_xml = measure_xml[:insert_pos] + lb + measure_xml[insert_pos:]
-                return measure_xml
-            
-            mscx = re.sub(r'<Measure>.*?</Measure>', add_linebreak, mscx, flags=re.DOTALL)
+            # NOTE ON LAYOUTBREAK PLACEMENT (bug fix, Sep 2026):
+            # MuseScore 4 merges adjacent beam groups (e.g. [eighth+2x16th] followed
+            # by [2xeighth]) into a single beam when a LayoutBreak element sits at the
+            # END of a measure with an empty <name></name> tag. Placing the LayoutBreak
+            # at the START of the FOLLOWING measure without the <name> tag renders
+            # correctly. Verified by SVG-render diff: end-of-measure placement fuses
+            # beams, start-of-next-measure placement does not.
+            break_after = {}
+            for _idx in break_set | page_break_set:
+                if _idx in page_break_set:
+                    break_after[_idx] = 'page'
+                else:
+                    break_after[_idx] = 'line'
+            measures = re.findall(r'<Measure>.*?</Measure>', mscx, flags=re.DOTALL)
+            originals = list(measures)
+            for _idx, _subtype in sorted(break_after.items()):
+                _target = _idx + 1
+                if _target < len(measures):
+                    _lb = f'<LayoutBreak><subtype>{_subtype}</subtype></LayoutBreak>'
+                    measures[_target] = re.sub(
+                        r'<Measure>\s*',
+                        '<Measure>\n          ' + _lb,
+                        measures[_target], count=1)
+                elif measures:
+                    # Break after the last measure: fall back to end-of-measure
+                    _lb = f'<LayoutBreak><subtype>{_subtype}</subtype></LayoutBreak>'
+                    measures[-1] = measures[-1].replace('</Measure>', _lb + '</Measure>', 1)
+            # Rebuild mscx with the modified measures (replace in reverse order
+            # so earlier occurrences stay valid)
+            for _i in range(len(originals) - 1, -1, -1):
+                if measures[_i] != originals[_i]:
+                    mscx = mscx.replace(originals[_i], measures[_i], 1)
             
             with open(mscx_path, 'w') as f:
                 f.write(mscx)
@@ -1576,6 +1645,37 @@ def make_accessible_mscz(input_mscz, output_mscz, part_index=0, rhythm_mode=Fals
     
     shutil.rmtree(temp_dir)
     return output_mscz, initial_rest_measures, mmrest_groups
+
+
+def build_wavy_line(x, y, width, height, color, n_waves=None, wave_h=None,
+                    stroke_w=6.0):
+    """Genera un elemento SVG <path> con una linea ondulata (serpentina)
+    regolare e perfettamente simmetrica dentro il rettangolo di durata.
+
+    Sinusoide pura a ampiezza e periodo costanti per tutta la lunghezza:
+    ondate regolari e identiche, simmetriche rispetto al centro verticale.
+    """
+    import math
+    # Periodo di ~70px; mezz'onda iniziale/finale complete (simmetria)
+    if n_waves is None:
+        n_waves = max(2, int(round(width / 70.0)))
+    if wave_h is None:
+        wave_h = height * 0.45
+    # 8 campioni per mezz'onda per un tracciato morbido
+    n_samples = int(2 * n_waves * 8) + 1
+    pts = []
+    for i in range(n_samples):
+        px = x + (width * i) / (n_samples - 1)
+        py = y + height / 2.0 + wave_h * 0.5 * math.sin(
+            2.0 * math.pi * n_waves * (i / (n_samples - 1))
+        )
+        pts.append((px, py))
+    # Formato "x,y" (virgola) — richiesto dal remap y-stretch dei path M/L
+    d = f'M {pts[0][0]:.2f},{pts[0][1]:.2f} ' + ' '.join(
+        f'L {px:.2f},{py:.2f}' for px, py in pts[1:])
+    return (f'<path d="{d}" fill="none" stroke="{color}" '
+            f'stroke-width="{stroke_w}" stroke-linecap="round" '
+            f'stroke-linejoin="round" />')
 
 
 # ==============================================================================
@@ -4684,6 +4784,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         right_stem = (old_sx, new_sx, s_min_y, s_max_y)
         
         if left_stem is None and right_stem is None:
+            print(f"  [BEAM-DBG] beam_left={beam_left:.0f} beam_right={beam_right:.0f} → NESSUNO STEM. Stems sistema: {[(round(s[0]),round(s[1],0)) for s in stem_shifts_list if abs(s[3]-beam_orig_y)<500][:20]}")
             continue  # Can't identify connected stems, skip
         
         # Compute new beam edges: preserve the ~4.7px overhang on each side
@@ -5134,7 +5235,10 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             m_width = m_end - m_start
             _gm_grey = sys_global_start + m_idx
             n_sectors_m = _n_sectors_for_measure(_gm_grey)
-            sector_width = BEAT_WIDTH  # always 825px = 1 quarter beat
+            # Sector width must match the measure width produced by the
+            # equalizer (m_width / n_sectors), otherwise in non-4/4 meters the
+            # 825px sectors overflow the barline and overlap the next measure.
+            sector_width = m_width / n_sectors_m if n_sectors_m else BEAT_WIDTH
 
             for q in range(n_sectors_m):
                 bg_color = BG_COLOR_LIGHT if global_q % 2 == 0 else BG_COLOR_DARK
@@ -5284,12 +5388,19 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 # Height: THIN bar (like reference image) — white fill, colored border
                 bar_h = disc_r * 0.55
                 bar_y = cy - bar_h / 2
-                
+
                 duration_rects.append(
                     f'<rect x="{bar_x:.1f}" y="{bar_y:.1f}" '
                     f'width="{bar_width:.1f}" height="{bar_h:.1f}" '
                     f'fill="white" stroke="{n["color"]}" stroke-width="6" '
                     f'rx="4" ry="4" />'
+                )
+                # Serpentina ondulata dentro al rettangolo (regola 9 Set 2026):
+                # per figure >= semiminima puntata. Ondine regolari,
+                # perfettamente simmetriche, per tutta la lunghezza.
+                duration_rects.append(
+                    build_wavy_line(bar_x + 8, bar_y, bar_width - 16, bar_h,
+                                    n["color"], stroke_w=5.0)
                 )
                 break
     
