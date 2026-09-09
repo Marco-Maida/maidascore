@@ -1578,6 +1578,37 @@ def make_accessible_mscz(input_mscz, output_mscz, part_index=0, rhythm_mode=Fals
     return output_mscz, initial_rest_measures, mmrest_groups
 
 
+def build_wavy_line(x, y, width, height, color, n_waves=None, wave_h=None,
+                    stroke_w=6.0):
+    """Genera un elemento SVG <path> con una linea ondulata (serpentina)
+    regolare e perfettamente simmetrica dentro il rettangolo di durata.
+
+    Sinusoide pura a ampiezza e periodo costanti per tutta la lunghezza:
+    ondate regolari e identiche, simmetriche rispetto al centro verticale.
+    """
+    import math
+    # Periodo di ~70px; mezz'onda iniziale/finale complete (simmetria)
+    if n_waves is None:
+        n_waves = max(2, int(round(width / 70.0)))
+    if wave_h is None:
+        wave_h = height * 0.45
+    # 8 campioni per mezz'onda per un tracciato morbido
+    n_samples = int(2 * n_waves * 8) + 1
+    pts = []
+    for i in range(n_samples):
+        px = x + (width * i) / (n_samples - 1)
+        py = y + height / 2.0 + wave_h * 0.5 * math.sin(
+            2.0 * math.pi * n_waves * (i / (n_samples - 1))
+        )
+        pts.append((px, py))
+    # Formato "x,y" (virgola) — richiesto dal remap y-stretch dei path M/L
+    d = f'M {pts[0][0]:.2f},{pts[0][1]:.2f} ' + ' '.join(
+        f'L {px:.2f},{py:.2f}' for px, py in pts[1:])
+    return (f'<path d="{d}" fill="none" stroke="{color}" '
+            f'stroke-width="{stroke_w}" stroke-linecap="round" '
+            f'stroke-linejoin="round" />')
+
+
 # ==============================================================================
 # 3. ESPORTA SVG DA MUSESCORE 4
 # ==============================================================================
@@ -5282,6 +5313,13 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     f'width="{bar_width:.1f}" height="{bar_h:.1f}" '
                     f'fill="white" stroke="{n["color"]}" stroke-width="6" '
                     f'rx="4" ry="4" />'
+                )
+                # Serpentina ondulata dentro al rettangolo (regola 9 Set 2026):
+                # per figure >= semiminima puntata. Ondine regolari,
+                # perfettamente simmetriche, per tutta la lunghezza.
+                duration_rects.append(
+                    build_wavy_line(bar_x + 8, bar_y, bar_width - 16, bar_h,
+                                    n["color"], stroke_w=5.0)
                 )
                 break
     
