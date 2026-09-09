@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-09-10
+
+### Added
+- **Wavy lines (ondine) inside duration bars**: notes lasting longer than
+  one beat now render a regular, perfectly symmetric sine wave inside the
+  colored duration bar. The wave has constant amplitude and period
+  (auto-scaled, ~70px per wave), drawn with 8 samples per half-wave for a
+  smooth path. Visual indication of sustained sound, complementing the
+  color-coded circles.
+
+### Fixed
+- **Triplet handling — overfull measures**: triplet 16ths (actual duration
+  1/6 of a quarter) were extracted as regular 16ths (0.25) and re-appended
+  sequentially during the single-part rebuild, producing overfull measures
+  (e.g. 17/16) and a silent MuseScore 4 crash at SVG export (exit code 40).
+  Note extraction now stores the exact `quarterLength` of every note/rest,
+  and the rebuild uses it instead of mapping duration types through a
+  fixed table.
+
 ## [1.0.4] - 2026-08-13
 
 ### Fixed
