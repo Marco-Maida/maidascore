@@ -477,6 +477,11 @@ def extract_notes_via_music21(mscz_path, part_index=0):
             for n in m.notesAndRests:
                 ql = n.quarterLength
                 offset = n.offset
+                # 10 Set 2026 (Nachtmusik): i Chord non hanno .pitch.
+                # Per una parte solistica riduciamo l'accordo alla nota
+                # più grave (principale), preservando la durata.
+                if n.isChord:
+                    n = n.sortAscending().notes[0]
                 
                 # Determina duration_type e dots dalla ql
                 # dotted = ql = base * 1.5
@@ -494,6 +499,7 @@ def extract_notes_via_music21(mscz_path, part_index=0):
                         'dur_key': f"{dur_type}_dotted" if dots > 0 else (dur_type if dur_type != 'measure' else 'whole'),
                         'dots': dots,
                         'onset': offset,
+                        'ql': float(ql),  # 10 Set 2026: durata esatta (triplet = 1/6, non 0.25)
                         'measure_idx': m_idx,
                         'is_measure_rest': is_measure_rest,
                     })
@@ -554,6 +560,7 @@ def extract_notes_via_music21(mscz_path, part_index=0):
                         'dots': dots,
                         'dur_key': dur_key,
                         'onset': offset,
+                        'ql': float(ql),  # 10 Set 2026: durata esatta (triplet = 1/6, non 0.25)
                         'measure_idx': m_idx,
                         'n_chord_notes': 1,
                     })
@@ -904,9 +911,9 @@ def extract_single_part_mscz(input_mscz, part_index=0, key_sig_changes=None):
     
     events_by_measure = defaultdict(list)
     for n in note_info['notes']:
-        events_by_measure[n['measure_idx']].append(('N', n['onset'], n['duration_type'], n['pitch'], n.get('dots', 0)))
+        events_by_measure[n['measure_idx']].append(('N', n['onset'], n['duration_type'], n['pitch'], n.get('dots', 0), n.get('is_measure_rest', False), n.get('ql')))
     for r in note_info['rests']:
-        events_by_measure[r['measure_idx']].append(('R', r['onset'], r['duration_type'], 0, 0, r.get('is_measure_rest', False)))
+        events_by_measure[r['measure_idx']].append(('R', r['onset'], r['duration_type'], 0, 0, r.get('is_measure_rest', False), r.get('ql')))
     
     max_measure = max(events_by_measure.keys()) if events_by_measure else 0
     _prev_ts = ts
@@ -936,9 +943,16 @@ def extract_single_part_mscz(input_mscz, part_index=0, key_sig_changes=None):
             pitch = ev[3]
             dots = ev[4]
             is_measure_rest = ev[5] if len(ev) > 5 else False
+            exact_ql = ev[6] if len(ev) > 6 else None
             if is_measure_rest:
                 # usa la durata esatta del time signature, non whole=4.0
                 ql = _m_ql
+            elif exact_ql is not None and exact_ql > 0:
+                # 10 Set 2026 (Nachtmusik): usa la durata esatta estratta
+                # (preserva i terzini: ql=1/6 invece di 0.25). Senza questo
+                # le battute con terzini diventano overfull (17/16) e
+                # MuseScore 4 crasha all'export SVG (exit 40).
+                ql = exact_ql
             else:
                 dur_key = f"{dtype}_dotted" if dots > 0 else dtype
                 ql = DUR_TO_QL.get(dur_key, DUR_TO_QL.get(dtype, 1.0))
@@ -1492,6 +1506,11 @@ def make_accessible_mscz(input_mscz, output_mscz, part_index=0, rhythm_mode=Fals
                 measure_count[0] += 1
                 measure_xml = match.group(0)
                 idx = measure_count[0] - 1
+                # BUGFIX: un <LayoutBreak> dentro una battuta multiMeasureRest
+                # provoca il crash di MuseScore 4 all'export SVG (exit 40).
+                # I break che cadono su battute MMR vengono ignorati.
+                if '<multiMeasureRest>' in measure_xml:
+                    return measure_xml
                 if idx in page_break_set:
                     # PAGE break (new page)
                     insert_pos = measure_xml.rfind('</Measure>')
