@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-09-10
+
+### Changed
+- **Grey sectors restricted to the staff**: the alternating grey quarter-backgrounds
+  now end at the fifth staff line (bottom) instead of extending all the way down to
+  the tavola sonora (sound table). The space between the staff and the sound table
+  is now clean white, giving a clearer visual separation between the notation and
+  the sound table. Verified on multi-time-signature scores (4/4 → 3/4).
+
 ## [1.1.0] - 2026-09-10
 
 ### Added

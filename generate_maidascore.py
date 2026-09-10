@@ -5149,8 +5149,9 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     max_stem_y_grey = stem_max_y_g
         dynamic_gap_grey = max(TAVOLA_GAP, max_stem_y_grey - bottom_y + 50)
         tavola_top_grey = bottom_y + dynamic_gap_grey
-        # Estendi le sezioni grigie fino all'inizio della tavola (non oltre, per non coprirla)
-        grey_height = tavola_top_grey - staff_top
+        # Sezioni grigie SOLO sul pentagramma (10 Set 2026, direttiva Marco):
+        # non si estendono più fino alla tavola sonora.
+        grey_height = staff_height
         
         # salta i settori grigi per le battute MMRest (1 battuta)
         # 4 Ago 2026 (bug KS): sys_global_start deve contare battute LOGICHE
