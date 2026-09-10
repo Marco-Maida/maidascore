@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.2] - 2026-09-10
+
+### Added
+- **Score title and author on the first page**: the header now shows the score
+  title (bold) and the author, drawn in a band added above the viewBox so the
+  staff positions are unchanged. Title is read from `<credit-words>` /
+  `movement-title`, author from the composer metadata (`<creator>` for MusicXML,
+  `<metaTag name="composer">` for MuseScore files).
+
+### Fixed
+- Removed a duplicate header block that drew the title/author twice.
+
 ## [1.1.1] - 2026-09-10
 
 ### Changed
