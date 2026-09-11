@@ -3156,6 +3156,45 @@ def build_system_layout(systems, barlines, time_sigs_per_measure, measure_offset
     return layout
 
 
+def _note_final_x(n, all_notes_in_sys, current_measure_idx, new_m_start, new_m_width,
+                   sector_size, n_sectors_m, ts_beats_m, ts_beats_for_measure_fn=None):
+    """Replica la formula onset-based usata nel ramo Note per calcolare
+    la X finale di una nota dopo il riposizionamento. Restituisce None
+    se non calcolabile."""
+    if n.get('measure_idx') != current_measure_idx:
+        return None
+    dtype = n.get('duration_type', 'quarter')
+    onset = n.get('onset', 0.0)
+    if dtype in ('whole', 'whole_dotted'):
+        target_pos = 0.50
+    else:
+        beat_num = int(onset / sector_size)
+        if sector_size <= 0:
+            return None
+        beat_num = int(onset / sector_size)
+        beat_frac = (onset / sector_size) - beat_num
+        notes_same_beat = []
+        for n0 in all_notes_in_sys:
+            if n0.get('measure_idx') == current_measure_idx:
+                n_onset = n0.get('onset', -1)
+                if int(n_onset / sector_size) == beat_num and n0.get('duration_type') not in ('whole', 'whole_dotted'):
+                    notes_same_beat.append(n0)
+        notes_same_beat.sort(key=lambda x: x.get('onset', 0))
+        try:
+            idx_in_beat = [id(x) for x in notes_same_beat].index(id(n))
+        except ValueError:
+            idx_in_beat = 0
+        n_beat = len(notes_same_beat)
+        beat_width_frac = 1.0 / n_sectors_m if n_sectors_m else 1.0 / 4
+        beat_start_frac = beat_num * beat_width_frac
+        if n_beat <= 1:
+            target_pos = beat_start_frac + beat_width_frac * 0.25
+        else:
+            frac_in_beat = (idx_in_beat + 1) / (n_beat + 1)
+            target_pos = beat_start_frac + beat_width_frac * frac_in_beat
+    return new_m_start + target_pos * new_m_width
+
+
 def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False, title_text=None, part_text=None, measure_offset=0, initial_rest_measures=0, mmrest_groups=None, rhythm_mode=False, key_sig_changes_dict=None):
     parsed = parse_svg(svg_content)
     systems = parsed['systems']
@@ -3959,7 +3998,35 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                             else:
                                 target_pos = 0.25  # note is beats 3-4, rest is beats 1-2
                         else:
+                            # 11 Set 2026 (bug sovrapposizioni): pausa SVG unmatched.
+                            # Prima usava orig_pos che collideva con i cerchi delle
+                            # note riposizionate onset-based. Ora: se il centro X
+                            # della pausa cade vicino al cerchio di una nota, sposta
+                            # la pausa a destra/sinistra del cerchio (r+80).
                             target_pos = orig_pos
+                            _try_x = new_m_start + target_pos * new_m_width
+                            _best_gap, _best_cx = None, None
+                            for n0 in notes_in_sys:
+                                if abs(n0.get('y', -1) - ty) > 300:
+                                    continue
+                                n_on = n0.get('onset')
+                                if n_on is None:
+                                    continue
+                                cx_final = _note_final_x(n0, notes_in_sys, current_measure_idx,
+                                                          new_m_start, new_m_width,
+                                                          _sector_size_m, _n_sectors_m, _ts_beats)
+                                if cx_final is not None and abs(cx_final - _try_x) < 190:
+                                    if _best_cx is None or abs(cx_final - _try_x) < _best_gap:
+                                        _best_gap = abs(cx_final - _try_x)
+                                        _best_cx = cx_final
+                            if _best_cx is not None:
+                                if _best_cx >= _try_x:
+                                    _try_x = _best_cx + 190
+                                else:
+                                    _try_x = _best_cx - 190
+                                _try_x = max(new_m_start + 80, min(new_m_end - 80, _try_x))
+                                target_pos = (_try_x - new_m_start) / new_m_width
+
                     
                     if target_pos < 0:
                         target_pos = 0.0
@@ -4029,6 +4096,37 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     target_pos = orig_pos
                 
                 new_tx = new_m_start + target_pos * new_m_width
+                # 11 Set 2026 (bug sovrapposizioni): anti-collisione universale
+                # pausa-cerchio nota. Se la pausa (r~75+pad) cade troppo vicino
+                # al centro X di un cerchio nota riposizionato nella STESSA riga,
+                # spostala a destra o a sinistra del cerchio (il lato con più spazio).
+                if 'Rest' in elem_str:
+                    for n0 in notes_in_sys:
+                        if abs(n0.get('y', -1) - ty) > 300:
+                            continue
+                        if n0.get('onset') is None:
+                            continue
+                        _cand_x = _note_final_x(n0, notes_in_sys, current_measure_idx,
+                                                new_m_start, new_m_width,
+                                                _sector_size_m, _n_sectors_m, _ts_beats)
+                        if _cand_x is None:
+                            continue
+                        _rest_r = 75.0
+                        _note_r = n0.get('circle_r', 110)
+                        _clear = _rest_r + _note_r * 1.0
+                        if abs(_cand_x - new_tx) < _clear:
+                            # lato con più spazio dentro la battuta
+                            _left_ok = _cand_x - _clear >= new_m_start
+                            _right_ok = _cand_x + _clear <= new_m_end
+                            if not _right_ok and _left_ok:
+                                new_tx = _cand_x - _clear
+                            elif not _left_ok and _right_ok:
+                                new_tx = _cand_x + _clear
+                            elif _right_ok and (new_tx <= _cand_x or not _left_ok):
+                                new_tx = _cand_x + _clear
+                            elif _left_ok:
+                                new_tx = _cand_x - _clear
+
                 # per le pause a onset 0.0 (inizio battuta), aggiungi barline_gap
                 # come per le note, per evitare che la pausa sia attaccata alla chiave.
                 # MA NON se la pausa condivide il settore con note (le note hanno già
@@ -4151,6 +4249,25 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     if r_onset == 0.0:
                         beat_w = new_m_width / _ts_beats2
                         expected_x += beat_w * 0.3
+                    # 11 Set 2026 (bug sovrapposizioni): anti-collisione pausa
+                    # clonata vs cerchi note riposizionati (stesso nudge del ramo
+                    # riposizionamento, X finale calcolata onset-based).
+                    for n0 in notes_in_sys:
+                        if n0.get('onset') is None:
+                            continue
+                        _cand_x = _note_final_x(n0, notes_in_sys, _sys_global_idx + grp_idx,
+                                                new_m_start, new_m_width,
+                                                _sector_size2 if '_sector_size2' in dir() else 1.0,
+                                                _n_sectors2 if '_n_sectors2' in dir() else 4,
+                                                _ts_beats2)
+                        if _cand_x is None:
+                            continue
+                        _clear2 = 75.0 + n0.get('circle_r', 110)
+                        if abs(_cand_x - expected_x) < _clear2:
+                            if _cand_x + _clear2 <= new_m_end:
+                                expected_x = _cand_x + _clear2
+                            elif _cand_x - _clear2 >= new_m_start:
+                                expected_x = _cand_x - _clear2
                     # Clone the first SVG rest of the same type
                     # Quarter rest: d starts with "M76.125", eighth rest: d starts with "M88.375"
                     # Half rest: MuseScore 4 PUÒ renderizzare half rest nell'SVG export
