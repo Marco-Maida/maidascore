@@ -1029,8 +1029,43 @@ def extract_single_part_mscz(input_mscz, part_index=0, key_sig_changes=None):
     try:
         mscx_text = mscx_bytes.decode('utf-8')
         orig_measures = re.findall(r'<Measure[^>]*>.*?</Measure>', mscx_text, re.DOTALL)
+        # 12 Sep 2026 (bug travatura lunga su batt. 93 Carol): quando l'input
+        # è .mxl/.musicxml (MusicXML, non .mscx) orig_measures è vuoto. In quel
+        # caso leggiamo i <beam> tag ORIGINALI direttamente dal MusicXML e li
+        # re-iniettiamo 1:1 nel file ricostruito, DOPO aver verificato che la
+        # battuta ricostruita combaci (stessa sequenza rest/type) con l'originale:
+        # il file ricostruito può avere un numero diverso di battute (es. 139
+        # vs 142) e iniettare per numero di battuta senza verifica produce beam
+        # sulle note sbagliate, incluso un beam che attraversa una pausa.
+        orig_beam_tags = {}  # measure_num (1-based) -> [(is_rest, type, beam_val), ...]
+        if not orig_measures:
+            for mm in re.finditer(r'<measure[^>]*number="(\d+)"[^>]*>(.*?)</measure>', mscx_text, re.DOTALL):
+                m_num = int(mm.group(1))
+                tags = []
+                for nm in re.finditer(r'<note[^>]*>(.*?)</note>', mm.group(2), re.DOTALL):
+                    nc = nm.group(1)
+                    rest = ('<rest/>' in nc or '<rest />' in nc)
+                    typ = re.search(r'<type>(\w+)</type>', nc)
+                    beam = re.search(r'<beam number="1">(\w+)</beam>', nc)
+                    tags.append((rest, typ.group(1) if typ else '?',
+                                 beam.group(1) if beam else None))
+                orig_beam_tags[m_num] = tags
         # Extract beam modes: list of (measure_idx, chord_idx, beam_mode, duration_type)
         orig_beam_modes = {}  # (measure_idx, chord_idx) -> beam_mode
+        # 12 Sep 2026 (bug travatura lunga): firma di durata per battuta del
+        # file ORIGINALE (sequenza Chord/Rest + durationType), per verificare
+        # l'allineamento prima di iniettare. Il file ricostruito da music21 può
+        # avere un numero di battute DIVERSO dall'originale (es. 139 vs 142:
+        # mmrest espansi/crollati); iniettare per numero di battuta senza
+        # verifica mette i beam sulle note sbagliate — es. un 'end' dopo una
+        # pausa crea una travatura che ATTRAVERSA la pausa (battuta 93 Carol).
+        orig_measure_sigs = {}  # m_idx -> [(is_chord, duration_type), ...]
+        for m_idx, meas in enumerate(orig_measures):
+            sig = []
+            for c in re.finditer(r'<(Chord|Rest)[^>]*>(.*?)</\1>', meas, re.DOTALL):
+                dt = re.search(r'<durationType>(\w+)</durationType>', c.group(2))
+                sig.append((c.group(1) == 'Chord', dt.group(1) if dt else '?'))
+            orig_measure_sigs[m_idx] = sig
         orig_chord_dots = {}  # (measure_idx, chord_idx) -> dots count
         for m_idx, meas in enumerate(orig_measures):
             chords = re.findall(r'<Chord[^>]*>(.*?)</Chord>', meas, re.DOTALL)
@@ -1060,6 +1095,20 @@ def extract_single_part_mscz(input_mscz, part_index=0, key_sig_changes=None):
                 if not num_match:
                     return meas
                 m_idx = int(num_match.group(1)) - 1  # 0-based
+                # 12 Sep 2026 (bug travatura lunga): inietta solo se la battuta
+                # ricostruita combacia con l'originale. Se la firma differisce
+                # (battute sfasate: ricostruito ha pause dove l'origine ha note,
+                # o durate diverse) NON iniettare — MuseScore farà auto-beaming,
+                # sempre meglio di un beam sbagliato che attraversa una pausa.
+                _orig_sig = orig_measure_sigs.get(m_idx)
+                _rebuilt_sig = []
+                for _nm in re.finditer(r'<note[^>]*>.*?</note>', meas, re.DOTALL):
+                    _nc = _nm.group(0)
+                    _dt = re.search(r'<type>(\w+)</type>', _nc)
+                    _rebuilt_sig.append(('<rest' not in _nc,
+                                         _dt.group(1) if _dt else '?'))
+                if _orig_sig is not None and _orig_sig != _rebuilt_sig:
+                    return meas  # battuta sfasata: skip iniezione
                 # Find all <note> elements that are NOT rests
                 note_pattern = r'<note[^>]*>.*?</note>'
                 notes_in_meas = list(re.finditer(note_pattern, meas, re.DOTALL))
@@ -1128,6 +1177,61 @@ def extract_single_part_mscz(input_mscz, part_index=0, key_sig_changes=None):
             with open(xml_path, 'w') as f:
                 f.write(xml_content)
             print(f"  Beam modes injected from .mscx ({len(orig_beam_modes)} beams)")
+        elif orig_beam_tags:
+            # Input MusicXML (.mxl/.musicxml): re-inietta i beam tag originali
+            # 1:1, SOLO se la battuta ricostruita combacia con l'originale
+            # (stessa sequenza di rest/note e stesse durate). Se il file
+            # ricostruito ha battute in meno o sfasate, la battuta non combacia
+            # → nessuna iniezione (MuseScore farà auto-beaming, MAI un beam
+            # sbagliato che attraversa una pausa).
+            with open(xml_path, 'r') as f:
+                xml_content = f.read()
+            xml_content = re.sub(r'<beam[^>]*>.*?</beam>\s*', '', xml_content)
+            n_injected = 0
+            n_skipped = 0
+            def _reinject_from_musicxml(m):
+                nonlocal n_injected, n_skipped
+                meas = m.group(0)
+                num_match = re.search(r'number="(\d+)"', meas)
+                if not num_match:
+                    return meas
+                m_num = int(num_match.group(1))
+                orig_tags = orig_beam_tags.get(m_num)
+                if not orig_tags:
+                    return meas
+                # Sequenza ricostruita (is_rest, type) in ordine
+                rebuilt = []
+                for nm in re.finditer(r'<note[^>]*>.*?</note>', meas, re.DOTALL):
+                    nc = nm.group(0)
+                    rest = ('<rest/>' in nc or '<rest />' in nc)
+                    typ = re.search(r'<type>(\w+)</type>', nc)
+                    rebuilt.append((rest, typ.group(1) if typ else '?'))
+                orig_seq = [(r, t) for (r, t, _) in orig_tags]
+                if rebuilt != orig_seq:
+                    # Battuta sfasata o contenuto diverso: NON iniettare
+                    n_skipped += 1
+                    return meas
+                # Match perfetto: inietta i beam originali alle note con beam
+                insertions = []
+                note_ms = list(re.finditer(r'<note[^>]*>.*?</note>', meas, re.DOTALL))
+                for nm, (r, t, beam_val) in zip(note_ms, orig_tags):
+                    if beam_val is None:
+                        continue
+                    type_match = re.search(r'<type>(\w+)</type>', nm.group(0))
+                    if not type_match:
+                        continue
+                    beam_tag = f'<beam number="1">{beam_val}</beam>'
+                    new_note = nm.group(0)[:type_match.end()] + beam_tag + nm.group(0)[type_match.end():]
+                    insertions.append((nm.start(), nm.end(), new_note))
+                    n_injected += 1
+                new_meas = meas
+                for start, end, new_note in reversed(insertions):
+                    new_meas = new_meas[:start] + new_note + new_meas[end:]
+                return new_meas
+            xml_content = re.sub(r'<measure[^>]*>.*?</measure>', _reinject_from_musicxml, xml_content, flags=re.DOTALL)
+            with open(xml_path, 'w') as f:
+                f.write(xml_content)
+            print(f"  Beam tags re-injected from MusicXML ({n_injected} beams, {n_skipped} battute sfasate saltate)")
     except Exception as e:
         print(f"  Warning: beam injection failed: {e}")
     
