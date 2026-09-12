@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.6] - 2026-09-12
+
+### Fixed
+- **Sound tables (tavole) empty after MMRest**: the system layout lookup used
+  post-stretch system keys against a pre-stretch-keyed layout dict, so it never
+  matched and fell back to a uniform heuristic that miscounted measures after
+  a multi-measure rest. Rests ("pausa" dashed cells) were drawn under measures
+  that actually contain notes. Now systems are matched by Y-order index.
+
 ## [1.1.5] - 2026-09-12
 
 ### Added
