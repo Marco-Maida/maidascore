@@ -701,11 +701,26 @@ def _add_mmrests_to_mscx(mscx_content, note_info):
     if all_measures:
         max_m = max(max_m, max(all_measures))
     
+    # 12 Set 2026 (bug pause inventate): le battute con CAMBIO DI TIME SIGNATURE
+    # non devono MAI essere inglobate in un MMRest — collaudendo la battuta, il
+    # time signature sparisce e tutte le battute successive (con ql calcolata sul
+    # TS nuovo) vengono riempite di pause implicite dal renderer (es. battute 2.0 ql
+    # in 4/4 → +R(2.0) fantasma). Spezza i gruppi alle battute con cambio di TS.
+    ts_measures = set()
+    _ts_seen = None
+    for _m_idx in sorted(note_info.get('time_sigs_per_measure', {}).keys()):
+        _m_ts = note_info['time_sigs_per_measure'][_m_idx]
+        if _ts_seen is None:
+            _ts_seen = _m_ts
+        elif _m_ts != _ts_seen:
+            ts_measures.add(_m_idx)
+            _ts_seen = _m_ts
+
     # Trova gruppi di pause consecutive (battute senza note)
     pause_groups = []
     current_group = []
     for m in range(max_m + 1):
-        if m not in note_measures:
+        if m not in note_measures and m not in ts_measures:
             current_group.append(m)
         else:
             if len(current_group) >= 2:
@@ -1321,11 +1336,15 @@ def make_accessible_mscz(input_mscz, output_mscz, part_index=0, rhythm_mode=Fals
                                         and '<multiMeasureRest>' not in _prev_c):
                                     _remove_offsets.append((_all_m_pre[_idx - 1].start(), _all_m_pre[_idx - 1].end()))
                             # Rimuovi le N-1 battute di pausa vuote DOPO questo MMRest
+                            # 12 Set 2026: NON rimuovere battute con TimeSig — sono
+                            # battute col cambio di tempo, non pause duplicate
+                            # (rimuoverle elimina il cambio di TS → pause inventate).
                             _removed = 0
                             for _j in range(_idx + 1, len(_all_m_pre)):
                                 _c = _all_m_pre[_j].group(1)
                                 if ('<Rest>' in _c and '<Chord>' not in _c 
-                                        and '<multiMeasureRest>' not in _c):
+                                        and '<multiMeasureRest>' not in _c
+                                        and '<TimeSig>' not in _c):
                                     _remove_offsets.append((_all_m_pre[_j].start(), _all_m_pre[_j].end()))
                                     _removed += 1
                                     if _removed >= _n - 1:
@@ -1367,9 +1386,27 @@ def make_accessible_mscz(input_mscz, output_mscz, part_index=0, rhythm_mode=Fals
                     # Correggi i <duration> delle pause measure nelle battute MMRest.
                     # Il duration originale era "N×ts" (es. 28×6/8=168/8), ma ora è 1 battuta.
                     # Sostituisci con la durata di 1 battuta (ts_n/ts_d).
-                    _ts_fraction = f"{global_ts_n}/{global_ts_d}"
-                    mscx = re.sub(r'<duration>\d+/\d+</duration>\s*</Rest>',
-                                  f'<duration>{_ts_fraction}</duration></Rest>', mscx)
+                    # 12 Set 2026: il TS va tracciato PER BATTUTA — con cambi di tempo
+                    # intermedi la pausa measure della battuta in 2/4 deve avere
+                    # duration 2/4, non 4/4 (altrimenti battuta overfull → exit 40).
+                    def _fix_measure_rest_durations(xml_str, _def_n, _def_d):
+                        parts = []
+                        last = 0
+                        cur_n, cur_d = _def_n, _def_d
+                        for _m in re.finditer(r'<Measure[^>]*>.*?</Measure>', xml_str, re.S):
+                            body = _m.group(0)
+                            _ts_m = re.search(r'<sigN>(\d+)</sigN>\s*<sigD>(\d+)</sigD>', body)
+                            if _ts_m:
+                                cur_n, cur_d = int(_ts_m.group(1)), int(_ts_m.group(2))
+                            fixed_body = re.sub(r'<duration>\d+/\d+</duration>\s*</Rest>',
+                                                f'<duration>{cur_n}/{cur_d}</duration></Rest>',
+                                                body)
+                            parts.append(xml_str[last:_m.start()])
+                            parts.append(fixed_body)
+                            last = _m.end()
+                        parts.append(xml_str[last:])
+                        return ''.join(parts)
+                    mscx = _fix_measure_rest_durations(mscx, global_ts_n, global_ts_d)
                     
                     # Assicurati che ogni battuta MMRest abbia una pausa measure
                     # (alcune battute MMRest potrebbero non avere un <Rest> esplicito)
@@ -3237,10 +3274,24 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         # Calcoliamo direttamente: gruppi di battute consecutive senza note.
         _note_measures = set(n['measure_idx'] for n in all_notes)
         _max_m = max(_note_measures) if _note_measures else 0
+        # 12 Set 2026: NON inglobare le battute con cambio di time signature
+        # nei gruppi logici MMRest — anche qui, come in _add_mmrests_to_mscx,
+        # la battuta col TS resta separata (altrimenti il conteggio logico
+        # sballa il mapping di TUTTE le battute successive: shift → note
+        # sovrapposte e pause inventate).
+        _ts_change_m = set()
+        _seen_ts = None
+        for _m in sorted(note_info.get('time_sigs_per_measure', {}).keys()):
+            _ts = note_info['time_sigs_per_measure'][_m]
+            if _seen_ts is None:
+                _seen_ts = _ts
+            elif _ts != _seen_ts:
+                _ts_change_m.add(_m)
+                _seen_ts = _ts
         _logical_mmrest = []  # (start_idx, count) in logical measure_idx
         _current_group = []
         for _m in range(_max_m + 1):
-            if _m not in _note_measures:
+            if _m not in _note_measures and _m not in _ts_change_m:
                 _current_group.append(_m)
             else:
                 if len(_current_group) >= 2:
@@ -3800,6 +3851,10 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     system_measure_indices = rebuilt
         
         # Track which rests have been matched (by position) in each measure
+        # 12 Set 2026: pool di note per i nudge delle pause: TUTTE le note della
+        # pagina (non solo del sistema) con filtro y — una pausa in fondo al
+        # sistema può sfiorare note del sistema sottostante.
+        _nudge_pool = [n for n in notes if n.get('onset') is not None]
         rest_assignment_counter = {}  # measure_idx → next rest index to assign
         _matched_rest_indices = {}  # measure_idx → set of matched rest indices
         _processed_spans = set()  # byte offsets of elements already repositioned
@@ -4040,8 +4095,8 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         if True:
                             _try_x = new_m_start + target_pos * new_m_width
                             _best_gap, _best_cx = None, None
-                            for n0 in notes_in_sys:
-                                if abs(n0.get('y', -1) - ty) > 300:
+                            for n0 in _nudge_pool:
+                                if abs(n0.get('y', -1) - ty) > 3000:
                                     continue
                                 n_on = n0.get('onset')
                                 if n_on is None:
@@ -4059,8 +4114,8 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                             _half_w = 226.0
                             for _iter in range(8):
                                 _moved = False
-                                for n0 in notes_in_sys:
-                                    if abs(n0.get('y', -1) - ty) > 300:
+                                for n0 in _nudge_pool:
+                                    if abs(n0.get('y', -1) - ty) > 3000:
                                         continue
                                     n_on = n0.get('onset')
                                     if n_on is None:
@@ -4173,48 +4228,67 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 # al centro X di un cerchio nota riposizionato nella STESSA riga,
                 # spostala a destra o a sinistra del cerchio (il lato con più spazio).
                 if 'Rest' in elem_str and rest_onset_val is not None:
-                    # 12 Set 2026: per i rest UNMATCHED (onset=None) il nudge iterativo
-                    # del fallback ha già risolto le collisioni con TUTTE le note
-                    # (bbox-based, X post-repos) — non rieseguire qui il nudge
-                    # centro-based che potrebbe sovrascriverlo.
-                    for n0 in notes_in_sys:
-                        if abs(n0.get('y', -1) - ty) > 300:
-                            continue
-                        if n0.get('onset') is None:
-                            continue
-                        _cand_x = n0.get('x_final')
-                        if _cand_x is None:
-                            continue
-                        if _cand_x is None:
-                            continue
-                        _rest_r = 113.0 if (rest_dtype_val == 'half' or 'M0,-3.3125' in elem_str) else 75.0
-                        _note_r = n0.get('circle_r', 110)
-                        _clear = _rest_r + _note_r * 1.0 + 20.0  # +pad: bbox rest non tocchi il cerchio
-                        # 12 Set 2026: new_tx è il BORDO SINISTRO del glyph rest (il path
-                        # parte da tx), non il centro. Il centro effettivo = new_tx + _rest_r.
-                        # Compara centro-rest con centro-nota, poi riconverti in bordo sinistro.
-                        _center_tx = new_tx + _rest_r
-                        if abs(_cand_x - _center_tx) < _clear:
-                            _use_tx = _center_tx
-                            # lato con più spazio dentro la battuta.
-                            # 12 Set 2026: preferisci il lato coerente con l'onset:
-                            # se la pausa è a destra della nota nel flusso musicale
-                            # (onset >= onset nota), spingila a destra; altrimenti a sinistra.
-                            _rest_on = rest_onset_val if rest_onset_val is not None else orig_pos * _ts_beats
-                            _n_on = n0.get('onset', 0.0)
-                            _left_ok = _cand_x - _clear >= new_m_start
-                            _right_ok = _cand_x + _clear <= new_m_end
-                            if _rest_on >= _n_on:
-                                if _right_ok:
-                                    new_tx = _cand_x + _clear - _rest_r
-                                elif _left_ok:
-                                    new_tx = _cand_x - _clear - _rest_r
-                            else:
-                                if _left_ok:
-                                    new_tx = _cand_x - _clear - _rest_r
-                                elif _right_ok:
-                                    new_tx = _cand_x + _clear - _rest_r
-
+                    # 12 Set 2026: nudge ITERATIVO anche per i rest matched
+                    # (il nudge singolo falliva quando la prima mossa creava
+                    # una nuova collisione con un'altra nota della riga).
+                    for _nudge_iter in range(8):
+                        _nudge_changed = False
+                        for n0 in _nudge_pool:
+                            if abs(n0.get('y', -1) - ty) > 3000:
+                                continue
+                            if n0.get('onset') is None:
+                                continue
+                            _cand_x = n0.get('x_final')
+                            if _cand_x is None:
+                                # 12 Set 2026: nota di un sistema non ancora
+                                # processato (pre-pass assente): PREDICI la X finale.
+                                n0_m = n0.get('measure_idx')
+                                if n0_m is None:
+                                    continue
+                                _grp_n = n0_m - _sys_global_idx
+                                if 0 <= _grp_n < len(new_measure_bounds):
+                                    _bn = new_measure_bounds[_grp_n]
+                                else:
+                                    continue
+                                _nb_ts = _ts_beats_for_measure(n0_m)
+                                _nb_sec = _n_sectors_for_measure(n0_m)
+                                _nb_sz = _nb_ts / _nb_sec if _nb_sec > 0 else 1.0
+                                _cand_x = _note_final_x(n0, _nudge_pool, n0_m,
+                                                        _bn[0], _bn[1] - _bn[0],
+                                                        _nb_sz, _nb_sec, _nb_ts)
+                            if _cand_x is None:
+                                continue
+                            _rest_r = 113.0 if (rest_dtype_val == 'half' or 'M0,-3.3125' in elem_str) else 75.0
+                            _note_r = n0.get('circle_r', 110)
+                            _clear = _rest_r + _note_r * 1.0 + 20.0  # +pad: bbox rest non tocchi il cerchio
+                            # 12 Set 2026: new_tx è il BORDO SINISTRO del glyph rest (il path
+                            # parte da tx), non il centro. Il centro effettivo = new_tx + _rest_r.
+                            _center_tx = new_tx + _rest_r
+                            if abs(_cand_x - _center_tx) < _clear:
+                                # lato con più spazio dentro la battuta.
+                                # 12 Set 2026: preferisci il lato coerente con l'onset:
+                                # se la pausa è a destra della nota nel flusso musicale
+                                # (onset >= onset nota), spingila a destra; altrimenti a sinistra.
+                                _rest_on = rest_onset_val if rest_onset_val is not None else orig_pos * _ts_beats
+                                _n_on = n0.get('onset', 0.0)
+                                _left_ok = _cand_x - _clear >= new_m_start
+                                _right_ok = _cand_x + _clear <= new_m_end
+                                if _rest_on >= _n_on:
+                                    if _right_ok:
+                                        new_tx = _cand_x + _clear - _rest_r
+                                        _nudge_changed = True
+                                    elif _left_ok:
+                                        new_tx = _cand_x - _clear - _rest_r
+                                        _nudge_changed = True
+                                else:
+                                    if _left_ok:
+                                        new_tx = _cand_x - _clear - _rest_r
+                                        _nudge_changed = True
+                                    elif _right_ok:
+                                        new_tx = _cand_x + _clear - _rest_r
+                                        _nudge_changed = True
+                        if not _nudge_changed:
+                            break
                 # per le pause a onset 0.0 (inizio battuta), aggiungi barline_gap
                 # come per le note, per evitare che la pausa sia attaccata alla chiave.
                 # MA NON se la pausa condivide il settore con note (le note hanno già
@@ -4340,7 +4414,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     # 11 Set 2026 (bug sovrapposizioni): anti-collisione pausa
                     # clonata vs cerchi note riposizionati (stesso nudge del ramo
                     # riposizionamento, X finale calcolata onset-based).
-                    for n0 in notes_in_sys:
+                    for n0 in _nudge_pool:
                         if n0.get('onset') is None:
                             continue
                         # 12 Set 2026: per note non ancora riposizionate (battute
@@ -4353,17 +4427,22 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                             if 0 <= _grp < len(new_measure_bounds):
                                 _b = new_measure_bounds[_grp]
                                 _n0_start, _n0_width = _b[0], _b[1] - _b[0]
+                            else:
+                                _n0_start, _n0_width = new_m_start, new_m_width
+                            # 12 Set 2026: parametri per-measure della battuta DELLA NOTA
+                            # (prima usava variabili inesistenti _sector_size2/_n_sectors2
+                            # con fallback sbagliati → previsioni errate → pause clonate
+                            # sovrapposte alle note).
+                            _n0_ts = _ts_beats_for_measure(n0_m)
+                            _n0_sec = _n_sectors_for_measure(n0_m)
+                            _n0_sz = _n0_ts / _n0_sec if _n0_sec > 0 else 1.0
                             _cand_x = _note_final_x(n0, notes_in_sys, n0_m,
                                                     _n0_start, _n0_width,
-                                                    _sector_size2 if '_sector_size2' in dir() else 1.0,
-                                                    _n_sectors2 if '_n_sectors2' in dir() else 4,
-                                                    _ts_beats2)
-                            if _cand_x is not None:
-                                pass
-                            else:
-                                _cand_x = n0.get('x')
+                                                    _n0_sz, _n0_sec, _n0_ts)
                         else:
                             _cand_x = n0.get('x_final')
+                        if _cand_x is None:
+                            _cand_x = n0.get('x')
                         if _cand_x is None:
                             continue
                         # 12 Set 2026: expected_x è il BORDO SINISTRO del rest (il path
