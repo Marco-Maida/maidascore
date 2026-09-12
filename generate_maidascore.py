@@ -81,6 +81,8 @@ XVFB = os.environ.get('MAIDASCORE_XVFB', 'xvfb-run -a')
 # quindi non serve spatium enorme nel .mscz. Usiamo spatium sufficiente per 4 battute/rigo.
 SPATIUM = '2.0'
 STAFF_LINE_WIDTH = '0.11'  # default — ispessito nel post-processing SVG
+BEAM_WIDTH = '0.8'  # spessore travature (default 0.5): più spesso per non confonderle
+# con le linee del pentagramma (richiesta leggibilità didattica)
 PAGE_WIDTH = '8.27'   # A4 portrait width (inches)
 PAGE_HEIGHT = '11.69' # A4 portrait height (inches)
 
@@ -1772,6 +1774,10 @@ def make_accessible_mscz(input_mscz, output_mscz, part_index=0, rhythm_mode=Fals
         mss = re.sub(r'<pageHeight>[\d.]+</pageHeight>', f'<pageHeight>{PAGE_HEIGHT}</pageHeight>', mss)
         mss = re.sub(r'<staffLineWidth>[\d.]+</staffLineWidth>', 
                      f'<staffLineWidth>{STAFF_LINE_WIDTH}</staffLineWidth>', mss)
+        # ispessisci le travature (beam): il default 0.5 le rende sottili
+        # quanto le linee del pentagramma e si confondono visivamente
+        mss = re.sub(r'<beamWidth>[\d.]+</beamWidth>',
+                     f'<beamWidth>{BEAM_WIDTH}</beamWidth>', mss)
         
         # minMeasureWidth basso per permettere layout flessibile
         if '<minMeasureWidth>' in mss:

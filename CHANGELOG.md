@@ -341,3 +341,8 @@ First public release.
 
 ### Corretto
 - Travature (beam) mancanti nelle battute dopo pause multi-battuta collassate: il file ricostruito può avere meno battute dell'originale (es. 139 vs 142), quindi il match per numero di battuta sfasava l'iniezione dei beam e MuseScore applicava l'auto-beaming (crome staccate). Ora le battute vengono allineate globalmente per firma (rest/durata) con SequenceMatcher, sia per input .mscx che .mxl.
+
+## [1.1.9] - 2026-09-12
+
+### Modificato
+- Travature (beam) più spesse: beamWidth aumentato da 0.5 a 0.8 nel template di stile. Le travature si confondevano con le linee del pentagramma, ora risaltano visivamente (leggibilità per dislessici).
