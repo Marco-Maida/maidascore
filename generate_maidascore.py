@@ -8046,9 +8046,9 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         # renderizzati come quadratino tofu (bug 12 Sep 2026).
         acc_symbol = '\u266f' if p_acc == '#' else ('\u266d' if p_acc == 'b' else '\u266e')
         # ♭ e ♮ sono glifi piccoli e sottili in DejaVu Sans: li ingrandiamo
-        # del 45% per pari peso visivo col ♯ (test 12 Sep 2026). Il diesis
-        # resta alla dimensione base.
-        acc_size_mult = 1.0 if p_acc == '#' else 1.45
+        # del 80% per pari peso visivo col ♯ (test 12 Sep 2026). Il diesis
+        # e ingrandito del 25% per risaltare di più.
+        acc_size_mult = 1.25 if p_acc == '#' else 1.8
         stem_dir = n.get('stem_dir', None)
         # In modalità rhythm (Step2), tutti i gambi vengono ridisegnati verso
         # l'ALTO (middle_line_y - STEM_LEN), indipendentemente dalla direzione
@@ -8091,7 +8091,8 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             f'<text x="{acc_x:.1f}" y="{acc_y:.1f}" '
             f'font-family="DejaVu Sans" '
             f'font-size="{acc_fs_actual * acc_size_mult:.0f}" font-weight="bold" '
-            f'fill="#111111" text-anchor="middle" dy="0.35em">'
+            f'fill="#111111" stroke="#111111" stroke-width="6" paint-order="stroke" '
+            f'text-anchor="middle" dy="0.35em">'
             f'{acc_symbol}</text>'
         )
     if staff_acc_svgs and not rhythm_mode:
