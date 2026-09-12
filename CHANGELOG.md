@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.4] - 2026-09-12
+
+### Fixed
+- **Single-measure system with time-signature change** (e.g. a 2/4 measure alone
+  on a staff after a 4/4 section): grey sectors now start after the clef/key
+  signature (UNIFORM_MUSIC_START) instead of at the staff start — previously they
+  covered the clef and key signature, and the measure spanned the whole staff width.
+- **Rests in note-less single-measure systems**: when such a system contains only
+  rests, they are now repositioned onset-based like all other rests, instead of
+  being left at their original MuseScore X position (outside the grey sectors).
+
 ## [1.1.3] - 2026-09-12
 
 ### Fixed
