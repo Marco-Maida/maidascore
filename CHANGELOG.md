@@ -346,3 +346,8 @@ First public release.
 
 ### Modificato
 - Travature (beam) più spesse: beamWidth aumentato da 0.5 a 0.8 nel template di stile. Le travature si confondevano con le linee del pentagramma, ora risaltano visivamente (leggibilità per dislessici).
+
+## [1.2.0] - 2026-09-13
+
+### Corretto
+- Stanghette staccate dalle travature inclinate: il FIX #151 restringeva lo spessore della travatura usando il centro del bounding-box globale, appiattendo le travature inclinate. Ora i due bordi verticali vengono clampati indipendentemente preservando l'inclinazione originale, così le stanghette arrivano sempre fino alla travatura.

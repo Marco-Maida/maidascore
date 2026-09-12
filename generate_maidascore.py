@@ -6154,6 +6154,10 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 'x_left': x_left, 'x_right': x_right,
                 'y_top': y_top, 'y_bot': y_bot,
                 'th': y_bot - y_top,
+                # angoli originali (per preservare l'inclinazione):
+                # P1=top-left, P2=top-right, P3=bottom-right, P4=bottom-left
+                'y1': vals[1], 'y2': vals[3],
+                'y3': vals[5], 'y4': vals[7],
             })
 
         # Group beams by (x_left, system_y) — primary and secondary share the
@@ -6231,6 +6235,11 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 old_h = sec['y_bot'] - sec['y_top']
                 sec['y_top'] = sec_center - old_h / 2
                 sec['y_bot'] = sec_center + old_h / 2
+                # riposizionata come banda piatta: aggiorna anche i angoli
+                sec['y1'] = sec['y_top']
+                sec['y2'] = sec['y_top']
+                sec['y3'] = sec['y_bot']
+                sec['y4'] = sec['y_bot']
         
         # Step 3: merge broken secondary fragments. For each primary, collect
         # all its secondaries, extend the widest one to span the full primary
@@ -6331,15 +6340,23 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             if x_right - x_left <= 0:
                 modified = modified[:span[0]] + modified[span[1]:]
                 continue
-            # Clamp thickness to 47px, keeping center
+            # Clamp thickness to 47px. 13 Sep 2026 (bug stanghetta staccata
+            # dalla travatura): clampare i due bordi verticali INDIPENDEMENTE
+            # per preservare l'inclinazione originale. Prima si usava il centro
+            # del bounding-box globale: sulle travature inclinate (es. −47px da
+            # sx a dx) il centro è sfalsato di metà pendenza per lato → la
+            # stanghetta del lato alto restava staccata dalla travatura.
             new_th = 47
-            center = (y_top + y_bot) / 2
-            y_top = center - new_th / 2
-            y_bot = center + new_th / 2
+            left_c = (bi['y1'] + bi['y4']) / 2
+            right_c = (bi['y2'] + bi['y3']) / 2
+            ny1 = left_c - new_th / 2
+            ny4 = left_c + new_th / 2
+            ny2 = right_c - new_th / 2
+            ny3 = right_c + new_th / 2
             new_beam = (f'<path class="Beam" fill="#000000" fill-rule="evenodd" '
-                        f'd="M{x_left:.2f},{y_top:.2f} L{x_right:.2f},{y_top:.2f} '
-                        f'L{x_right:.2f},{y_bot:.2f} L{x_left:.2f},{y_bot:.2f} '
-                        f'L{x_left:.2f},{y_top:.2f}"/>')
+                        f'd="M{x_left:.2f},{ny1:.2f} L{x_right:.2f},{ny2:.2f} '
+                        f'L{x_right:.2f},{ny3:.2f} L{x_left:.2f},{ny4:.2f} '
+                        f'L{x_left:.2f},{ny1:.2f}"/>')
             modified = modified[:span[0]] + new_beam + modified[span[1]:]
         
         # Create secondary beams for dotted-eighth + sixteenth
