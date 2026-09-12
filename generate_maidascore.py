@@ -1761,16 +1761,16 @@ NOTE_NAMES_TAVOLA = {
 }
 
 NOTE_NAMES_TAVOLA_SPLIT = {
-    'it': {'C': ('Do', ''),  'C#': ('Do', '#'),  'Db': ('Re', 'b'),
-           'D': ('Re', ''),  'D#': ('Re', '#'),  'Eb': ('Mi', 'b'),
-           'E': ('Mi', ''),  'F': ('Fa', ''),  'F#': ('Fa', '#'),  'Gb': ('Sol', 'b'),
-           'G': ('Sol', ''), 'G#': ('Sol', '#'), 'Ab': ('La', 'b'),
-           'A': ('La', ''),  'A#': ('La', '#'),  'Bb': ('Si', 'b'), 'B': ('Si', '')},
-    'en': {'C': ('C', ''),  'C#': ('C', '#'),  'Db': ('Db', 'b'),
-           'D': ('D', ''),  'D#': ('D', '#'),  'Eb': ('Eb', 'b'),
-           'E': ('E', ''),  'F': ('F', ''),  'F#': ('F', '#'),  'Gb': ('Gb', 'b'),
-           'G': ('G', ''), 'G#': ('G', '#'), 'Ab': ('Ab', 'b'),
-           'A': ('A', ''),  'A#': ('A', '#'),  'Bb': ('Bb', 'b'), 'B': ('B', '')},
+    'it': {'C': ('Do', ''),  'C#': ('Do', '\u266f'),  'Db': ('Re', '\u266d'),
+           'D': ('Re', ''),  'D#': ('Re', '\u266f'),  'Eb': ('Mi', '\u266d'),
+           'E': ('Mi', ''),  'F': ('Fa', ''),  'F#': ('Fa', '\u266f'),  'Gb': ('Sol', '\u266d'),
+           'G': ('Sol', ''), 'G#': ('Sol', '\u266f'), 'Ab': ('La', '\u266d'),
+           'A': ('La', ''),  'A#': ('La', '\u266f'),  'Bb': ('Si', '\u266d'), 'B': ('Si', '')},
+    'en': {'C': ('C', ''),  'C#': ('C', '\u266f'),  'Db': ('Db', '\u266d'),
+           'D': ('D', ''),  'D#': ('D', '\u266f'),  'Eb': ('Eb', '\u266d'),
+           'E': ('E', ''),  'F': ('F', ''),  'F#': ('F', '\u266f'),  'Gb': ('Gb', '\u266d'),
+           'G': ('G', ''), 'G#': ('G', '\u266f'), 'Ab': ('Ab', '\u266d'),
+           'A': ('A', ''),  'A#': ('A', '\u266f'),  'Bb': ('Bb', '\u266d'), 'B': ('B', '')},
 }
 
 # Default language (overridden by --lang at runtime). 'it' = Italian (Do Re Mi ...).
@@ -2770,15 +2770,18 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
                                       f'fill="{text_color}">{label}</text>')
                         if acc_sym:
                             # Alterazione SOTTO il nome, in NERO.
+                            # Glifi musicali Unicode (♯ ♭) in DejaVu Sans SINGOLO
+                            # (cairosvg non fa font-fallback per-carattere).
+                            # Stessa grafica delle alterazioni sul pentagramma:
+                            # mult 1.25 per ♯, 1.8 per ♭, stroke 6px (ultra-bold).
                             # Dimensione FISSA per tutte le durate.
-                            # font_size dipende dalla larghezza cella → semicrome (cella stretta)
-                            # Prima avevano acc_fs=98 (semicrome) vs 206 (crome) → fisso 206.
-                            acc_fs = 206
+                            acc_fs = 206 * (1.25 if acc_sym == '\u266f' else 1.8)
                             acc_y = text_y_tav + acc_fs * 1.1
                             tavola_svg += (f'<text x="{text_x:.1f}" y="{acc_y:.1f}" '
-                                          f'text-anchor="{text_anchor}" font-family="Atkinson Hyperlegible" '
-                                          f'font-size="{acc_fs:.0f}" font-weight="700" '
-                                          f'fill="#111111">{acc_sym}</text>')
+                                          f'text-anchor="{text_anchor}" font-family="DejaVu Sans" '
+                                          f'font-size="{acc_fs:.0f}" font-weight="bold" '
+                                          f'fill="#111111" stroke="#111111" stroke-width="6" '
+                                          f'paint-order="stroke">{acc_sym}</text>')
                         
                         # === Triangolini ottava ===
                         # Disegna triangolini/i sopra (punta su) o sotto (punta giù)
