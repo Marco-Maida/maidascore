@@ -2772,11 +2772,11 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
                             # Alterazione SOTTO il nome, in NERO.
                             # Glifi musicali Unicode (♯ ♭) in DejaVu Sans SINGOLO
                             # (cairosvg non fa font-fallback per-carattere).
-                            # Stessa grafica delle alterazioni sul pentagramma:
-                            # mult 1.25 per ♯, 1.8 per ♭, stroke 6px (ultra-bold).
-                            # Dimensione FISSA per tutte le durate.
-                            acc_fs = 206 * (1.25 if acc_sym == '\u266f' else 1.8)
-                            acc_y = text_y_tav + acc_fs * 1.1
+                            # Dimensione ridotta vs pentagramma e offset compatto
+                            # (0.82) per stare vicina al nome, non staccata
+                            # (12 Sep 2026: 371px×1.1 la allontanava troppo).
+                            acc_fs = 206 * (1.25 if acc_sym == '\u266f' else 1.45)
+                            acc_y = text_y_tav + acc_fs * 0.82
                             tavola_svg += (f'<text x="{text_x:.1f}" y="{acc_y:.1f}" '
                                           f'text-anchor="{text_anchor}" font-family="DejaVu Sans" '
                                           f'font-size="{acc_fs:.0f}" font-weight="bold" '
