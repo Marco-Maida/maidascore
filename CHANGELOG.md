@@ -331,3 +331,8 @@ First public release.
 - Holberg Suite, Flute 1 (72 measures, 4/4, D major) — 10 pages full notation, 5 pages rhythm.
 - Canzon vigesimaottava (43 measures, multiple time signatures: 4/4 → 3/4 → 4/4 → 2/4 → 3/4 → 4/4).
 - Prova (6 measures, 4/4, A minor) — 1 page, 16 circles.
+
+## [1.1.7] - 2026-09-12
+
+### Aggiunto
+- Pause nella tavola sonora: sfondo nero, testo bianco bold e conteggio dei beat al posto di "pausa" (semiminima=UNO, minima=UNO-DUE, semibreve=UNO-DUE-TRE-QUATTRO, croma/semicroma=UN). Pause multi-beat divise in settori allineati ai settori grigi del pentagramma.
