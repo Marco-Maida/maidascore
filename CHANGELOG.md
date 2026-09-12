@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.3] - 2026-09-12
+
+### Fixed
+- **Key signature vertical positions on staff**: accidentals are now placed at the
+  correct staff line/space for each pitch, following standard engraving rules.
+- **Staff accidentals rendered as musical glyphs**: sharps, flats and naturals on the
+  staff use Unicode musical characters (DejaVu Sans), enlarged 45% for readability,
+  with a fallback to ASCII rendering on fonts without glyph support.
+- **Spurious beams crossing rests**: beam injection from the original .mscx no longer
+  draws beams through rests (e.g. eighth-note + rest groups).
+- **Rests pushed outside their grey sector**: the anti-collision nudge now clamps
+  rests inside their own grey sector, and never places a rest on top of a barline.
+- **Rest-note minimum visual gap**: when a rest shares a grey sector with a note,
+  it is positioned at 75% of the sector (mirroring the 25% placement of single
+  notes), with the nudge padding raised from 20 to 100px for a comfortable gap.
+
+### Changed
+- **Sound table accidentals**: bigger and bolder, drawn with Unicode musical glyphs
+  and placed closer to the note blocks.
+- **Logical multi-measure rest groups**: measures with time-signature changes are
+  excluded from logical MMRest groups.
+
 ## [1.1.2] - 2026-09-10
 
 ### Added
