@@ -2155,7 +2155,24 @@ def parse_svg(svg_content):
         'notes': notes,
     }
 
-def compute_measure_boundaries(system_key, system_info, barlines, notes_in_system):
+def _has_rests_in_system(svg_content, sys_info):
+    """True se il sistema (fascia Y del pentagramma, con margine) contiene almeno
+    una pausa SVG (path class="Rest"). Usato per decidere se un sistema senza
+    note va comunque processato (riposizionamento pause onset-based)."""
+    sys_top = sys_info['top']
+    sys_bot = sys_info['bottom']
+    for m in re.finditer(r'<path class="Rest"[^>]*transform="matrix\(([^)]+)\)"', svg_content):
+        parts = m.group(1).split(',')
+        try:
+            ty = float(parts[5])
+        except (ValueError, IndexError):
+            continue
+        if sys_top - 200 <= ty <= sys_bot + 200:
+            return True
+    return False
+
+
+
     bls = sorted(barlines)
     
     if notes_in_system:
@@ -3749,11 +3766,62 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             # prima questo faceva `continue` e le note rimanevano
             # alla posizione originale di MuseScore (sopra la chiave).
             if len(bls) == 1:
-                staff_start = info['x_start']
+                # 12 Set 2026: la battuta singola di un sistema (es. battuta 2/4
+                # col cambio di tempo, da sola su un rigo) deve partire da
+                # UNIFORM_MUSIC_START (dopo chiave/TimeSig), NON dall'inizio
+                # del rigo — altrimenti i settori grigi coprono chiave e
+                # armatura e la battuta appare larga quanto il rigo intero.
+                staff_start = UNIFORM_MUSIC_START
                 equalized_measures[x_start] = [(staff_start, bls[0])]
             notes_in_sys = [n for n in notes if n.get('system_key') == x_start]
             if not notes_in_sys:
-                continue  # nessuna nota, salta
+                # 12 Set 2026: sistema con 1 battuta e SOLO pause (es. battuta 2/4
+                # col cambio di tempo, da sola su un rigo): NON saltare. Se saltiamo,
+                # le pause SVG restano alla X originale di MuseScore (fuori dai
+                # settori grigi). Costruiamo il singoletto e lasciamo che il loop
+                # di riposizionamento (che gira anche su 0 note) riposizioni le pause
+                # onset-based, come per le battute MMRest.
+                if not _has_rests_in_system(modified, info):
+                    continue  # nessuna nota E nessuna pausa: sistema vuoto, salta
+                groups = [bls] if bls else [[info['x_end']]]
+                group_centers = [sum(g)/len(g) for g in groups]
+                n_groups = 1
+                music_start = UNIFORM_MUSIC_START
+                _ns_single = _n_sectors_for_measure(_sys_global_idx)
+                equal_w = _ns_single * BEAT_WIDTH
+                new_centers = [music_start + equal_w]
+                for grp, new_c in zip(groups, new_centers):
+                    old_c = sum(grp) / len(grp)
+                    shift = new_c - old_c
+                    for b in grp:
+                        new_b = b + shift
+                        new_x_str = f'{new_b:.2f}'
+                        sys_top = info['top']
+                        sys_bot = info['bottom']
+                        for old_x_str in [str(b), f'{b:.2f}', str(int(b)) if b == int(b) else str(b)]:
+                            pattern = rf'(<polyline class="BarLine"[^>]*points="){re.escape(old_x_str)},([\d.]+) {re.escape(old_x_str)},([\d.]+)"'
+                            all_matches = list(re.finditer(pattern, modified))
+                            target_match = None
+                            for m in all_matches:
+                                y_val = float(m.group(2))
+                                if sys_top - 200 <= y_val <= sys_bot + 200:
+                                    target_match = m
+                                    break
+                            if target_match:
+                                y1_val = target_match.group(2)
+                                y2_val = target_match.group(3)
+                                prefix = target_match.group(1)
+                                new_elem = f'{prefix}{new_x_str},{y1_val} {new_x_str},{y2_val}"'
+                                modified = modified[:target_match.start()] + new_elem + modified[target_match.end():]
+                                break
+                raw_barlines_by_system[x_start] = sorted([b + (new_centers[0] - sum(groups[0])/len(groups[0])) for b in groups[0]])
+                barlines[x_start] = new_centers
+                orig_music_start = info['x_start']
+                old_measure_bounds = [(orig_music_start, group_centers[0])]
+                new_measure_bounds = [(music_start, new_centers[0])]
+                equalized_measures[x_start] = new_measure_bounds
+                system_measure_indices = [_sys_global_idx]
+                _skip_grouping = True
             # Crea 1 gruppo con la singola battuta
             groups = [bls] if bls else [[info['x_end']]]
             group_centers = [sum(g)/len(g) for g in groups]
