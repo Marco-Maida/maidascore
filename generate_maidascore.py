@@ -7628,11 +7628,14 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         # Y offset delle alterazioni sul pentagramma in SPATIUM (relativi al top)
         # 1 spatium = distanza tra due linee del pentagramma.
         # Top del pentagramma (linea 5, F) = 0 sp, bottom (linea 1, E) = 4 sp.
-        # Diesis: F#(0), C#(1.5), G#(3), D#(3.5), A#(2), E#(0.5), B#(4)
-        # Bemolli: Bb(2), Eb(0.5), Ab(2.5), Db(1), Gb(3), Cb(1.5), Fb(0)
-        # (misurati dal SVG originale di Marco, 12 Ago 2026)
-        Y_SP_SHARP = [0.0, 1.5, 3.0, 3.5, 2.0, 0.5, 4.0]
-        Y_SP_FLAT = [2.0, 0.5, 2.5, 1.0, 3.0, 1.5, 0.0]
+        # Diesis: F#(0), C#(1.5), G#(-0.5), D#(1), A#(2.5), E#(0.5), B#(2)
+        # Bemolli: Bb(2), Eb(0.5), Ab(2.5), Db(1), Gb(3), Cb(1.5), Fb(3.5)
+        # Misurati direttamente da SVG MuseScore (12 Sep 2026): generato un SVG
+        # con 7 diesis e uno con 7 bemolli, estratti gli anchor Y di ogni glyph.
+        # Nota: il G# va nel SOPRASPAZO sopra la quinta linea (offset -0.5),
+        # NON sulla seconda linea (bug segnalato da Marco, cerchiato in rosso).
+        Y_SP_SHARP = [0.0, 1.5, -0.5, 1.0, 2.5, 0.5, 2.0]
+        Y_SP_FLAT = [2.0, 0.5, 2.5, 1.0, 3.0, 1.5, 3.5]
         
         # Calcola lo spatium dal SVG post-stretch (distanza tra linee del pentagramma).
         # Dopo y_stretch_systems, ogni linea del pentagramma è una polyline separata
