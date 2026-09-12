@@ -8039,11 +8039,12 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 best_cy = cy_c
         if best_cy is None:
             continue
-        # Alterazioni come CARATTERI ASCII (stessa convenzione della tavola
-        # sonora: '#', 'b', 'n'), NON glifi Unicode ♯/♭/♮: il font usato non
-        # contiene ♭ (U+266D) né ♮ (U+266E) e cairosvg li renderizza come
-        # quadratino con X (bug segnalato da Marco, 12 Sep 2026).
-        acc_symbol = '#' if p_acc == '#' else ('b' if p_acc == 'b' else 'n')
+        # Alterazioni come glifi musicali Unicode (♯ ♭ ♮) in DejaVu Sans.
+        # Il font deve essere DejaVu Sans ESPLICITO e SINGOLO: cairosvg non
+        # fa font-fallback per-carattere, quindi con una chain che inizia
+        # con font senza il glifo (es. Atkinson Hyperlegible) verrebbero
+        # renderizzati come quadratino tofu (bug 12 Sep 2026).
+        acc_symbol = '#' if p_acc == '#' else ('\u266d' if p_acc == 'b' else '\u266e')
         stem_dir = n.get('stem_dir', None)
         # In modalità rhythm (Step2), tutti i gambi vengono ridisegnati verso
         # l'ALTO (middle_line_y - STEM_LEN), indipendentemente dalla direzione
@@ -8084,8 +8085,8 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         # (più piccolo per stare nello spazio ridotto).
         staff_acc_svgs.append(
             f'<text x="{acc_x:.1f}" y="{acc_y:.1f}" '
-            f'font-family="Atkinson Hyperlegible,Carlito,DejaVu Sans,sans-serif" '
-            f'font-size="{acc_fs_actual:.0f}" font-weight="900" '
+            f'font-family="DejaVu Sans" '
+            f'font-size="{acc_fs_actual:.0f}" font-weight="bold" '
             f'fill="#111111" text-anchor="middle" dy="0.35em">'
             f'{acc_symbol}</text>'
         )
