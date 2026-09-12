@@ -596,7 +596,7 @@ def count_notes_per_measure(mscx_content):
 def compute_system_breaks(note_counts, max_notes=MAX_NOTES_PER_SYSTEM,
                           default_measures=UNIFORM_MEASURES_PER_SYSTEM,
                           initial_rest_measures=0, mmrest_groups=None,
-                          time_sig_changes=None):
+                          time_sig_changes=None, time_sigs_per_measure=None):
     """
     Calcola dopo quali battute inserire un LayoutBreak (a capo).
     
@@ -610,6 +610,12 @@ def compute_system_breaks(note_counts, max_notes=MAX_NOTES_PER_SYSTEM,
     time_sig_changes: set di indici battuta (0-based) dove c'è un cambio di
     tempo INTRA-SISTEMA. Forza un break DOPO la battuta con il cambio, così
     il sistema successivo inizia con il nuovo tempo su un nuovo rigo.
+    
+    time_sigs_per_measure: dict measure_idx → (num, den) del tempo attivo.
+    Se fornito, il packing è per LARGHEZZA: una battuta 2/4 (2 settori,
+    1650px) è stretta, quindi 3-4 battute 2/4 ci stanno sullo stesso rigo
+    dove prima ce n'era una sola. Guadagna pagine (12 Set 2026, richiesta
+    Marco: "sfruttare tutto lo spazio sul pentagramma").
     """
     breaks = []
     i = 0
@@ -618,6 +624,35 @@ def compute_system_breaks(note_counts, max_notes=MAX_NOTES_PER_SYSTEM,
     # time_sig_changes: battute con cambio di tempo → break dopo
     ts_change_set = set(time_sig_changes) if time_sig_changes else set()
     
+    # Larghezza (in settori grigi) di ogni battuta. Default: UNIFORM (4/4-like).
+    if time_sigs_per_measure:
+        def _measure_width(m_idx):
+            ts = time_sigs_per_measure.get(m_idx)
+            if ts is None:
+                return 4  # default: misura a 4 settori (4/4)
+            num, den = ts
+            if den in (1, 2, 4):
+                beats = num * (4 // den)
+            elif den == 8:
+                beats = num * 0.5
+            elif den == 16:
+                beats = num * 0.25
+            else:
+                beats = 4
+            if den == 8 and num % 3 == 0:
+                sectors = num // 3  # 6/8→2, 9/8→3
+            else:
+                sectors = int(beats)
+            return sectors
+    else:
+        _measure_width = lambda m_idx: UNIFORM_MEASURES_PER_SYSTEM  # per rigo di default
+        _measure_width = lambda m_idx: 4
+    # Massimo settori per rigo: 2 battute 4/4 = 8 settori (6715px disponibili).
+    MAX_SECTORS_PER_SYSTEM = 8
+    # Larghezza min per rigo: se il pezzo è tutto a tempo corto (es. 2/4),
+    # non riempire oltre 8 settori — il limite resta MAX_SECTORS_PER_SYSTEM.
+    
+    # (riga rimossa: la logica legacy sopra usa _measure_width)
     # gli MMRest sono ora SINGOLE battute (non splittate).
     # Ogni MMRest conta come 1 battuta nel layout.
     # Break: metti l'MMRest in un sistema separato (1 battuta sola).
@@ -648,19 +683,24 @@ def compute_system_breaks(note_counts, max_notes=MAX_NOTES_PER_SYSTEM,
                 breaks.append(i)
             i += 1
         else:
-            count = min(default_measures, n - i)
-            # Controlla se c'è un cambio di tempo entro questo gruppo.
-            # Se la battuta j ha un nuovo tempo, il break va PRIMA di j
-            # (cioè dopo j-1), così la battuta col nuovo tempo inizia un
-            # nuovo sistema.
-            # Il cambio a j == i (prima battuta del gruppo) NON va gestito
-            # qui: il break prima di i è già stato inserito dal gruppo
-            # precedente. Questo gruppo può includere la battuta i insieme
-            # alla successiva, riempio lo spazio invece di lasciarla sola.
+            # 12 Set 2026: packing per LARGHEZZA invece che a numero fisso.
+            # Riempie il rigo con quante battute ci stanno entro
+            # MAX_SECTORS_PER_SYSTEM settori (default 8 = 2 battute 4/4).
+            count = 1
+            width_so_far = _measure_width(i)
+            while i + count < n and (i + count) not in mmrest_start_set:
+                _w = width_so_far + _measure_width(i + count)
+                if _w > MAX_SECTORS_PER_SYSTEM:
+                    break
+                width_so_far = _w
+                count += 1
+            # Tronca il gruppo al cambio di tempo/armatura interno:
+            # il break va PRIMA della battuta col cambio, così il
+            # nuovo tempo inizia su un rigo nuovo.
             end_idx = i + count - 1
             for j in range(i + 1, i + count):
                 if j in ts_change_set and j < n - 1:
-                    # Cambo a una battuta successiva: tronca prima di j
+                    # Cambio a una battuta successiva: tronca prima di j
                     end_idx = j - 1
                     count = j - i
                     break
@@ -1252,7 +1292,8 @@ def extract_single_part_mscz(input_mscz, part_index=0, key_sig_changes=None):
     mmrest_groups = note_info.get('mmrest_groups', [])
     break_after = compute_system_breaks(note_counts,
                                          initial_rest_measures=initial_rest,
-                                         mmrest_groups=mmrest_groups)
+                                         mmrest_groups=mmrest_groups,
+                                         time_sigs_per_measure=note_info.get('time_sigs_per_measure'))
     break_before = set(b + 1 for b in break_after if b + 1 < total_measures)
     if break_before:
         with open(xml_path, 'r') as f:
@@ -1581,6 +1622,7 @@ def make_accessible_mscz(input_mscz, output_mscz, part_index=0, rhythm_mode=Fals
             ks_change_set = set(key_sig_changes) if key_sig_changes else set()
             _measures = re.split(r'<Measure>', mscx)
             _prev_ts = None
+            _ts_per_measure_local = {}  # measure_idx (0-based) → (num, den) attivo
             for _mi in range(1, len(_measures)):
                 _m = _measures[_mi]
                 _ts_match = re.search(r'<TimeSig>.*?<sigN>(\d+)</sigN>.*?<sigD>(\d+)</sigD>.*?</TimeSig>', _m, re.DOTALL)
@@ -1588,6 +1630,8 @@ def make_accessible_mscz(input_mscz, output_mscz, part_index=0, rhythm_mode=Fals
                     _cur_ts = (int(_ts_match.group(1)), int(_ts_match.group(2)))
                 else:
                     _cur_ts = _prev_ts
+                if _cur_ts is not None:
+                    _ts_per_measure_local[_mi - 1] = _cur_ts
                 if _prev_ts is not None and _cur_ts != _prev_ts:
                     ts_change_set.add(_mi - 1)
                 _prev_ts = _cur_ts
@@ -1602,7 +1646,8 @@ def make_accessible_mscz(input_mscz, output_mscz, part_index=0, rhythm_mode=Fals
             break_indices = compute_system_breaks(note_counts, 
                                                     initial_rest_measures=initial_rest_measures,
                                                     mmrest_groups=mmrest_groups,
-                                                    time_sig_changes=all_changes)
+                                                    time_sig_changes=all_changes,
+                                                    time_sigs_per_measure=_ts_per_measure_local)
             
             # Print system layout (compute actual groups from breaks)
             sys_start = 0
