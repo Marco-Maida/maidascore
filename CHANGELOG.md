@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.5] - 2026-09-12
+
+### Added
+- **Width-based system packing**: measures are now grouped on each staff by
+  total width (grey sectors) instead of a fixed count. Short measures (e.g. 2/4
+  after a 4/4 section) are packed 4-per-staff instead of 2, eliminating empty
+  staff space and reducing PDF page count (15 → 10 pages in the test score).
+
 ## [1.1.4] - 2026-09-12
 
 ### Fixed
