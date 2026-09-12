@@ -1127,28 +1127,43 @@ def extract_single_part_mscz(input_mscz, part_index=0, key_sig_changes=None):
             # FIX: remove existing beam tags (music21 may add some auto-calculated
             # beams that conflict with our injected ones)
             xml_content = re.sub(r'<beam[^>]*>.*?</beam>\s*', '', xml_content)
-            # For each measure, find notes (non-rest) and inject beam tags
-            # in the same order as the original .mscx chords
+            # 12 Sep 2026 (bug crome staccate): allineamento GLOBALE battute
+            # per firma (is_chord/durationType) con difflib — l'originale può
+            # avere più battute del ricostruito (es. 142 vs 139) e il match
+            # per numero sfasa tutti i beam.
+            import difflib
+            def _rebuilt_mscx_sig(meas_body):
+                sig = []
+                for _nm in re.finditer(r'<note[^>]*>.*?</note>', meas_body, re.DOTALL):
+                    _nc = _nm.group(0)
+                    _dt = re.search(r'<type>(\w+)</type>', _nc)
+                    sig.append(('<rest' not in _nc,
+                                _dt.group(1) if _dt else '?'))
+                return tuple(sig)
+            rb_to_orig_mscx = {}  # rebuilt 0-based idx -> orig 0-based idx
+            rb_iter = list(re.finditer(r'<measure[^>]*>.*?</measure>', xml_content, re.DOTALL))
+            rb_sig_list = [_rebuilt_mscx_sig(m.group(0)) for m in rb_iter]
+            orig_sig_list = [tuple(orig_measure_sigs.get(i, [])) for i in range(len(orig_measures))]
+            if rb_sig_list and orig_sig_list:
+                _sm = difflib.SequenceMatcher(None,
+                                              [repr(s) for s in orig_sig_list],
+                                              [repr(s) for s in rb_sig_list],
+                                              autojunk=False)
+                for _tag, i1, i2, j1, j2 in _sm.get_opcodes():
+                    if _tag in ('equal', 'replace'):
+                        for k in range(min(i2 - i1, j2 - j1)):
+                            if orig_sig_list[i1 + k] == rb_sig_list[j1 + k]:
+                                rb_to_orig_mscx[j1 + k] = i1 + k
+            _rb_counter = [0]
             def _inject_beams_in_measure(m):
                 meas = m.group(0)
                 num_match = re.search(r'number="(\d+)"', meas)
                 if not num_match:
                     return meas
-                m_idx = int(num_match.group(1)) - 1  # 0-based
-                # 12 Sep 2026 (bug travatura lunga): inietta solo se la battuta
-                # ricostruita combacia con l'originale. Se la firma differisce
-                # (battute sfasate: ricostruito ha pause dove l'origine ha note,
-                # o durate diverse) NON iniettare — MuseScore farà auto-beaming,
-                # sempre meglio di un beam sbagliato che attraversa una pausa.
-                _orig_sig = orig_measure_sigs.get(m_idx)
-                _rebuilt_sig = []
-                for _nm in re.finditer(r'<note[^>]*>.*?</note>', meas, re.DOTALL):
-                    _nc = _nm.group(0)
-                    _dt = re.search(r'<type>(\w+)</type>', _nc)
-                    _rebuilt_sig.append(('<rest' not in _nc,
-                                         _dt.group(1) if _dt else '?'))
-                if _orig_sig is not None and _orig_sig != _rebuilt_sig:
-                    return meas  # battuta sfasata: skip iniezione
+                m_idx = rb_to_orig_mscx.get(_rb_counter[0])
+                _rb_counter[0] += 1
+                if m_idx is None:
+                    return meas  # battuta non allineata: auto-beaming di MuseScore
                 # Find all <note> elements that are NOT rests
                 note_pattern = r'<note[^>]*>.*?</note>'
                 notes_in_meas = list(re.finditer(note_pattern, meas, re.DOTALL))
@@ -1227,31 +1242,60 @@ def extract_single_part_mscz(input_mscz, part_index=0, key_sig_changes=None):
             with open(xml_path, 'r') as f:
                 xml_content = f.read()
             xml_content = re.sub(r'<beam[^>]*>.*?</beam>\s*', '', xml_content)
+            # 12 Sep 2026 (bug crome staccate, batt. 35/40/44 Carol): il file
+            # ricostruito può avere MENO battute dell'originale (es. 139 vs 142:
+            # pause multi-battuta collassate), quindi la numerazione si sfasa
+            # e il match per numero di battuta rifiuta l'iniezione su TUTTE le
+            # battute successive allo sfasamento → MuseScore auto-beama le crome
+            # come staccate anche dove l'originale ha la travatura.
+            # Fix: allineamento GLOBALE delle battute per firma (rest/type) con
+            # difflib.SequenceMatcher, e mappamento rebuilt_idx -> orig_num.
+            # Le battute "collassate" non trovano corrispondenza e vengono
+            # saltate (auto-beaming), MAI un beam sbagliato che attraversa pause.
+            import difflib
+            def _rebuilt_note_sig(meas_body):
+                sig = []
+                for nm in re.finditer(r'<note[^>]*>.*?</note>', meas_body, re.DOTALL):
+                    nc = nm.group(0)
+                    rest = ('<rest/>' in nc or '<rest />' in nc)
+                    typ = re.search(r'<type>(\w+)</type>', nc)
+                    sig.append((rest, typ.group(1) if typ else '?'))
+                return tuple(sig)
+            rb_measure_iter = list(re.finditer(r'<measure[^>]*>.*?</measure>', xml_content, re.DOTALL))
+            rb_sigs = [_rebuilt_note_sig(m.group(0)) for m in rb_measure_iter]
+            orig_nums_sorted = sorted(orig_beam_tags.keys())
+            orig_sigs = [tuple((r, t) for (r, t, _) in orig_beam_tags[k]) for k in orig_nums_sorted]
+            rb_to_orig = {}  # rebuilt 0-based idx -> orig measure num
+            if rb_sigs and orig_sigs:
+                sm = difflib.SequenceMatcher(None,
+                                             [repr(s) for s in orig_sigs],
+                                             [repr(s) for s in rb_sigs],
+                                             autojunk=False)
+                for tag, i1, i2, j1, j2 in sm.get_opcodes():
+                    if tag in ('equal', 'replace'):
+                        n = min(i2 - i1, j2 - j1)
+                        for k in range(n):
+                            if orig_sigs[i1 + k] == rb_sigs[j1 + k]:
+                                rb_to_orig[j1 + k] = orig_nums_sorted[i1 + k]
             n_injected = 0
             n_skipped = 0
+            _rb_idx_counter = [0]
             def _reinject_from_musicxml(m):
                 nonlocal n_injected, n_skipped
                 meas = m.group(0)
                 num_match = re.search(r'number="(\d+)"', meas)
                 if not num_match:
                     return meas
-                m_num = int(num_match.group(1))
-                orig_tags = orig_beam_tags.get(m_num)
-                if not orig_tags:
-                    return meas
-                # Sequenza ricostruita (is_rest, type) in ordine
-                rebuilt = []
-                for nm in re.finditer(r'<note[^>]*>.*?</note>', meas, re.DOTALL):
-                    nc = nm.group(0)
-                    rest = ('<rest/>' in nc or '<rest />' in nc)
-                    typ = re.search(r'<type>(\w+)</type>', nc)
-                    rebuilt.append((rest, typ.group(1) if typ else '?'))
-                orig_seq = [(r, t) for (r, t, _) in orig_tags]
-                if rebuilt != orig_seq:
-                    # Battuta sfasata o contenuto diverso: NON iniettare
+                m_idx = _rb_idx_counter[0]
+                _rb_idx_counter[0] += 1
+                m_num = rb_to_orig.get(m_idx)
+                if m_num is None:
+                    # Battuta non allineata (collassata/sfasata): NON iniettare
                     n_skipped += 1
                     return meas
-                # Match perfetto: inietta i beam originali alle note con beam
+                orig_tags = orig_beam_tags.get(m_num)
+                # Match già garantito dall'allineamento globale (firme identiche):
+                # inietta i beam originali alle note con beam
                 insertions = []
                 note_ms = list(re.finditer(r'<note[^>]*>.*?</note>', meas, re.DOTALL))
                 for nm, (r, t, beam_val) in zip(note_ms, orig_tags):

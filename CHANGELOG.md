@@ -336,3 +336,8 @@ First public release.
 
 ### Aggiunto
 - Pause nella tavola sonora: sfondo nero, testo bianco bold e conteggio dei beat al posto di "pausa" (semiminima=UNO, minima=UNO-DUE, semibreve=UNO-DUE-TRE-QUATTRO, croma/semicroma=UN). Pause multi-beat divise in settori allineati ai settori grigi del pentagramma.
+
+## [1.1.8] - 2026-09-12
+
+### Corretto
+- Travature (beam) mancanti nelle battute dopo pause multi-battuta collassate: il file ricostruito può avere meno battute dell'originale (es. 139 vs 142), quindi il match per numero di battuta sfasava l'iniezione dei beam e MuseScore applicava l'auto-beaming (crome staccate). Ora le battute vengono allineate globalmente per firma (rest/durata) con SequenceMatcher, sia per input .mscx che .mxl.
