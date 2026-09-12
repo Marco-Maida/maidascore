@@ -3158,41 +3158,57 @@ def build_system_layout(systems, barlines, time_sigs_per_measure, measure_offset
 
 def _note_final_x(n, all_notes_in_sys, current_measure_idx, new_m_start, new_m_width,
                    sector_size, n_sectors_m, ts_beats_m, ts_beats_for_measure_fn=None):
-    """Replica la formula onset-based usata nel ramo Note per calcolare
-    la X finale di una nota dopo il riposizionamento. Restituisce None
-    se non calcolabile."""
+    """Replica la formula onset-based del blocco ONSET-BASED POSITIONING
+    (duration-cell centering) per calcolare la X finale (center_x)
+    di una nota dopo il riposizionamento. Restituisce None se non calcolabile."""
     if n.get('measure_idx') != current_measure_idx:
+        return None
+    if new_m_width <= 0 or sector_size <= 0:
         return None
     dtype = n.get('duration_type', 'quarter')
     onset = n.get('onset', 0.0)
-    if dtype in ('whole', 'whole_dotted'):
-        target_pos = 0.50
+    # Durata in quarter-beats (con puntato ×1.5, come nel blocco reale)
+    dur_beats = DURATION_BEATS.get(dtype, 1.0)
+    if n.get('dots', 0) > 0:
+        dur_beats *= 1.5
+    beat_num = int(onset / sector_size)
+    beat_width_frac = 1.0 / n_sectors_m if n_sectors_m else 1.0 / 4
+    beat_start_frac = beat_num * beat_width_frac
+    sector_start_qb = beat_num * sector_size
+    # Conta gli onset-group nel beat (per la logica "sola nel settore" del blocco reale)
+    onsets_in_beat = set()
+    for n0 in all_notes_in_sys:
+        if n0.get('measure_idx') != current_measure_idx:
+            continue
+        if n0.get('duration_type') in ('whole', 'whole_dotted'):
+            continue
+        n_onset = n0.get('onset', -1)
+        if n_onset is not None and n_onset >= 0 and int(n_onset / sector_size) == beat_num:
+            onsets_in_beat.add(round(n_onset, 3))
+    onset_in_beat = (onset - sector_start_qb) / sector_size
+    if dur_beats >= 2.0:
+        # Half/whole: al 25% della cella
+        frac_in_beat = onset_in_beat + 0.25
     else:
-        beat_num = int(onset / sector_size)
-        if sector_size <= 0:
-            return None
-        beat_num = int(onset / sector_size)
-        beat_frac = (onset / sector_size) - beat_num
-        notes_same_beat = []
-        for n0 in all_notes_in_sys:
-            if n0.get('measure_idx') == current_measure_idx:
-                n_onset = n0.get('onset', -1)
-                if int(n_onset / sector_size) == beat_num and n0.get('duration_type') not in ('whole', 'whole_dotted'):
-                    notes_same_beat.append(n0)
-        notes_same_beat.sort(key=lambda x: x.get('onset', 0))
-        try:
-            idx_in_beat = [id(x) for x in notes_same_beat].index(id(n))
-        except ValueError:
-            idx_in_beat = 0
-        n_beat = len(notes_same_beat)
-        beat_width_frac = 1.0 / n_sectors_m if n_sectors_m else 1.0 / 4
-        beat_start_frac = beat_num * beat_width_frac
-        if n_beat <= 1:
-            target_pos = beat_start_frac + beat_width_frac * 0.25
+        if len(onsets_in_beat) <= 1:
+            frac_in_beat = onset_in_beat + 0.25
         else:
-            frac_in_beat = (idx_in_beat + 1) / (n_beat + 1)
-            target_pos = beat_start_frac + beat_width_frac * frac_in_beat
-    return new_m_start + target_pos * new_m_width
+            frac_in_beat = onset_in_beat + dur_beats / (2.0 * sector_size)
+    frac_measure = beat_start_frac + beat_width_frac * frac_in_beat
+    frac_measure = max(0.02, min(0.98, frac_measure))
+    center_x = new_m_start + frac_measure * new_m_width
+    # Clamp dentro il settore (come blocco reale, disc_r approx)
+    beat_start_x = new_m_start + beat_start_frac * new_m_width
+    beat_end_x = beat_start_x + beat_width_frac * new_m_width
+    if dtype in ('16th', '16th_dotted'):
+        disc_r_approx = 85
+    elif dtype in ('eighth', 'eighth_dotted'):
+        disc_r_approx = 104
+    else:
+        disc_r_approx = 130
+    center_x = max(beat_start_x + disc_r_approx + 5,
+                   min(center_x, beat_end_x - disc_r_approx - 5))
+    return center_x
 
 
 def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False, title_text=None, part_text=None, measure_offset=0, initial_rest_measures=0, mmrest_groups=None, rhythm_mode=False, key_sig_changes_dict=None):
@@ -3788,6 +3804,25 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         _matched_rest_indices = {}  # measure_idx → set of matched rest indices
         _processed_spans = set()  # byte offsets of elements already repositioned
         
+        # 12 Set 2026: PRE-PASS — calcola la X finale (onset-based, post-repos) di TUTTE
+        # le note del sistema e la salva in n['x_final']. I nudge dei rest usano x_final
+        # invece di n['x'] (originale) o _note_final_x (che fallisce per battute non
+        # ancora processate). n['x_final'] NON viene mai sovrascritto dal repos Note.
+        for _grp in range(len(old_measure_bounds)):
+            _b_old = old_measure_bounds[_grp]
+            _b_new = new_measure_bounds[_grp]
+            _m_idx_p = system_measure_indices[_grp] if _grp < len(system_measure_indices) else None
+            if _m_idx_p is None:
+                continue
+            _ts_beats_p = _ts_beats_for_measure(_m_idx_p)
+            _n_sectors_p = _n_sectors_for_measure(_m_idx_p)
+            _sector_size_p = _ts_beats_p / _n_sectors_p if _n_sectors_p > 0 else 1.0
+            for _n0 in notes_in_sys:
+                if _n0.get('measure_idx') == _m_idx_p:
+                    _n0['x_final'] = _note_final_x(_n0, notes_in_sys, _m_idx_p,
+                                                    _b_new[0], _b_new[1] - _b_new[0],
+                                                    _sector_size_p, _n_sectors_p, _ts_beats_p)
+        
         for grp_idx in range(len(old_measure_bounds)):
             old_m_start, old_m_end = old_measure_bounds[grp_idx]
             new_m_start, new_m_end = new_measure_bounds[grp_idx]
@@ -3858,8 +3893,11 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 
                 all_matches.append(elem_match)
             
-            # Sort by tx (X position) so rests are processed left-to-right
-            all_matches.sort(key=lambda m: float(m.group(6)))
+            # Sort by tx (X position) so rests are processed left-to-right.
+            # 12 Set 2026: processa PRIMA le Note poi i Rest (a parità di tipo, per X):
+            # il nudge anti-collisione dei rest usa n0['x'] post-repos, che viene
+            # aggiornato solo quando la nota è già stata riposizionata.
+            all_matches.sort(key=lambda m: (0 if 'class="Note"' in m.group(0) else 1, float(m.group(6))))
             
             for elem_match in all_matches:
                 tx = float(elem_match.group(6))
@@ -3986,24 +4024,20 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                             _processed_spans.add(elem_match.start())
                             continue
                         # Fallback: old heuristic (half-note or orig_pos)
-                        target_pos = None
-                        half_notes_in_measure = [n for n in notes_in_sys 
-                                               if n['duration_type'] in ('half', 'half_dotted')
-                                               and old_m_start - 50 <= n['x'] <= old_m_end + 50]
-                        if half_notes_in_measure:
-                            half_note = half_notes_in_measure[0]
-                            half_onset = half_note.get('onset', 0.0)
-                            if half_onset < 2.0:
-                                target_pos = 0.75  # note is beats 1-2, rest is beats 3-4
-                            else:
-                                target_pos = 0.25  # note is beats 3-4, rest is beats 1-2
-                        else:
-                            # 11 Set 2026 (bug sovrapposizioni): pausa SVG unmatched.
-                            # Prima usava orig_pos che collideva con i cerchi delle
-                            # note riposizionate onset-based. Ora: se il centro X
-                            # della pausa cade vicino al cerchio di una nota, sposta
-                            # la pausa a destra/sinistra del cerchio (r+80).
-                            target_pos = orig_pos
+                        # 12 Set 2026 (bug pause unmatched): pausa SVG senza
+                        # corrispondenza in rests_by_measure. Succede quando l'MSCZ
+                        # accessibile (ricostruito da music21 con makeRests implicito)
+                        # contiene pause che l'estrattore (che legge l'ORIGINALE)
+                        # non vede. Esempio: half rest implicita beat 3-4 di battute
+                        # incomplete. Invece di usare orig_pos (che collide con le
+                        # note riposizionate onset-based), ESTRAPOLA l'onset dalla
+                        # posizione X originale della pausa nella battuta:
+                        # onset = orig_pos * ts_beats. La half rest a metà battuta
+                        # (orig_pos ~0.5) → onset 2.0 → posizionata correttamente
+                        # nella seconda metà della battuta, lontano dalle note.
+                        _est_onset = orig_pos * _ts_beats
+                        target_pos = min(max(_est_onset / _ts_beats + 0.02, 0.0), 0.98)
+                        if True:
                             _try_x = new_m_start + target_pos * new_m_width
                             _best_gap, _best_cx = None, None
                             for n0 in notes_in_sys:
@@ -4019,13 +4053,46 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                                     if _best_cx is None or abs(cx_final - _try_x) < _best_gap:
                                         _best_gap = abs(cx_final - _try_x)
                                         _best_cx = cx_final
-                            if _best_cx is not None:
-                                if _best_cx >= _try_x:
-                                    _try_x = _best_cx + 190
-                                else:
-                                    _try_x = _best_cx - 190
-                                _try_x = max(new_m_start + 80, min(new_m_end - 80, _try_x))
-                                target_pos = (_try_x - new_m_start) / new_m_width
+                            # 12 Set 2026: nudge iterativo su TUTTE le note della riga
+                            # (non solo la più vicina): sposta il rest finché non collide
+                            # con nessun cerchio. Bbox rest half: [x, x+226].
+                            _half_w = 226.0
+                            for _iter in range(8):
+                                _moved = False
+                                for n0 in notes_in_sys:
+                                    if abs(n0.get('y', -1) - ty) > 300:
+                                        continue
+                                    n_on = n0.get('onset')
+                                    if n_on is None:
+                                        continue
+                                    # 12 Set 2026: n0['x'] post-repos se già riposizionata;
+                                    # altrimenti PREDICI con _note_final_x usando i bounds
+                                    # della battuta DELLA NOTA (le battute successive non
+                                    # sono ancora state processate).
+                                    cx_final = n0.get('x_final')
+                                    if cx_final is None:
+                                        continue
+                                    _nr = n0.get('circle_r', 110)
+                                    # 12 Set: check DOPPIO — bbox (per half larga 226)
+                                    # e centro-based (come il validatore: |rest_x - note_x|
+                                    # deve superare r_rest + r_nota, con r_rest=75 per
+                                    # quarter/eighth). tx del rest è il riferimento del
+                                    # validatore.
+                                    _collide = (
+                                        _try_x < cx_final + _nr + 20 and
+                                        _try_x + _half_w > cx_final - _nr - 20
+                                    ) or abs(_try_x - cx_final) < (75.0 + _nr + 10)
+                                    if _collide:
+                                        # collisione: sposta a destra se la nota è a sinistra
+                                        if cx_final <= _try_x + _half_w / 2:
+                                            _try_x = cx_final + _nr + _half_w + 20
+                                        else:
+                                            _try_x = cx_final - _nr - _half_w - 20
+                                        _try_x = max(new_m_start + 10, min(new_m_end - _half_w - 10, _try_x))
+                                        _moved = True
+                                if not _moved:
+                                    break
+                            target_pos = (_try_x - new_m_start) / new_m_width
 
                     
                     if target_pos < 0:
@@ -4096,36 +4163,57 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     target_pos = orig_pos
                 
                 new_tx = new_m_start + target_pos * new_m_width
+                # 12 Set 2026: aggiorna la X della nota nel data structure così i
+                # nudge successivi (pause) possono usare la X REALE post-repos.
+                if 'Note' in elem_str and matched_note is not None:
+                    matched_note['x'] = new_tx
+                    matched_note = None  # reset: non usarlo per i Rest
                 # 11 Set 2026 (bug sovrapposizioni): anti-collisione universale
                 # pausa-cerchio nota. Se la pausa (r~75+pad) cade troppo vicino
                 # al centro X di un cerchio nota riposizionato nella STESSA riga,
                 # spostala a destra o a sinistra del cerchio (il lato con più spazio).
-                if 'Rest' in elem_str:
+                if 'Rest' in elem_str and rest_onset_val is not None:
+                    # 12 Set 2026: per i rest UNMATCHED (onset=None) il nudge iterativo
+                    # del fallback ha già risolto le collisioni con TUTTE le note
+                    # (bbox-based, X post-repos) — non rieseguire qui il nudge
+                    # centro-based che potrebbe sovrascriverlo.
                     for n0 in notes_in_sys:
                         if abs(n0.get('y', -1) - ty) > 300:
                             continue
                         if n0.get('onset') is None:
                             continue
-                        _cand_x = _note_final_x(n0, notes_in_sys, current_measure_idx,
-                                                new_m_start, new_m_width,
-                                                _sector_size_m, _n_sectors_m, _ts_beats)
+                        _cand_x = n0.get('x_final')
                         if _cand_x is None:
                             continue
-                        _rest_r = 75.0
+                        if _cand_x is None:
+                            continue
+                        _rest_r = 113.0 if (rest_dtype_val == 'half' or 'M0,-3.3125' in elem_str) else 75.0
                         _note_r = n0.get('circle_r', 110)
-                        _clear = _rest_r + _note_r * 1.0
-                        if abs(_cand_x - new_tx) < _clear:
-                            # lato con più spazio dentro la battuta
+                        _clear = _rest_r + _note_r * 1.0 + 20.0  # +pad: bbox rest non tocchi il cerchio
+                        # 12 Set 2026: new_tx è il BORDO SINISTRO del glyph rest (il path
+                        # parte da tx), non il centro. Il centro effettivo = new_tx + _rest_r.
+                        # Compara centro-rest con centro-nota, poi riconverti in bordo sinistro.
+                        _center_tx = new_tx + _rest_r
+                        if abs(_cand_x - _center_tx) < _clear:
+                            _use_tx = _center_tx
+                            # lato con più spazio dentro la battuta.
+                            # 12 Set 2026: preferisci il lato coerente con l'onset:
+                            # se la pausa è a destra della nota nel flusso musicale
+                            # (onset >= onset nota), spingila a destra; altrimenti a sinistra.
+                            _rest_on = rest_onset_val if rest_onset_val is not None else orig_pos * _ts_beats
+                            _n_on = n0.get('onset', 0.0)
                             _left_ok = _cand_x - _clear >= new_m_start
                             _right_ok = _cand_x + _clear <= new_m_end
-                            if not _right_ok and _left_ok:
-                                new_tx = _cand_x - _clear
-                            elif not _left_ok and _right_ok:
-                                new_tx = _cand_x + _clear
-                            elif _right_ok and (new_tx <= _cand_x or not _left_ok):
-                                new_tx = _cand_x + _clear
-                            elif _left_ok:
-                                new_tx = _cand_x - _clear
+                            if _rest_on >= _n_on:
+                                if _right_ok:
+                                    new_tx = _cand_x + _clear - _rest_r
+                                elif _left_ok:
+                                    new_tx = _cand_x - _clear - _rest_r
+                            else:
+                                if _left_ok:
+                                    new_tx = _cand_x - _clear - _rest_r
+                                elif _right_ok:
+                                    new_tx = _cand_x + _clear - _rest_r
 
                 # per le pause a onset 0.0 (inizio battuta), aggiungi barline_gap
                 # come per le note, per evitare che la pausa sia attaccata alla chiave.
@@ -4255,19 +4343,49 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     for n0 in notes_in_sys:
                         if n0.get('onset') is None:
                             continue
-                        _cand_x = _note_final_x(n0, notes_in_sys, _sys_global_idx + grp_idx,
-                                                new_m_start, new_m_width,
-                                                _sector_size2 if '_sector_size2' in dir() else 1.0,
-                                                _n_sectors2 if '_n_sectors2' in dir() else 4,
-                                                _ts_beats2)
+                        # 12 Set 2026: per note non ancora riposizionate (battute
+                        # successive), PREDICI la X finale con _note_final_x usando
+                        # i bounds della battuta DELLA NOTA.
+                        n0_m = n0.get('measure_idx')
+                        _n0_start, _n0_width = new_m_start, new_m_width
+                        if n0_m is not None and n0_m != (_sys_global_idx + grp_idx):
+                            _grp = n0_m - _sys_global_idx
+                            if 0 <= _grp < len(new_measure_bounds):
+                                _b = new_measure_bounds[_grp]
+                                _n0_start, _n0_width = _b[0], _b[1] - _b[0]
+                            _cand_x = _note_final_x(n0, notes_in_sys, n0_m,
+                                                    _n0_start, _n0_width,
+                                                    _sector_size2 if '_sector_size2' in dir() else 1.0,
+                                                    _n_sectors2 if '_n_sectors2' in dir() else 4,
+                                                    _ts_beats2)
+                            if _cand_x is not None:
+                                pass
+                            else:
+                                _cand_x = n0.get('x')
+                        else:
+                            _cand_x = n0.get('x_final')
                         if _cand_x is None:
                             continue
-                        _clear2 = 75.0 + n0.get('circle_r', 110)
-                        if abs(_cand_x - expected_x) < _clear2:
-                            if _cand_x + _clear2 <= new_m_end:
-                                expected_x = _cand_x + _clear2
-                            elif _cand_x - _clear2 >= new_m_start:
-                                expected_x = _cand_x - _clear2
+                        # 12 Set 2026: expected_x è il BORDO SINISTRO del rest (il path
+                        # parte da tx). Per half rest (larga 226px) usa clear adeguata.
+                        _rest_r2 = 113.0 if r_dtype == 'half' else 75.0
+                        _clear2 = _rest_r2 + n0.get('circle_r', 110) + 20.0
+                        _exp_center = expected_x + _rest_r2
+                        if abs(_cand_x - _exp_center) < _clear2:
+                            _r_on = r_onset
+                            _n_on = n0.get('onset', 0.0)
+                            _left_ok2 = _cand_x - _clear2 >= new_m_start
+                            _right_ok2 = _cand_x + _clear2 <= new_m_end
+                            if _r_on >= _n_on:
+                                if _right_ok2:
+                                    expected_x = _cand_x + _clear2 - _rest_r2
+                                elif _left_ok2:
+                                    expected_x = _cand_x - _clear2 - _rest_r2
+                            else:
+                                if _left_ok2:
+                                    expected_x = _cand_x - _clear2 - _rest_r2
+                                elif _right_ok2:
+                                    expected_x = _cand_x + _clear2 - _rest_r2
                     # Clone the first SVG rest of the same type
                     # Quarter rest: d starts with "M76.125", eighth rest: d starts with "M88.375"
                     # Half rest: MuseScore 4 PUÒ renderizzare half rest nell'SVG export
