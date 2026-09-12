@@ -4166,11 +4166,13 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                                     if int(n_onset / _sector_size_m) == beat_num:
                                         notes_in_same_beat.append(n)
                         
-                        # If rest shares sector with notes, nudge left to avoid overlap
+                        # If rest shares sector with notes, position the rest at 75%
+                        # of its sector (mirror of single-note 25% placement) so
+                        # note and rest get a comfortable visual gap.
                         if notes_in_same_beat:
-                            # Place rest at left edge of its time slot (not center)
-                            # to avoid overlapping the note circle
-                            target_pos = rest_onset_val / _ts_beats + 0.02
+                            _sec_w_frac = 1.0 / _ts_beats  # frazione di battuta per settore
+                            _sec_i = int((rest_onset_val / _ts_beats) / _sec_w_frac) if _sec_w_frac > 0 else 0
+                            target_pos = (_sec_i + 0.75) * _sec_w_frac
                         else:
                             # Pausa sola nel settore: all'INIZIO (come le note)
                             # "ancora più a sinistra, all'inizio della
@@ -4385,7 +4387,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                                 continue
                             _rest_r = 113.0 if (rest_dtype_val == 'half' or 'M0,-3.3125' in elem_str) else 75.0
                             _note_r = n0.get('circle_r', 110)
-                            _clear = _rest_r + _note_r * 1.0 + 20.0  # +pad: bbox rest non tocchi il cerchio
+                            _clear = _rest_r + _note_r * 1.0 + 100.0  # 12 Set: pad comfort (era 20)
                             # 12 Set 2026: new_tx è il BORDO SINISTRO del glyph rest (il path
                             # parte da tx), non il centro. Il centro effettivo = new_tx + _rest_r.
                             _center_tx = new_tx + _rest_r
@@ -4561,7 +4563,25 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     # della battuta (settore 2) invece che all'inizio (settore 0).
                     # Formula precedente: (r_onset + r_dur/2) / beats → centro durata.
                     # Nuova: r_onset / beats + 0.02 → inizio sezione grigia.
-                    target_pos = r_onset / _ts_beats2 + 0.02
+                    # 12 Set 2026 (bug pausa troppo vicina alla nota): se la pausa
+                    # condivide il settore con una nota, posizionala al 75% del
+                    # settore (speculare al 25% delle note singole) per un gap
+                    # visivo confortevole invece del minimo clear anti-collisione.
+                    _m_notes_same_beat = False
+                    for n0c in _nudge_pool:
+                        if n0c.get('onset') is None:
+                            continue
+                        if n0c.get('measure_idx') != m_idx:
+                            continue
+                        if int(n0c['onset'] / _sector_size_m) == int(r_onset / _sector_size_m):
+                            _m_notes_same_beat = True
+                            break
+                    if _m_notes_same_beat:
+                        _sec_w_frac2 = 1.0 / _ts_beats2
+                        _sec_i2 = int((r_onset / _ts_beats2) / _sec_w_frac2) if _sec_w_frac2 > 0 else 0
+                        target_pos = (_sec_i2 + 0.75) * _sec_w_frac2
+                    else:
+                        target_pos = r_onset / _ts_beats2 + 0.02
                     expected_x = new_m_start + target_pos * new_m_width
                     # barline_gap per pause a onset 0.0 (non attaccate alla chiave)
                     if r_onset == 0.0:
