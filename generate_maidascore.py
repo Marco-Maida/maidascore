@@ -2706,8 +2706,19 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
         # calcola global_m_idx_start direttamente dal layout,
         # 12 Ago 2026 (architettura Fable 5): usa system_layout (Single Source of
         # Truth) se disponibile, invece di ricalcolare da equalized_measures.
-        if system_layout and sys_key in system_layout:
-            global_m_idx_start = system_layout[sys_key]['global_idx_start']
+        # 12 Set 2026 (bug tavole vuote): sys_key qui è una chiave di systems_post
+        # (post-Y-stretch, es. '708.66_700'), mentre system_layout è indicizzato
+        # per chiavi di systems PRE-stretch (es. '708.661_1370') → la lookup per
+        # chiave FALLISCE sempre e il fallback produce indici sfasati dopo un
+        # MMRest (celle "pausa" sotto battute con note). Entrambi sono ordinati
+        # per Y: matcha per INDICE di sistema, non per chiave.
+        _layout_list = None
+        if system_layout:
+            _layout_list = [system_layout[_sk]
+                            for _sk in sorted(system_layout.keys(),
+                                              key=lambda k: system_layout[k]['global_idx_start'])]
+        if _layout_list and sys_idx < len(_layout_list):
+            global_m_idx_start = _layout_list[sys_idx]['global_idx_start']
         else:
             # Fallback: vecchia logica (equalized_measures + MMRest + UNIFORM)
             _mmrest_set_tav = set(gs for gs, gc in (mmrest_groups or []))
