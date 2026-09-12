@@ -4396,6 +4396,31 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                                         _nudge_changed = True
                         if not _nudge_changed:
                             break
+                    # 12 Set 2026 (bug pausa sulla stanghetta): dopo il nudge
+                    # anti-collisione, CLAMPA la pausa dentro la battuta con
+                    # margine dalla stanghetta. In 2/4 una pausa di croma a
+                    # onset 1.5 condivide il settore grigio con la croma a
+                    # onset 1.0: il nudge la spingeva tutta a destra fino a
+                    # farla finire VISIVAMENTE SOPRA la stanghetta.
+                    if 'Rest' in elem_str and rest_onset_val is not None:
+                        _rest_gap = 150.0  # margine minimo centro-pausa dalla stanghetta
+                        _rest_r2 = 113.0 if (rest_dtype_val == 'half' or 'M0,-3.3125' in elem_str) else 75.0
+                        _rest_max = new_m_end - _rest_r2 - _rest_gap
+                        if new_tx > _rest_max:
+                            new_tx = max(_rest_max, new_m_start + _rest_r2 + _rest_gap)
+                            # se ora collide con una nota, sposta la pausa a sinistra di essa
+                            for _n0 in _nudge_pool:
+                                if abs(_n0.get('y', -1) - ty) > 3000:
+                                    continue
+                                if _n0.get('onset') is None:
+                                    continue
+                                _cx = _n0.get('x_final')
+                                if _cx is None:
+                                    continue
+                                _cl = _rest_r2 + _n0.get('circle_r', 110) + 20.0
+                                if abs(_cx - (new_tx + _rest_r2)) < _cl:
+                                    new_tx = _cx - _cl - _rest_r2
+                            new_tx = max(new_tx, new_m_start + _rest_r2 + _rest_gap)
                 # per le pause a onset 0.0 (inizio battuta), aggiungi barline_gap
                 # come per le note, per evitare che la pausa sia attaccata alla chiave.
                 # MA NON se la pausa condivide il settore con note (le note hanno già
@@ -4572,6 +4597,14 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                                     expected_x = _cand_x - _clear2 - _rest_r2
                                 elif _right_ok2:
                                     expected_x = _cand_x + _clear2 - _rest_r2
+                    # 12 Set 2026 (bug pausa sulla stanghetta): clamp anche per
+                    # le pause CLONATE — stessa regola del ramo di reposizionamento.
+                    if True:
+                        _rg = 150.0
+                        _rr = 113.0 if r_dtype == 'half' else 75.0
+                        _rmax = new_m_end - _rr - _rg
+                        if expected_x > _rmax:
+                            expected_x = max(_rmax, new_m_start + _rr + _rg)
                     # Clone the first SVG rest of the same type
                     # Quarter rest: d starts with "M76.125", eighth rest: d starts with "M88.375"
                     # Half rest: MuseScore 4 PUÒ renderizzare half rest nell'SVG export
