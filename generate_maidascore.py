@@ -3005,16 +3005,32 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
                                                   f'fill="{tri_color}" '
                                                   f'stroke="{tri_color}" stroke-width="2"/>')
                     else:
-                        tavola_svg += (f'<rect x="{cell_x_vis:.1f}" y="{tavola_top:.1f}" '
-                                      f'width="{cell_w_adj:.1f}" height="{tavola_row_height}" '
-                                      f'fill="white" rx="8" '
-                                      f'stroke="#999" stroke-width="3" stroke-dasharray="20,12"/>')
-                        font_size = min(100, max(40, cell_w_adj * 0.25))
-                        tavola_svg += (f'<text x="{text_x:.1f}" '
-                                      f'y="{tavola_top + tavola_row_height/2 + font_size*0.35:.1f}" '
-                                      f'text-anchor="{text_anchor}" font-family="Atkinson Hyperlegible" '
-                                      f'font-size="{font_size:.0f}" font-weight="500" '
-                                      f'fill="#999" font-style="italic">pausa</text>')
+                        # 12 Set 2026 (direttiva): celle pausa con sfondo NERO e testo
+                        # BIANCO. Al posto di "pausa", il conteggio dei beat:
+                        # quarter (1 beat) = UNO; half (2 beat) = UNO-DUE;
+                        # whole (4 beat) = UNO-DUE-TRE-QUATTRO; eighth/16th = UN.
+                        # Per pause di più beat, la cella è divisa in settori
+                        # corrispondenti, uno per parola.
+                        r_type = e.get('rest', {}).get('duration_type', 'quarter')
+                        if r_type in ('eighth', '16th', '32nd'):
+                            rest_words = ['UN']
+                        else:
+                            n_beats = max(1, int(round(dur)))
+                            rest_words = ['UNO', 'DUE', 'TRE', 'QUATTRO'][:n_beats]
+                        n_words = len(rest_words)
+                        sec_w = cell_w_adj / n_words
+                        wf_size = min(100, max(40, sec_w * 0.25))
+                        for wi, word in enumerate(rest_words):
+                            wx = cell_x_vis + wi * sec_w
+                            tavola_svg += (f'<rect x="{wx:.1f}" y="{tavola_top:.1f}" '
+                                          f'width="{sec_w:.1f}" height="{tavola_row_height}" '
+                                          f'fill="#111111" rx="8" '
+                                          f'stroke="#111111" stroke-width="2"/>')
+                            tavola_svg += (f'<text x="{wx + sec_w/2:.1f}" '
+                                          f'y="{tavola_top + tavola_row_height/2 + wf_size*0.35:.1f}" '
+                                          f'text-anchor="middle" font-family="Atkinson Hyperlegible" '
+                                          f'font-size="{wf_size:.0f}" font-weight="700" '
+                                          f'fill="white">{word}</text>')
                 
                 # If no events in this measure
                 if not events_timeline:
@@ -3239,19 +3255,28 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
                                                   f'fill="{tri_color}" '
                                                   f'stroke="{tri_color}" stroke-width="2"/>')
                     else:
-                        tavola_svg += (f'<rect x="{cell_x:.1f}" y="{tavola_top:.1f}" '
-                                      f'width="{cell_w:.1f}" height="{tavola_row_height}" '
-                                      f'fill="white" rx="8" '
-                                      f'stroke="#999" stroke-width="3" stroke-dasharray="20,12"/>')
-                        font_size = min(100, max(40, cell_w * 0.25))
-                        # "pausa" allineata a sinistra (sotto il
-                        # simbolo pausa del pentagramma, che è all'inizio del settore)
-                        text_x_rest = cell_x + font_size * 0.5
-                        tavola_svg += (f'<text x="{text_x_rest:.1f}" '
-                                      f'y="{tavola_top + tavola_row_height/2 + font_size*0.35:.1f}" '
-                                      f'text-anchor="start" font-family="Atkinson Hyperlegible" '
-                                      f'font-size="{font_size:.0f}" font-weight="500" '
-                                      f'fill="#999" font-style="italic">pausa</text>')
+                        # 12 Set 2026 (direttiva): celle pausa con sfondo NERO, testo
+                        # BIANCO e conteggio dei beat al posto di "pausa".
+                        r_type = e.get('rest', {}).get('duration_type', 'quarter')
+                        if r_type in ('eighth', '16th', '32nd'):
+                            rest_words = ['UN']
+                        else:
+                            n_beats = max(1, int(round(dur)))
+                            rest_words = ['UNO', 'DUE', 'TRE', 'QUATTRO'][:n_beats]
+                        n_words = len(rest_words)
+                        sec_w = cell_w / n_words
+                        wf_size = min(100, max(40, sec_w * 0.25))
+                        for wi, word in enumerate(rest_words):
+                            wx = cell_x + wi * sec_w
+                            tavola_svg += (f'<rect x="{wx:.1f}" y="{tavola_top:.1f}" '
+                                          f'width="{sec_w:.1f}" height="{tavola_row_height}" '
+                                          f'fill="#111111" rx="8" '
+                                          f'stroke="#111111" stroke-width="2"/>')
+                            tavola_svg += (f'<text x="{wx + sec_w/2:.1f}" '
+                                          f'y="{tavola_top + tavola_row_height/2 + wf_size*0.35:.1f}" '
+                                          f'text-anchor="middle" font-family="Atkinson Hyperlegible" '
+                                          f'font-size="{wf_size:.0f}" font-weight="700" '
+                                          f'fill="white">{word}</text>')
             
             # If no events in this measure, draw a single white cell (whole rest)
             if not events:
