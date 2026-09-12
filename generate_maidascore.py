@@ -4338,6 +4338,24 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     # 12 Set 2026: nudge ITERATIVO anche per i rest matched
                     # (il nudge singolo falliva quando la prima mossa creava
                     # una nuova collisione con un'altra nota della riga).
+                    # 12 Set 2026 (bug pausa tra settori grigi): i confini del
+                    # nudge sono quelli del SETTORE della pausa, NON della battuta.
+                    # Con onset-based placement una pausa e una nota possono
+                    # condividere lo stesso settore grigio (es. croma a onset 0.5
+                    # e pausa a onset 0.5): in quel caso il nudge deve muovere la
+                    # pausa DENTRO il suo settore, non fino alla battuta successiva
+                    # (finiva a cavallo dei confini tra settori grigi).
+                    if 'Rest' in elem_str and rest_onset_val is not None:
+                        _nb_ts_local = _ts_beats_for_measure(current_measure_idx)
+                        _nb_sec_local = _n_sectors_for_measure(current_measure_idx)
+                        _sec_w = new_m_width / _nb_sec_local
+                        _sec_i = int((rest_onset_val / _nb_ts_local) * _nb_sec_local) if _nb_ts_local > 0 else 0
+                        _sec_i = min(max(_sec_i, 0), _nb_sec_local - 1)
+                        _sector_start = new_m_start + _sec_i * _sec_w
+                        _sector_end = _sector_start + _sec_w
+                    else:
+                        _sector_start = new_m_start
+                        _sector_end = new_m_end
                     for _nudge_iter in range(8):
                         _nudge_changed = False
                         for n0 in _nudge_pool:
@@ -4378,8 +4396,10 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                                 # (onset >= onset nota), spingila a destra; altrimenti a sinistra.
                                 _rest_on = rest_onset_val if rest_onset_val is not None else orig_pos * _ts_beats
                                 _n_on = n0.get('onset', 0.0)
-                                _left_ok = _cand_x - _clear >= new_m_start
-                                _right_ok = _cand_x + _clear <= new_m_end
+                                # 12 Set 2026 (bug pausa tra settori): confini
+                                # del settore, non della battuta.
+                                _left_ok = _cand_x - _clear >= _sector_start
+                                _right_ok = _cand_x + _clear <= _sector_end
                                 if _rest_on >= _n_on:
                                     if _right_ok:
                                         new_tx = _cand_x + _clear - _rest_r
@@ -4405,9 +4425,13 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     if 'Rest' in elem_str and rest_onset_val is not None:
                         _rest_gap = 150.0  # margine minimo centro-pausa dalla stanghetta
                         _rest_r2 = 113.0 if (rest_dtype_val == 'half' or 'M0,-3.3125' in elem_str) else 75.0
-                        _rest_max = new_m_end - _rest_r2 - _rest_gap
+                        # 12 Set 2026 (bug pausa tra settori): clamp ai confini
+                        # del settore se disponibili, altrimenti battuta.
+                        _cl_start = _sector_start if rest_onset_val is not None else new_m_start
+                        _cl_end = _sector_end if rest_onset_val is not None else new_m_end
+                        _rest_max = _cl_end - _rest_r2 - _rest_gap
                         if new_tx > _rest_max:
-                            new_tx = max(_rest_max, new_m_start + _rest_r2 + _rest_gap)
+                            new_tx = max(_rest_max, _cl_start + _rest_r2 + _rest_gap)
                             # se ora collide con una nota, sposta la pausa a sinistra di essa
                             for _n0 in _nudge_pool:
                                 if abs(_n0.get('y', -1) - ty) > 3000:
@@ -4420,7 +4444,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                                 _cl = _rest_r2 + _n0.get('circle_r', 110) + 20.0
                                 if abs(_cx - (new_tx + _rest_r2)) < _cl:
                                     new_tx = _cx - _cl - _rest_r2
-                            new_tx = max(new_tx, new_m_start + _rest_r2 + _rest_gap)
+                            new_tx = max(new_tx, _cl_start + _rest_r2 + _rest_gap)
                 # per le pause a onset 0.0 (inizio battuta), aggiungi barline_gap
                 # come per le note, per evitare che la pausa sia attaccata alla chiave.
                 # MA NON se la pausa condivide il settore con note (le note hanno già
