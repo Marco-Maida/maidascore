@@ -1594,13 +1594,60 @@ def make_accessible_mscz(input_mscz, output_mscz, part_index=0, rhythm_mode=Fals
                     for mi, count in mmrest_info:
                         print(f"        Battuta {mi+1}: MMRest({count})")
                     
-                    # Rimuovi i tag multiMeasureRest e breakMultiMeasureRest
-                    # (MuseScore non può aprire il file se multiMeasureRest=N ma c'è 1 battuta)
-                    mscx = re.sub(r'<multiMeasureRest>\d*</multiMeasureRest>', '', mscx)
-                    mscx = re.sub(r'<breakMultiMeasureRest>\d*</breakMultiMeasureRest>', '', mscx)
-                    
                     # Converti <Measure len="N/M"> in <Measure> (rimuovi l'attributo len)
                     mscx = re.sub(r'<Measure len="[^"]*">', '<Measure>', mscx)
+
+                    # 13 Set 2026: ESPANDI gli MMRest in N battute reali.
+                    # Root cause (bug battute 85-87 Carol): un MMRest(N) è salvato
+                    # in UNA sola <Measure> che rappresenta N battute. Tenendolo
+                    # compresso, il .mscz intermedio ha meno battute del brano
+                    # (142 reali vs 139 tag) e TUTTE le battute successive slittano:
+                    # figurazioni ritmiche e nomi note mismatchati nel PDF.
+                    # Fix: sostituisci la battuta MMRest(N) con N copie della
+                    # battuta di pausa (senza il tag multiMeasureRest). I gruppi
+                    # logici MMRest del post-processore SVG disegneranno i box.
+                    _all_m_expand = list(re.finditer(r'<Measure[^>]*>(.*?)</Measure>', mscx, re.DOTALL))
+                    _expand_offsets = []  # (start, end, replacement, measure_idx)
+                    _cur_ts_n, _cur_ts_d = global_ts_n, global_ts_d
+                    for _im_idx, _m in enumerate(_all_m_expand):
+                        _content = _m.group(1)
+                        _ts_m = re.search(r'<sigN>(\d+)</sigN>\s*<sigD>(\d+)</sigD>', _content)
+                        if _ts_m:
+                            _cur_ts_n, _cur_ts_d = _ts_m.group(1), _ts_m.group(2)
+                        _mmr_m = re.search(r'<multiMeasureRest>(\d+)</multiMeasureRest>', _content)
+                        if not _mmr_m:
+                            continue
+                        _n = int(_mmr_m.group(1))
+                        # Rimuovi il tag multiMeasureRest dal contenuto.
+                        # Strippa anche gli <eid> (MuseScore 4 rifiuta il file
+                        # se lo stesso eid appare in più battute).
+                        _voice_content = re.sub(r'<multiMeasureRest>\d+</multiMeasureRest>\s*', '', _content).strip()
+                        _voice_content = re.sub(r'<eid>[^<]*</eid>\s*', '', _voice_content)
+                        if '<Rest>' in _voice_content:
+                            _new_measure = f'<Measure>{_voice_content}</Measure>'
+                        else:
+                            _dur = f"{_cur_ts_n}/{_cur_ts_d}"
+                            _new_measure = (f'<Measure><voice><Rest><durationType>measure</durationType>'
+                                            f'<duration>{_dur}</duration></Rest></voice></Measure>')
+                        _expand_offsets.append((_m.start(), _m.end(), _new_measure * _n, _im_idx))
+                    # Applica in ordine inverso per preservare gli offset.
+                    # Aggiorna mmrest_info agli indici POST-espansione: ogni MMRest(N)
+                    # al measure-idx K fa slittare le battute successive di N-1.
+                    # (Indici stale → la pausa measure viene iniettata in battute
+                    # con note → battuta overfull → exit 40.)
+                    _expand_by_midx = [(rep, midx) for _, _, rep, midx in
+                                       sorted(_expand_offsets, key=lambda x: x[3])]
+                    for _s, _e, _rep, _ in sorted(_expand_offsets, key=lambda x: -x[0]):
+                        mscx = mscx[:_s] + _rep + mscx[_e:]
+                    if _expand_offsets:
+                        print(f"      Espansi {len(_expand_offsets)} MMRest in battute individuali")
+                        def _shift_idx(orig_idx):
+                            shift = 0
+                            for rep, midx in _expand_by_midx:
+                                if orig_idx > midx:
+                                    shift += rep.count('<Measure>') - 1
+                            return orig_idx + shift
+                        mmrest_info = [(_shift_idx(mi), cnt) for mi, cnt in mmrest_info]
                     
                     # Correggi i <duration> delle pause measure nelle battute MMRest.
                     # Il duration originale era "N×ts" (es. 28×6/8=168/8), ma ora è 1 battuta.
@@ -4171,8 +4218,14 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             # Move each barline: shift by (new_center - old_center) for its group
             # IMPORTANT: each barline polyline has TWO points with the same X (top+bottom),
             # so we must replace ALL occurrences of the old X, not just the first.
-            for grp, new_c in zip(groups, new_centers):
+            for _gi, (grp, new_c) in enumerate(zip(groups, new_centers)):
                 old_c = sum(grp) / len(grp)
+                # 13 Set 2026: per l'ULTIMO gruppo del sistema, allinea la barline
+                # più esterna a x_end invece del centro — una doppia barline finale
+                # (thin+thick) centrata su x_end sfora il rigo di metà spessore.
+                if _gi == len(groups) - 1 and len(grp) >= 2:
+                    grp_max = max(grp)
+                    new_c = new_c - (grp_max - old_c)
                 shift = new_c - old_c
                 for b in grp:
                     new_b = b + shift
