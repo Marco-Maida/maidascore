@@ -4414,6 +4414,8 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     # TYPE-AWARE matching. MuseScore 4 PUÒ renderizzare half rest
                     # nell'SVG (path "M0,-3.3125..."). L'ordered matching verifica
                     # che il tipo SVG corrisponda al tipo .mscz per evitare match errati.
+                    if m_rests and os.environ.get('MAIDA_DEBUG_RESTS'):
+                        print(f"      [rest-debug] MATCH grp={grp_idx} cur_m={current_measure_idx} tx={tx:.0f} svg_d={elem_str[:60]!r}")
                     if m_rests:
                         # Count how many rests have already been matched in this measure
                         n_matched = len(_matched_rest_indices.get(current_measure_idx, set()))
@@ -4517,6 +4519,21 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         # onset = orig_pos * ts_beats. La half rest a metà battuta
                         # (orig_pos ~0.5) → onset 2.0 → posizionata correttamente
                         # nella seconda metà della battuta, lontano dalle note.
+
+                        # 13 Set 2026 (bug pause sovrapposte): se la battuta ha NOTE
+                        # ma NESSUNA pausa nel .mscz originale, il glyph SVG è una
+                        # "pausa di battuta" di MuseScore per misure vuote del flap.
+                        # In modalità rhythm la sezione grigia vuota è già chiara:
+                        # rimuovi il glyph (schiacciato tra le note, collide sempre).
+                        _m_has_notes = any(
+                            n.get('measure_idx') == current_measure_idx
+                            for n in notes_in_sys)
+                        if _m_has_notes and not m_rests:
+                            if os.environ.get('MAIDA_DEBUG_RESTS'):
+                                                replacements.append((elem_match.start(), elem_match.end(),
+                                                 elem_match.group(0), ''))
+                            _processed_spans.add(elem_match.start())
+                            continue
                         _est_onset = orig_pos * _ts_beats
                         target_pos = min(max(_est_onset / _ts_beats + 0.02, 0.0), 0.98)
                         if True:
@@ -4653,172 +4670,69 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     target_pos = orig_pos
                 
                 new_tx = new_m_start + target_pos * new_m_width
+                if os.environ.get('MAIDA_DEBUG_RESTS') and 'Rest' in elem_str:
+                    print(f"      [rest-debug] REPOS tx={tx:.0f}→new_tx={new_tx:.0f} grp={grp_idx} m={current_measure_idx} onset={rest_onset_val} target_pos={target_pos:.3f} m=[{new_m_start:.0f},{new_m_end:.0f}]")
                 # 12 Set 2026: aggiorna la X della nota nel data structure così i
                 # nudge successivi (pause) possono usare la X REALE post-repos.
                 if 'Note' in elem_str and matched_note is not None:
                     matched_note['x'] = new_tx
                     matched_note = None  # reset: non usarlo per i Rest
-                # 11 Set 2026 (bug sovrapposizioni): anti-collisione universale
-                # pausa-cerchio nota. Se la pausa (r~75+pad) cade troppo vicino
-                # al centro X di un cerchio nota riposizionato nella STESSA riga,
-                # spostala a destra o a sinistra del cerchio (il lato con più spazio).
+                # 13 Set 2026 (bug pause sovrapposte/volate): riscrittura del nudge pause.
+                # I vecchi nudge multi-fase (gap-nudge → clamp settore → push-left →
+                # push-left di nuovo) si combattevano tra loro: una pausa spinta a
+                # sinistra da un nudge poteva attraversare la barline e finire nella
+                # battuta precedente, sopra le note (bug "pause volate"). Inoltre il
+                # clamp con margine 150px in settori da 335px spingeva la pausa verso
+                # la nota invece di allontanarla.
+                #
+                # Algoritmo UNICO e prevedibile: se la pausa collide con una nota
+                # (centro-cerchio), trova il punto libero PIÙ VICINO al target DENTRO
+                # il settore grigio della pausa. Se non esiste, la pausa NON si muove.
                 if 'Rest' in elem_str and rest_onset_val is not None:
-                    # 12 Set 2026: nudge ITERATIVO anche per i rest matched
-                    # (il nudge singolo falliva quando la prima mossa creava
-                    # una nuova collisione con un'altra nota della riga).
-                    # 12 Set 2026 (bug pausa tra settori grigi): i confini del
-                    # nudge sono quelli del SETTORE della pausa, NON della battuta.
-                    # Con onset-based placement una pausa e una nota possono
-                    # condividere lo stesso settore grigio (es. croma a onset 0.5
-                    # e pausa a onset 0.5): in quel caso il nudge deve muovere la
-                    # pausa DENTRO il suo settore, non fino alla battuta successiva
-                    # (finiva a cavallo dei confini tra settori grigi).
-                    if 'Rest' in elem_str and rest_onset_val is not None:
-                        _nb_ts_local = _ts_beats_for_measure(current_measure_idx)
-                        _nb_sec_local = _n_sectors_for_measure(current_measure_idx)
-                        _sec_w = new_m_width / _nb_sec_local
-                        _sec_i = int((rest_onset_val / _nb_ts_local) * _nb_sec_local) if _nb_ts_local > 0 else 0
-                        _sec_i = min(max(_sec_i, 0), _nb_sec_local - 1)
-                        _sector_start = new_m_start + _sec_i * _sec_w
-                        _sector_end = _sector_start + _sec_w
-                    else:
-                        _sector_start = new_m_start
-                        _sector_end = new_m_end
-                    # 13 Set 2026 (bug pause sovrapposte): RISCRITTURA del nudge.
-                    # Il vecchio loop right/left oscillava quando la pausa non
-                    # sta TRA due note vicine (es. note a 335px con clear 285:
-                    # right la spinge sulla nota successiva, left sulla
-                    # precedente, ciclo infinito → posizione finale casuale
-                    # sovrapposta). Algoritmo "gap libero": calcola gli
-                    # intervalli liberi tra le note della battuta e metti la
-                    # pausa nel gap più vicino alla posizione target.
-                    if 'Rest' in elem_str and rest_onset_val is not None:
-                        _rest_r = 113.0 if (rest_dtype_val == 'half' or 'M0,-3.3125' in elem_str) else 75.0
-                        # note della stessa battuta (ordinate per X), con x_final
-                        note_xs = []
-                        for n0 in _nudge_pool:
-                            if abs(n0.get('y', -1) - ty) > 600:
-                                continue
-                            if n0.get('onset') is None:
-                                continue
-                            if n0.get('measure_idx') != current_measure_idx:
-                                continue
-                            _cand_x = n0.get('x_final')
-                            if _cand_x is None:
-                                # 13 Set 2026: x_final mancante (pre-pass saltato per
-                                # questa battuta): predici con i bounds della battuta
-                                # CORRENTE (le note qui sono tutte di current_measure_idx).
-                                n0_m = n0.get('measure_idx')
-                                _nb_ts = _ts_beats_for_measure(n0_m)
-                                _nb_sec = _n_sectors_for_measure(n0_m)
-                                _nb_sz = _nb_ts / _nb_sec if _nb_sec > 0 else 1.0
-                                _cand_x = _note_final_x(n0, _nudge_pool, n0_m,
-                                                        new_m_start, new_m_width,
-                                                        _nb_sz, _nb_sec, _nb_ts)
-                            if _cand_x is None:
-                                continue
-                            if _cand_x is not None:
-                                note_xs.append(_cand_x)
-                        note_xs.sort()
-                        # 13 Set 2026: includi anche le note delle battute ADIACENTI
-                        # (o almeno la loro 1ª/ultima nota) quando sono vicine ai
-                        # confini: una pausa a fine battuta sborda sulla 1ª nota
-                        # della battuta dopo (e viceversa).
-                        for n0 in _nudge_pool:
-                            if abs(n0.get('y', -1) - ty) > 600:
-                                continue
-                            if n0.get('onset') is None:
-                                continue
-                            n0_m = n0.get('measure_idx')
-                            if n0_m is None:
-                                continue
-                            if abs(n0_m - current_measure_idx) != 1:
-                                continue
-                            _cand_x = n0.get('x_final')
-                            # solo la 1ª nota della battuta successiva
-                            if n0_m == current_measure_idx + 1 and n0.get('onset') < 0.25:
-                                if _cand_x is None:
-                                    _grp_n = n0_m - _sys_global_idx
-                                    if 0 <= _grp_n < len(new_measure_bounds):
-                                        _bn = new_measure_bounds[_grp_n]
-                                        _nb_ts = _ts_beats_for_measure(n0_m)
-                                        _nb_sec = _n_sectors_for_measure(n0_m)
-                                        _nb_sz = _nb_ts / _nb_sec if _nb_sec > 0 else 1.0
-                                        _cand_x = _note_final_x(n0, _nudge_pool, n0_m,
-                                                                _bn[0], _bn[1] - _bn[0],
-                                                                _nb_sz, _nb_sec, _nb_ts)
-                                if _cand_x is not None:
-                                    note_xs.append(_cand_x)
+                    _rest_r = 113.0 if (rest_dtype_val == 'half' or 'M0,-3.3125' in elem_str) else 75.0
+                    # confini del SETTORE della pausa (fallback: battuta)
+                    _nb_ts = _ts_beats_for_measure(current_measure_idx) if current_measure_idx is not None else _ts_beats
+                    _nb_sec = _n_sectors_for_measure(current_measure_idx) if current_measure_idx is not None else _n_sectors_m
+                    _sec_w = new_m_width / _nb_sec if _nb_sec > 0 else new_m_width
+                    _sec_i = min(max(int((rest_onset_val / _nb_ts) * _nb_sec) if _nb_ts > 0 else 0, 0), _nb_sec - 1)
+                    _sec_start = new_m_start + _sec_i * _sec_w
+                    _sec_end = _sec_start + _sec_w
+                    # note della stessa battuta (per la collisione) ordinate per X
+                    note_xs = []
+                    for n0 in _nudge_pool:
+                        if abs(n0.get('y', -1) - ty) > 600:
+                            continue
+                        if n0.get('onset') is None:
+                            continue
+                        if n0.get('measure_idx') != current_measure_idx:
+                            continue
+                        _cand_x = n0.get('x_final')
+                        if _cand_x is not None:
+                            note_xs.append(_cand_x)
+                    if note_xs:
                         note_xs = sorted(set(note_xs))
-                        # clear: distanza minima centro-pausa / centro-nota
-                        _clear = _rest_r + 72 + 10.0  # 13 Set: raggio nota max reale (72) + pad 10 (era 110+100: clear 285 non lasciava gap nelle battute 2/4)
-                        _target = new_tx + _rest_r  # centro attuale
-                        # verifica collisione attuale
-                        _collides = any(abs(_nx - _target) < _clear for _nx in note_xs)
-                        if _collides and note_xs:
-                            # intervalli liberi: [m_start, prima nota], tra le note, [ultima nota, m_end]
+                        _target_center = new_tx + _rest_r
+                        _pad = 10.0  # padding visivo centro-pausa / bordo cerchio
+                        _collides_now = any(abs(_nx - _target_center) < 72 + _rest_r + _pad for _nx in note_xs)
+                        if _collides_now:
+                            # spazi liberi dentro il settore: sinistra della 1ª nota,
+                            # tra le note, destra dell'ultima nota
                             gaps = []
-                            bounds = [new_m_start] + note_xs + [new_m_end]
+                            bounds = [_sec_start] + [x for x in note_xs if _sec_start - 1 <= x <= _sec_end + 1] + [_sec_end]
+                            bounds = sorted(set(bounds))
                             for gi in range(len(bounds) - 1):
-                                g_start = bounds[gi] + (_clear if gi > 0 else 0)
-                                g_end = bounds[gi + 1] - (_clear if gi < len(bounds) - 2 else 0)
+                                g_start = bounds[gi] + (72 + _rest_r + _pad if gi > 0 else 0)
+                                g_end = bounds[gi + 1] - (72 + _rest_r + _pad if gi < len(bounds) - 2 else 0)
                                 if g_end - g_start >= 2 * _rest_r:
-                                    gaps.append(((g_start + g_end) / 2, g_start + _rest_r, g_end - _rest_r))
+                                    gaps.append((g_start + g_end) / 2)
                             if gaps:
-                                # gap più vicino al target
-                                _best = min(gaps, key=lambda g: abs(g[0] - _target))
-                                new_tx = _best[0] - _rest_r
-                                # clampa dentro il gap
-                                new_tx = max(new_tx, new_m_start)
-                                new_tx = min(new_tx, new_m_end - 2 * _rest_r)
-                        _nudge_changed = False
-                    # (fine 13 Set 2026)
+                                _best = min(gaps, key=lambda g: abs(g - _target_center))
+                                new_tx = _best - _rest_r
+                                # clamp finale ai confini del settore
+                                new_tx = max(new_tx, _sec_start)
+                                new_tx = min(new_tx, _sec_end - 2 * _rest_r)
 
-                        _rest_gap = 150.0  # margine minimo centro-pausa dalla stanghetta
-                        _rest_r2 = 113.0 if (rest_dtype_val == 'half' or 'M0,-3.3125' in elem_str) else 75.0
-                        # 12 Set 2026 (bug pausa tra settori): clamp ai confini
-                        # del settore se disponibili, altrimenti battuta.
-                        _cl_start = _sector_start if rest_onset_val is not None else new_m_start
-                        _cl_end = _sector_end if rest_onset_val is not None else new_m_end
-                        _rest_max = _cl_end - _rest_r2 - _rest_gap
-                        if new_tx > _rest_max:
-                            # 13 Set 2026 (bug pause sovrapposte): era
-                            # max(_rest_max, _cl_start + _rest_r2 + _rest_gap):
-                            # con settori stretti (<450px) _cl_start+225 > _rest_max
-                            # e max() spingeva la pausa OLTRE il limite destro del
-                            # settore, sbordando nella battuta successiva sopra la
-                            # 1ª nota. min() rispetta sempre _rest_max.
-                            new_tx = min(max(_rest_max, _cl_start + _rest_r2), _rest_max)
-                            # se ora collide con una nota, sposta la pausa a sinistra di essa
-                            for _n0 in _nudge_pool:
-                                if abs(_n0.get('y', -1) - ty) > 600:
-                                    continue
-                                if _n0.get('onset') is None:
-                                    continue
-                                if _n0.get('measure_idx') != current_measure_idx:
-                                    continue
-                                _cx = _n0.get('x_final')
-                                if _cx is None:
-                                    continue
-                                _cl = _rest_r2 + _n0.get('circle_r', 110) + 20.0
-                                if abs(_cx - (new_tx + _rest_r2)) < _cl:
-                                    new_tx = _cx - _cl - _rest_r2
-                            new_tx = max(new_tx, _cl_start + _rest_r2 + _rest_gap)
-                            # 13 Set 2026: mai oltre _rest_max (vedi fix sopra)
-                            new_tx = min(new_tx, _rest_max)
-                            # se ora collide con una nota, sposta la pausa a sinistra di essa
-                            for _n0 in _nudge_pool:
-                                if abs(_n0.get('y', -1) - ty) > 600:
-                                    continue
-                                if _n0.get('onset') is None:
-                                    continue
-                                _cx = _n0.get('x_final')
-                                if _cx is None:
-                                    continue
-                                _cl = _rest_r2 + _n0.get('circle_r', 110) + 20.0
-                                if abs(_cx - (new_tx + _rest_r2)) < _cl:
-                                    new_tx = _cx - _cl - _rest_r2
-                # per le pause a onset 0.0 (inizio battuta), aggiungi barline_gap
+# per le pause a onset 0.0 (inizio battuta), aggiungi barline_gap
                 # come per le note, per evitare che la pausa sia attaccata alla chiave.
                 # MA NON se la pausa condivide il settore con note (le note hanno già
                 # il barline_gap e la pausa deve restare a sinistra per non sovrapporsi).
@@ -4869,8 +4783,16 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 # Fix (e): use span-based replacement instead of str.replace()
                 # Build old/new transform strings from the MATCHED text (not reconstructed)
                 old_tx_str = elem_match.group(6)
+                if os.environ.get('MAIDA_DEBUG_RESTS') and 'Rest' in elem_str:
+                    print(f"      [rest-debug] FINAL tx={old_tx_str} → {new_tx:.2f} (m={current_measure_idx}, onset={rest_onset_val})")
                 new_tx_str = f'{new_tx:.2f}'
                 new_ty_str = elem_match.group(7)  # Y invariata di default
+                # 13 Set 2026 (bug pause a altezza sbagliata): in modalità rhythm le
+                # pause devono stare sulla middle_line_y del sistema come le teste
+                # (MuseScore posiziona le pause di croma più in alto → sembravano
+                # "gambi staccati" o elementi fluttuanti fuori riga).
+                if rhythm_mode and 'Rest' in elem_str:
+                    new_ty_str = f"{info['middle_line_y']:.2f}"
                 
                 # Applica allineamento Y semicroma (calcolato sopra)
                 if new_ty_for_align is not None:
@@ -4879,14 +4801,29 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 full_match = elem_match.group(0)
                 old_transform = f'matrix({elem_match.group(2)},{elem_match.group(3)},{elem_match.group(4)},{elem_match.group(5)},{old_tx_str},{elem_match.group(7)})'
                 new_transform = f'matrix({elem_match.group(2)},{elem_match.group(3)},{elem_match.group(4)},{elem_match.group(5)},{new_tx_str},{new_ty_str})'
+
                 # Record the span of the transform attribute within the full match
                 trans_start = elem_match.start() + full_match.index(old_transform)
                 trans_end = trans_start + len(old_transform)
-                replacements.append((trans_start, trans_end, old_transform, new_transform))
+                if 'Rest' in elem_str:
+                    # marca la pausa riposizionata (per la pulizia delle non-riposizionate):
+                    # estende il replacement anche alla virgoletta di chiusura del transform
+                    replacements.append((trans_start, trans_end + 1, old_transform + '"',
+                                         new_transform + '" data-repos="1"'))
+                else:
+                    replacements.append((trans_start, trans_end, old_transform, new_transform))
                 _processed_spans.add(elem_match.start())
+
+
             
             # Apply replacements in REVERSE order (last span first) so earlier
             # spans remain valid. This fixes both (d) double-shift and (e) wrong-target.
+            if os.environ.get('MAIDA_DEBUG_RESTS') and replacements:
+                _rl = sorted(replacements, key=lambda r: r[0])
+                for _s, _e, _o, _n in _rl:
+                    pass
+                    print(f"      [rest-debug] REPL span=({_s},{_e}) old={_o[:80]}")
+                    print(f"      [rest-debug]      new={_n[:80]}")
             for start, end, old_t, new_t in sorted(replacements, key=lambda r: r[0], reverse=True):
                 modified = modified[:start] + new_t + modified[end:]
         
@@ -4918,6 +4855,8 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 m_rests = rests_by_measure.get(m_idx, [])
                 if not m_rests:
                     continue
+                if os.environ.get('MAIDA_DEBUG_RESTS'):
+                    print(f"      [rest-debug] sys grp={grp_idx} m_idx={m_idx} m_rests={m_rests} matched={_matched_rest_indices.get(m_idx, set())}")
                 matched_set = _matched_rest_indices.get(m_idx, set())
                 # For each UNMATCHED .mscz rest, clone a rest glyph
                 for r_idx, (r_onset, r_dtype) in enumerate(m_rests):
@@ -4955,6 +4894,8 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         target_pos = r_onset / _ts_beats2 + 0.02
                     expected_x = new_m_start + target_pos * new_m_width
                     # barline_gap per pause a onset 0.0 (non attaccate alla chiave)
+                    if os.environ.get('MAIDA_DEBUG_RESTS'):
+                        print(f"      [rest-debug] CLONE m_idx={m_idx} r_idx={r_idx} onset={r_onset} type={r_dtype} grp={grp_idx} new_m_start={new_m_start:.0f} expected_x={expected_x:.0f}")
                     if r_onset == 0.0:
                         beat_w = new_m_width / _ts_beats2
                         expected_x += beat_w * 0.3
@@ -5014,13 +4955,19 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                                     expected_x = _cand_x + _clear2 - _rest_r2
                     # 12 Set 2026 (bug pausa sulla stanghetta): clamp anche per
                     # le pause CLONATE — stessa regola del ramo di reposizionamento.
+                    # 13 Set 2026: clamp anche sul BORDO SINISTRO — il nudge può
+                    # spingere la pausa clonata FUORI battuta (a sinistra).
                     if True:
                         _rg = 150.0
                         _rr = 113.0 if r_dtype == 'half' else 75.0
+                        _rmin = new_m_start + 10.0
                         _rmax = new_m_end - _rr - _rg
+                        expected_x = max(expected_x, _rmin)
                         if expected_x > _rmax:
-                            expected_x = max(_rmax, new_m_start + _rr + _rg)
+                            expected_x = max(_rmax, _rmin)
                     # Clone the first SVG rest of the same type
+                    if os.environ.get('MAIDA_DEBUG_RESTS'):
+                        print(f"      [rest-debug] CLONE2 m_idx={m_idx} r_idx={r_idx} onset={r_onset} type={r_dtype} grp={grp_idx} expected_x_final={expected_x:.0f} new_m=[{new_m_start:.0f},{new_m_end:.0f}]")
                     # Quarter rest: d starts with "M76.125", eighth rest: d starts with "M88.375"
                     # Half rest: MuseScore 4 PUÒ renderizzare half rest nell'SVG export
                     # (path "M0,-3.3125..."). Se la pausa è già stata matchata,
@@ -5046,6 +4993,59 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                                     template_d = sr_d
                                     template_scale = float(sr.group(1))
                                     break
+                        # 13 Set 2026 (bug pause mancanti): fallback template se il
+                        # sistema non contiene pause dello stesso tipo già renderizzate
+                        # (template_d None → la pausa clonata non veniva creata).
+                        if template_d is None and r_dtype == 'quarter':
+                            template_d = ('M76.125,54.9375 C75.7969,54.6094 75.1406,53.9531 '
+                                          '74.1406,52.625 L36.0781,5.625 C35.75,5.29688 '
+                                          '35.4219,4.29688 35.4219,3.64063 C35.4219,2.64063 '
+                                          '35.75,1.32813 36.0781,0.65625 L69.8438,-50.3125 '
+                                          'C70.1719,-50.9688 70.5,-51.9688 70.5,-52.625 '
+                                          'L70.5,-55.6094 C70.5,-56.5938 70.1719,-57.5938 '
+                                          '69.5156,-58.25 L15.8906,-130.75 C15.8906,-130.75 '
+                                          '14.5625,-132.734 12.5781,-132.734 C11.5781,-132.734 '
+                                          '10.9219,-132.391 9.9375,-131.734 C8.60938,-130.75 '
+                                          '8.28125,-129.422 8.28125,-128.422 C8.28125,-126.438 '
+                                          '9.26563,-124.781 9.26563,-124.781 L34.4219,-90.3594 '
+                                          'C35.0781,-89.375 35.4219,-88.0469 35.4219,-86.3906 '
+                                          'C35.4219,-85.0625 35.0781,-83.4063 34.4219,-82.4219 '
+                                          'L1,-31.4375 C0.65625,-30.7813 0.328125,-29.4531 '
+                                          '0.328125,-28.7969 L0.328125,-25.8125 '
+                                          'C0.328125,-24.8281 0.65625,-23.8281 1.32813,-23.1719 '
+                                          'L38.3906,22.8438 C37.0781,22.5 34.0938,21.8438 '
+                                          '30.125,21.8438 C13.2344,21.8438 0,35.75 0,52.625 '
+                                          'C0,57.2656 1,61.8906 3.64063,65.5313 '
+                                          'C10.5938,76.125 35.4219,107.578 35.4219,107.578 '
+                                          'C35.4219,107.578 37.0781,109.563 39.3906,109.563 '
+                                          'C40.0469,109.563 40.7188,109.563 41.375,108.891 '
+                                          'C43.0313,107.578 43.6875,106.25 43.6875,104.922 '
+                                          'C43.6875,103.594 43.0313,102.609 42.7031,101.953 '
+                                          'C41.7031,100.297 31.1094,81.0938 31.1094,81.0938 '
+                                          'C31.1094,81.0938 28.7969,76.4531 28.7969,70.5 '
+                                          'C28.7969,59.9063 36.7344,51.2969 47.3281,51.2969 '
+                                          'C51.6406,51.2969 55.2513,52.625 57.9219,54.2813 '
+                                          'L70.8281,62.5625 C70.8281,62.5625 72.1563,63.2188 '
+                                          '73.4844,63.2188 C74.7969,63.2188 75.7969,62.8906 '
+                                          '76.7969,61.5625 C77.4531,60.2344 77.7813,59.5781 '
+                                          '77.7813,58.5781 C77.7813,57.5938 77.4531,56.9375 '
+                                          '76.7969,55.9375 L76.125,54.9375')
+                            template_scale = 1.14286
+                        elif template_d is None and r_dtype == 'eighth':
+                            template_d = ('M88.375,-67.1875 C88.0469,-67.1875 87.375,-67.5156 '
+                                          '87.0469,-67.5156 C85.0625,-67.5156 83.4063,-66.5313 '
+                                          '82.75,-64.875 C81.4219,-62.8906 71.1563,-43.3594 '
+                                          '56.2656,-32.4375 C51.9688,-29.125 46.6719,-26.8125 '
+                                          '41.375,-25.8125 C45.0156,-30.125 47.3281,-35.4219 '
+                                          '47.3281,-41.7031 C47.3281,-54.6094 36.7344,-65.2031 '
+                                          '23.8281,-65.2031 C10.5938,-65.2031 0,-54.6094 '
+                                          '0,-41.7031 C0,-23.8281 17.5469,-15.5625 '
+                                          '33.0938,-15.5625 C50.6406,-15.5625 62.2344,-23.8281 '
+                                          '73.4844,-36.0781 L35.75,81.75 L44.6875,84.4063 '
+                                          'L91.0156,-61.5625 C91.3594,-61.8906 91.3594,-62.5625 '
+                                          '91.3594,-63.2188 C91.3594,-64.875 90.3594,-66.2031 '
+                                          '88.375,-67.1875')
+                            template_scale = 1.14286
                         # Half rest: usa rettangolo nero hardcoded (più leggibile
                         # del path SVG di MuseScore, e funziona anche se MuseScore
                         # non ha reso la half rest nell'SVG).
@@ -5097,6 +5097,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                                     f'd="{template_d}" />'
                                 )
                             # Insert before </svg>
+                            new_rest = new_rest.replace('class="Rest"', 'class="Rest" data-clone="1"', 1)
                             modified = modified.replace('</svg>', new_rest + '\n</svg>')
                             print(f"    → Cloned missing {r_dtype} rest at x={expected_x:.0f} (measure {m_idx+1}, onset={r_onset})")
         
@@ -8744,6 +8745,29 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
     elif rhythm_mode and staff_acc_svgs:
         print(f"  Alterazioni pentagramma: {len(staff_acc_svgs)} skip (modalità rhythm — solo sui blocchi)")
     
+    # 13 Set 2026 (bug pause sovrapposte): rimuovi le pause NON riposizionate.
+    # Le pause originali di MuseScore che il loop di riposizionamento non ha
+    # processato (fuori dai bounds dei gruppi) restano alla posizione/scale
+    # originale (matrix 1.14286) e si sorappongono alle note. Il ramo CLONE
+    # ha già ricreato ogni pausa mancante alla posizione corretta, quindi le
+    # originali non-processate possono essere eliminate senza perdita.
+    # 13 Set 2026 (bug pause sovrapposte): rimuovi le pause NON riposizionate.
+    # Le pause originali di MuseScore che il loop di riposizionamento non ha
+    # processato restano alla posizione/scale originale (matrix 1.14286) e si
+    # sovrappongono alle note. Le pause riposizionate sono marcate data-repos="1",
+    # le clonate data-clone="1": entrambe vanno preservate.
+    if rhythm_mode:
+        def _remove_unrepos_rest(mo):
+            if 'data-repos' in mo.group(0) or 'data-clone' in mo.group(0):
+                return mo.group(0)  # pausa riposizionata o clonata: tienila
+            return ''  # pausa mai riposizionata: rimuovila
+        _unmarked_pat = re.compile(r'<path class="Rest"(?![^>]*data-)[^>]*?(?:/>|></path>)')
+        _n_unmarked = len(_unmarked_pat.findall(modified))
+        modified = _unmarked_pat.sub('', modified)
+        print(f"  Pause non riposizionate rimosse: {_n_unmarked}")
+        # pulizia: rimuovi gli attributi-marker (non servono nell'SVG finale)
+        modified = modified.replace(' data-repos="1"', '').replace(' data-clone="1"', '')
+
     # 2f. Enlarge rests to match stretched staff
     # Rests have transform="matrix(a,0,0,d,tx,ty)" with scale ~1.143.
     # After Y-stretch, notes have 260px diameter circles — rests must scale up too.
@@ -8848,19 +8872,34 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
     # cerchi r=58/72, pausa half-width = 75*scala. Per ogni pausa che collide con un
     # cerchio (stessa riga), spostala nel punto libero più vicino (sinistra/destra).
     def _rest_circle_decollide(svg_str):
+        # 13 Set 2026 (bug pause volate): il vecchio algoritmo spostava la pausa
+        # nel punto libero più vicino SENZA vincoli di battuta → pause scagliate
+        # attraverso tutto il sistema (es. pausa di M6 ritrovata in M1).
+        # Nuovo algoritmo: se una pausa collide con un cerchio, la si sposta
+        # DENTRO la propria battuta (bounds da raw_barlines_by_system,
+        # mappando il sistema via bande Y post-stretch); se non c'è spazio,
+        # la pausa NON si muove.
         rest_pat = re.compile(r'<path class="Rest" transform="matrix\(([\d.\-]+),0\.0,0\.0,([\d.\-]+),([\d.\-]+),([\d.\-]+)\)"')
         circle_pat = re.compile(r'<circle cx="([\d.]+)" cy="([\d.]+)"[^>]*r="([\d.]+)"')
         circles = [(float(m.group(1)), float(m.group(2)), float(m.group(3)))
                    for m in circle_pat.finditer(svg_str)]
+        # bande Y post-stretch dei sistemi (dai rettangoli dei settori grigi)
+        _sys_ys_post = sorted(set(float(mm.group(1)) for mm in re.finditer(
+            r'<rect x="[\d.]+" y="([\d.]+)" width="[\d.]+" height="[\d.]+" fill="#E8E8E8"', svg_str)))
+        # systems ordinati per top (stesso ordine delle bande Y post-stretch)
+        sks_sorted = sorted(systems.keys(), key=lambda k: systems[k]['top'])
         n_fixed = 0
-        # tutte le pause con i loro centri e half-width
+        if os.environ.get('MAIDA_DEBUG_RESTS'):
+            print(f"      [rest-debug] DECOLLIDE called: {len(circles)} circles, systems={len(systems)}")
+
         rest_entries = []
         for m in rest_pat.finditer(svg_str):
             rx, ry, rsc = float(m.group(3)), float(m.group(4)), float(m.group(2))
-            rest_entries.append([m, rx, ry, 75.0 * rsc, rx + 75.0 * rsc])
+            # 13 Set 2026: half-width REALE del glyph (il path parte da tx ma è largo
+            # ~45-50 unità, non 75). Usare 75 sposta troppo le pause.
+            rest_entries.append([m, rx, ry, 48.0 * rsc, rx + 48.0 * rsc])
         replacements = []
         for m, rx, ry, half_w, center in rest_entries:
-            # cerchi vicini nella stessa riga
             near = [(cx, cr) for cx, cy, cr in circles if abs(cy - ry) < 100]
             if not near:
                 continue
@@ -8868,27 +8907,79 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 return any(abs(cx - cx_test) < cr + half_w + 18 for cx, cr in near)
             if not collides(center):
                 continue
-            # trova X libera più vicina: scansiona sinistra/destra
-            best = None
+            # indice del sistema (banda Y post-stretch) che contiene ry
+            sys_i = None
+            for i_y, sy in enumerate(_sys_ys_post):
+                if sy - 200 < ry < sy + 900:
+                    sys_i = i_y
+                    break
+            if os.environ.get('MAIDA_DEBUG_RESTS'):
+                print(f"      [rest-debug] DECOLLIDE processing rest@({rx:.0f},{ry:.0f}) sys_i={sys_i}")
+            if sys_i is None or sys_i >= len(sks_sorted):
+                continue
+            sk = sks_sorted[sys_i]
+            bl_x = raw_barlines_by_system.get(sk)
+            if not bl_x:
+                if os.environ.get('MAIDA_DEBUG_RESTS'):
+                    print(f"      [rest-debug] DECOLLIDE no-bl_x sk={sk}")
+                continue
+            xs = sorted(bl_x)
+            lows = [b for b in xs if b <= rx + 1]
+            highs = [b for b in xs if b >= rx - 1]
+            # 13 Set 2026: pausa clonata spinta FUORI dalla sua battuta dal nudge:
+            # aggancia alla battuta più vicina invece di saltare la correzione.
+            if not lows and highs:
+                lows = [min(highs) ]  # battuta precedente se la pausa è oltre il bordo
+                lows = [b for b in xs if b < min(highs)] or [0]
+            if not highs and lows:
+                highs = [max(xs)]
+            if not lows or not highs:
+                if os.environ.get('MAIDA_DEBUG_RESTS'):
+                    print(f"      [rest-debug] DECOLLIDE no-bounds rest@{rx:.0f} xs={xs}")
+                continue
+            m_start, m_end = max(lows), min(highs)
+            # candidate posizioni libere DENTRO la battuta
+            cands = []
+            # (a) adiacenti ai cerchi della battuta
             for cx_n, cr_n in near:
+                if not (m_start - 10 <= cx_n <= m_end + 10):
+                    continue  # cerchi di altre battute
                 for cand in (cx_n - (cr_n + half_w) - 18, cx_n + (cr_n + half_w) + 18):
-                    if not collides(cand) and (best is None or abs(cand - center) < abs(best - center)):
-                        best = cand
-            if best is not None:
-                new_tx = best - half_w
-                old_tr = m.group(0)
-                new_tr = old_tr.replace(f'{rx:.2f}', f'{new_tx:.2f}', 1) if f'{rx:.2f}' in old_tr else None
-                if new_tr is not None:
-                    replacements.append((old_tr, new_tr))
-                    n_fixed += 1
+                    if m_start + 2 <= cand - half_w and cand + half_w <= m_end - 2:
+                        if not collides(cand):
+                            cands.append(cand)
+            # (b) centri dei gap liberi tra cerchi consecutivi (inclusi i bordi
+            # battuta): trova spazio anche quando i cerchi non sono adiacenti
+            row_xs = sorted(set(cx for cx, cr in near if m_start - 10 <= cx <= m_end + 10))
+            gaps = []
+            bounds_g = [m_start] + row_xs + [m_end]
+            for gi in range(len(bounds_g) - 1):
+                g_start = bounds_g[gi] + (72 + half_w + 18 if gi > 0 else 0)
+                g_end = bounds_g[gi + 1] - (72 + half_w + 18 if gi < len(bounds_g) - 2 else 0)
+                if g_end - g_start >= 2 * half_w:
+                    gaps.append((g_start + g_end) / 2)
+            for cand in gaps:
+                if not collides(cand):
+                    cands.append(cand)
+            if os.environ.get('MAIDA_DEBUG_RESTS') and abs(rx - 5324) < 200:
+                print(f"      [rest-debug] rest@{rx:.0f} near_xs={sorted(set(cx for cx,cr in near))}")
+            if not cands:
+                if os.environ.get('MAIDA_DEBUG_RESTS'):
+                    print(f"      [rest-debug] DECOLLIDE no-cands rest@{rx:.0f} measure=[{m_start:.0f},{m_end:.0f}]")
+                continue  # nessuno spazio libero nella battuta: non muovere
+            best = min(cands, key=lambda c: abs(c - center))
+            new_tx = best - half_w
+            if os.environ.get('MAIDA_DEBUG_RESTS'):
+                print(f"      [rest-debug] DECOLLIDE rest@({rx:.0f},{ry:.0f}) → {new_tx:.0f} (center {best:.0f}, measure [{m_start:.0f},{m_end:.0f}])")
+            old_tr = m.group(0)
+            new_tr = old_tr.replace(f'{rx:.2f}', f'{new_tx:.2f}', 1) if f'{rx:.2f}' in old_tr else None
+            if new_tr is not None:
+                replacements.append((old_tr, new_tr))
+                n_fixed += 1
         for old_t, new_t in replacements:
             svg_str = svg_str.replace(old_t, new_t, 1)
         return svg_str, n_fixed
 
-    
-
-    # 13 Set 2026 (bug pause sovrapposte): anti-collisione pausa-cerchio FINALE.
-    # Deve girare DOPO l'enlarge dei rest (2f) che ricalcola i tx.
     if rhythm_mode:
         modified, _n_decol = _rest_circle_decollide(modified)
         if _n_decol:
