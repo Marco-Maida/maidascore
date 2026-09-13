@@ -1744,10 +1744,19 @@ def make_accessible_mscz(input_mscz, output_mscz, part_index=0, rhythm_mode=Fals
                 group_notes = note_counts[sys_start:]
                 print(f"      M{sys_start+1}-M{len(note_counts)} ({len(group_notes)} meas, {sum(group_notes)} notes: {group_notes})")
             
+            # 13 Set 2026 (righi pieni, richiesta Marco): in modalità rhythm NON
+            # inserire LayoutBreak. Il packing manuale (6 battute 4/4 / 12 battute
+            # 2/4) spesso non entra nella larghezza pagina di MuseScore, che quindi
+            # spezza PRIMA del break → battute orfane (es. M7-M11 + M12 sola).
+            # Il wrapping naturale di MuseScore riempie sempre il rigo (5-14
+            # battute a seconda della densità) e non produce mai righi vuoti.
+            if rhythm_mode:
+                break_set = set()      # nessun line break manuale
+            else:
+                break_set = set(break_indices)
             # Insert LayoutBreak after the specified measures
             # Also insert a PAGE break after the 5th system to split across 2 pages
             measure_count = [0]  # mutable counter
-            break_set = set(break_indices)
             # Page break: split systems across 2 pages.
             # With 2 measures per system: break_indices = [1,3,5,7,9,11,13,...]
             # Page break: split systems across pages (5 systems per page for ledger line space)
