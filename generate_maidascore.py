@@ -6468,7 +6468,25 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         # Gap = gambo (360) + tavola (175) + margine (300) = 835.
         # distanza pentagrammi +50% → margine 300→717px
         # era 835px (margine 300), target 835*1.5=1252 → margine 717
-        rhythm_fixed_gap = 360 + TAVOLA_ROW_HEIGHT + 717
+        # 13 Set 2026: il gap NON può essere fisso se i sistemi sono tanti:
+        # con 9 sistemi 700 + 8×(378+1252) + 378 = 14118 > 14028 (fondo pagina)
+        # → l'ultimo sistema veniva tagliato. Gap dinamico: comprimi quanto basta
+        # per far stare tutti i sistemi + tavola + nomi note + footer.
+        _nominal_gap = 360 + TAVOLA_ROW_HEIGHT + 717
+        _n_sys = len(systems)
+        if _n_sys > 1:
+            # altezza pentagramma post-stretch (scale ~1.02, vedi no_stretch_target)
+            _max_staff_h = max(
+                abs(_si['bottom'] - _si['top']) for _si in systems.values()) * 1.02
+            _FOOTER_ZONE = 250   # testo footer + aria
+            _BOTTOM_CONTENT = 760  # tavola + nomi note sotto la riga cerchi
+            _avail = page_height - 700 - _FOOTER_ZONE - _BOTTOM_CONTENT
+            _g_fit = (_avail - _max_staff_h) / (_n_sys - 1) - _max_staff_h
+            # gap minimo di sicurezza: gambo+tavola senza margine extra
+            _g_min = 360 + TAVOLA_ROW_HEIGHT + 100
+            rhythm_fixed_gap = max(_g_min, min(_nominal_gap, _g_fit))
+        else:
+            rhythm_fixed_gap = _nominal_gap
         modified = y_stretch_systems(modified, systems, target_line_spacing=no_stretch_target,
                                      extra_system_gap=0,
                                      fixed_system_gap=rhythm_fixed_gap,
