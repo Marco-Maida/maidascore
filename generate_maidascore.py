@@ -9543,10 +9543,14 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             # grp_start = indice della battuta MMRest, grp_count = numero mostrato.
             # Cerca la singola battuta all'indice grp_start.
             grp_measures = []
+            # 13 Set 2026 (direttiva Marco "non aggiungerne anche un'altra"):
+            # raccogli TUTTE le battute fisiche del gruppo (start + count-1),
+            # non solo la prima: la pulizia (pause, settori grigi, barlines,
+            # tavola) deve coprire l'intero intervallo del gruppo.
             for gm_idx, m_start, m_end, sk, si in all_meas_info:
-                if gm_idx == grp_start:  # SOLO la battuta MMRest (1 battuta)
+                if grp_start <= gm_idx < grp_start + grp_count:
                     grp_measures.append((gm_idx, m_start, m_end, sk, si))
-                    break
+
             
             if not grp_measures:
                 continue  # gruppo non in questa pagina
