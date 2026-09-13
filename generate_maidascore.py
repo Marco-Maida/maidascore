@@ -602,7 +602,8 @@ _MAX_SECTORS_OVERRIDE = None  # impostato a 12 dal main in modalità --rhythm
 def compute_system_breaks(note_counts, max_notes=MAX_NOTES_PER_SYSTEM,
                           default_measures=UNIFORM_MEASURES_PER_SYSTEM,
                           initial_rest_measures=0, mmrest_groups=None,
-                          time_sig_changes=None, time_sigs_per_measure=None):
+                          time_sig_changes=None, time_sigs_per_measure=None,
+                          pack_mmrest=False):
     """
     Calcola dopo quali battute inserire un LayoutBreak (a capo).
     
@@ -675,6 +676,28 @@ def compute_system_breaks(note_counts, max_notes=MAX_NOTES_PER_SYSTEM,
         i = 1
     
     while i < n:
+        # 13 Set 2026 (riga piena): in modalità rhythm l'MMRest è UNA battuta
+        # fisica → si può impaccare con le altre. Isolarlo solo se richiesto.
+        if pack_mmrest:
+            # packing normale: tratta l'MMRest come battuta qualsiasi
+            count = 1
+            width_so_far = _measure_width(i)
+            while i + count < n:
+                _w = width_so_far + _measure_width(i + count)
+                if _w > MAX_SECTORS_PER_SYSTEM:
+                    break
+                width_so_far = _w
+                count += 1
+            end_idx = i + count - 1
+            for j in range(i + 1, i + count):
+                if j in ts_change_set and j < n - 1:
+                    end_idx = j - 1
+                    count = j - i
+                    break
+            if i + count < n:  # don't break after the last measure
+                breaks.append(end_idx)
+            i += count
+            continue
         # Se questa battuta è un MMRest, mettila in un sistema da sola
         if i in mmrest_start_set and i > 0:
             # Break prima
@@ -1621,7 +1644,7 @@ def make_accessible_mscz(input_mscz, output_mscz, part_index=0, rhythm_mode=Fals
                                 f'<voice><Rest><durationType>measure</durationType><duration>{_dur}</duration></Rest>', 1)
                             mscx = mscx[:_m.start()] + f'<Measure>{_new_content}</Measure>' + mscx[_m.end():]
                     
-                    initial_rest_measures = mmrest_info[0][1] if mmrest_info else 0
+                    initial_rest_measures = mmrest_info[0][1] if (mmrest_info and mmrest_info[0][0] == 0) else 0
                 else:
                     initial_rest_measures = 0
                     mscx = re.sub(r'<multiMeasureRest>\d*</multiMeasureRest>', '', mscx)
@@ -1707,7 +1730,8 @@ def make_accessible_mscz(input_mscz, output_mscz, part_index=0, rhythm_mode=Fals
                                                     initial_rest_measures=initial_rest_measures,
                                                     mmrest_groups=mmrest_groups,
                                                     time_sig_changes=all_changes,
-                                                    time_sigs_per_measure=_ts_per_measure_local)
+                                                    time_sigs_per_measure=_ts_per_measure_local,
+                                                    pack_mmrest=rhythm_mode)
             
             # Print system layout (compute actual groups from breaks)
             sys_start = 0
@@ -2885,8 +2909,35 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
         # invece della vecchia formula mmrest_meas
         system_start_measure = global_m_idx_start
         
+        # 13 Set 2026 (richiesta Marco "riga piena"): gli MMRest in un sistema
+        # MISTO (con altre battute normali) si disegnano come cella tratteggiata
+        # singola che occupa solo la propria battuta, non tutto il sistema.
+        _mmrest_set_local = set()
+        if mmrest_groups:
+            _mmrest_set_local = set(gs for gs, _gc in mmrest_groups)
+        
         for m_idx, (m_start, m_end) in enumerate(measures):
             global_measure_idx = system_start_measure + m_idx
+            if global_measure_idx in _mmrest_set_local:
+                # battuta MMRest dentro un sistema misto: cella tratteggiata
+                mmrest_count = 1
+                for gs, gc in mmrest_groups:
+                    if gs == global_measure_idx:
+                        mmrest_count = gc
+                        break
+                mmrest_width = m_end - m_start
+                tavola_svg += (f'<rect x="{m_start:.1f}" y="{tavola_top:.1f}" '
+                              f'width="{mmrest_width:.1f}" height="{tavola_row_height}" '
+                              f'fill="white" rx="8" '
+                              f'stroke="#999" stroke-width="3" stroke-dasharray="20,12"/>')
+                font_size = 100
+                text_x = m_start + mmrest_width / 2
+                text_y = tavola_top + tavola_row_height / 2 + font_size * 0.35
+                tavola_svg += (f'<text x="{text_x:.1f}" y="{text_y:.1f}" '
+                              f'text-anchor="middle" font-family="Atkinson Hyperlegible" '
+                              f'font-size="{font_size}" font-weight="600" '
+                              f'fill="#999" font-style="italic">{mmrest_count} battute di pausa</text>')
+                continue
             m_width = m_end - m_start
             bpm = _beats_for_measure(global_measure_idx)
             beat_width = m_width / bpm
