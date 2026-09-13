@@ -4754,6 +4754,13 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 # 12 Set 2026: aggiorna la X della nota nel data structure così i
                 # nudge successivi (pause) possono usare la X REALE post-repos.
                 if 'Note' in elem_str and matched_note is not None:
+                    # 13 Set 2026: salva la X ORIGINALE (raw SVG) prima di sovrascriverla.
+                    # Lo stem-matching (fase gambi) usa le coordinate raw degli stems,
+                    # quindi deve confrontarle con la X raw della nota, non con la X
+                    # post-equalizzazione. Senza questo, le note spostate >180px
+                    # dall'equalizzazione non trovano il loro gambo → gambi neri residui.
+                    if '_raw_tx' not in matched_note:
+                        matched_note['_raw_tx'] = matched_note['x']
                     matched_note['x'] = new_tx
                     matched_note = None  # reset: non usarlo per i Rest
                 # 13 Set 2026 (bug pause sovrapposte/volate): riscrittura del nudge pause.
@@ -5608,8 +5615,9 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         for n in notes:
             if '_orig_tx' not in n:
                 continue
+            _match_tx = n.get('_raw_tx', n['_orig_tx'])
             w = 123.453 * n['scale']  # glyph width
-            if (n['_orig_tx'] - 40 <= sx <= n['_orig_tx'] + w + 40
+            if (_match_tx - 40 <= sx <= _match_tx + w + 40
                     and min(abs(n['y'] - sy1), abs(n['y'] - sy2)) < 100):
                 owner = n
                 break
