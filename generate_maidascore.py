@@ -3634,6 +3634,12 @@ def _note_final_x(n, all_notes_in_sys, current_measure_idx, new_m_start, new_m_w
         n_onset = n0.get('onset', -1)
         if n_onset is not None and n_onset >= 0 and int(n_onset / sector_size) == beat_num:
             onsets_in_beat.add(round(n_onset, 3))
+    # 13 Set 2026 (bug pausa di croma mancante): in modalità rhythm il
+    # riposizionamento reale è il blocco "duration-cell centering" che usa
+    # onset_in_beat + 0.25 (nota sola) o onset_in_beat + dur/2 (multiple),
+    # NON l'equal spacing (idx+1)/(n+1). La formula era già corretta per
+    # rhythm; la KEEP (il bug era altrove: la pausa collideva con la nota
+    # perché il target della pausa coincideva con la nota a 75%).
     onset_in_beat = (onset - sector_start_qb) / sector_size
     if dur_beats >= 2.0:
         # Half/whole: al 25% della cella
@@ -4540,13 +4546,21 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                                     if int(n_onset / _sector_size_m) == beat_num:
                                         notes_in_same_beat.append(n)
                         
-                        # If rest shares sector with notes, position the rest at 75%
-                        # of its sector (mirror of single-note 25% placement) so
-                        # note and rest get a comfortable visual gap.
+                        # 13 Set 2026 (bug pausa di croma mancante): la pausa che
+                        # condivide il settore con una nota usa la STESSA formula
+                        # onset-based delle note (onset_in_beat + 0.25), non il 75%
+                        # fisso. Il 75% fisso colliderebbe con una nota a onset
+                        # intero+0.5 (che sta al 75%): es. pausa croma onset 1.0 e
+                        # nota croma onset 1.5 nello stesso settore finivano entrambe
+                        # al 75% → la nota copriva la pausa → "pausa mancante".
+                        # Con la formula onset-based: pausa a 25%, nota a 75%.
+                        _sec_w_frac = 1.0 / _ts_beats  # frazione di battuta per settore
+                        _sec_i = int((rest_onset_val / _ts_beats) / _sec_w_frac) if _sec_w_frac > 0 else 0
+                        _sector_start_qb = _sec_i * _sector_size_m
+                        _onset_in_beat = (rest_onset_val - _sector_start_qb) / _sector_size_m if _sector_size_m > 0 else 0.0
                         if notes_in_same_beat:
-                            _sec_w_frac = 1.0 / _ts_beats  # frazione di battuta per settore
-                            _sec_i = int((rest_onset_val / _ts_beats) / _sec_w_frac) if _sec_w_frac > 0 else 0
-                            target_pos = (_sec_i + 0.75) * _sec_w_frac
+                            _frac_in_beat = _onset_in_beat + 0.25
+                            target_pos = (_sec_i + _frac_in_beat) * _sec_w_frac
                         else:
                             # Pausa sola nel settore: all'INIZIO (come le note)
                             # "ancora più a sinistra, all'inizio della
@@ -4813,6 +4827,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                                 # clamp finale ai confini del settore
                                 new_tx = max(new_tx, _sec_start)
                                 new_tx = min(new_tx, _sec_end - 2 * _rest_r)
+
 
 # per le pause a onset 0.0 (inizio battuta), aggiungi barline_gap
                 # come per le note, per evitare che la pausa sia attaccata alla chiave.
@@ -9157,8 +9172,21 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 near = [(cx, cr) for cx, cy, cr in circles if abs(cy - ry) < 100]
             if not near:
                 continue
+            rest_pat_rx = re.compile(r'<path class="Rest" transform="matrix\(([^,]+),0.0,0.0,([^,]+),([^,]+),([^,]+)\)"')
+            rest_xs = [(float(mm.group(3)), float(mm.group(4))) for mm in rest_pat_rx.finditer(svg_str)]
+
             def collides(cx_test):
-                return any(abs(cx - cx_test) < cr + half_w + 18 for cx, cr in near)
+                if any(abs(cx - cx_test) < cr + half_w + 18 for cx, cr in near):
+                    return True
+                # 13 Set 2026 (bug pausa cancellata dal dedup): anche le ALTRE pause
+                # sono ostacoli — se il decollide avvicina due pause a <150px, il dedup
+                # finale ne cancella una (pausa di croma "mancante").
+                for ox, oy in rest_xs:
+                    if abs(oy - ry) > 60:
+                        continue
+                    if abs((ox + 48.0) - cx_test) < 48.0 + half_w + 18 and abs(ox - rx) > 1:
+                        return True
+                return False
             if not collides(center):
                 continue
             if os.environ.get('MAIDA_DEBUG_RESTS'):
@@ -9177,8 +9205,13 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             # 13 Set 2026: pausa clonata spinta FUORI dalla sua battuta dal nudge:
             # aggancia alla battuta più vicina invece di saltare la correzione.
             if not lows and highs:
-                lows = [min(highs) ]  # battuta precedente se la pausa è oltre il bordo
-                lows = [b for b in xs if b < min(highs)] or [0]
+                # battuta precedente se la pausa è oltre il bordo.
+                # 13 Set 2026 (bug pausa nel margine sinistro): il fallback [0]
+                # ammetteva candidati nel margine PRIMA della prima battuta
+                # (measure bounds [0,2170] → pausa spinta a x=1401, fuori dal
+                # settore grigio). Se non c'è una barline precedente, la pausa
+                # appartiene alla PRIMA battuta: usa la prima barline come bordo.
+                lows = [b for b in xs if b < min(highs)] or [min(highs)]
             if not highs and lows:
                 highs = [max(xs)]
             if not lows or not highs:
@@ -9219,10 +9252,33 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             # stessa posizione — la candidatura deve tenere conto anche delle
             # pause già riposizionate (occupied), non solo dei cerchi.
             best = min(cands, key=lambda c: abs(c - center))
+            # 13 Set 2026 (bug pausa di croma mancante): NON spostare mai la pausa
+            # FUORI dal suo settore grigio. La pausa deve restare sopra la cella
+            # "un" della tavola sonora che le corrisponde; un decollo fuori settore
+            # la faceva finire sopra un'altra cella (es. sopra la half note) e lo
+            # studente non vede la pausa dove deve stare. Se il candidato migliore
+            # è fuori settore, tieni la posizione onset-based originale.
+            # ampiezza settore: approssimata con BEAT_WIDTH (335px) — la pausa
+            # non può spostarsi più di un settore dalla sua X onset-based
+            _sect_w = 335.0
+            _orig_sect_start = rx - _sect_w * 0.5  # centro pausa originale
+            # il candidato deve stare nel settore di origine della pausa
+            _cand_in_sect = [c for c in cands
+                             if _orig_sect_start - 2 <= c - half_w and c + half_w <= _orig_sect_start + _sect_w + 2]
+            if _cand_in_sect:
+                best = min(_cand_in_sect, key=lambda c: abs(c - center))
+            else:
+                if os.environ.get('MAIDA_DEBUG_RESTS'):
+                    print(f"      [rest-debug] DECOLLIDE keep-in-sector rest@{rx:.0f} (cands fuori settore)")
+                continue
             for _oc in list(_occupied_rests):
                 if abs(_oc - best) < 2 * half_w + 18:
-                    # troppo vicino a una pausa già piazzata: prova altri candidati
-                    _alts = [c for c in cands
+                    # troppo vicino a una pausa già piazzata: prova altri candidati.
+                    # 13 Set 2026 (bug pausa nel margine): _alts deve partire dai
+                    # candidati DENTRO il settore (_cand_in_sect), non da cands
+                    # completi — altrimenti l'anti-impilamento scavalcava il
+                    # filtro keep-in-sector e mandava la pausa fuori cella.
+                    _alts = [c for c in _cand_in_sect
                              if abs(_oc - c) >= 2 * half_w + 18]
                     if _alts:
                         best = min(_alts, key=lambda c: abs(c - center))
@@ -9268,7 +9324,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     continue
                 _, s1, x1, y1, t1 = entries[i]
                 _, s2, x2, y2, t2 = entries[j]
-                if abs(y1 - y2) < 60 and abs(x1 - x2) < 150:
+                if abs(y1 - y2) < 60 and abs(x1 - x2) < 30:
                     # rimuovi il glyph più piccolo (o il secondo)
                     rm = j if s2 <= s1 else i
                     remove_spans.add(rm)
