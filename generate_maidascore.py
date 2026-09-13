@@ -4463,7 +4463,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                             _try_x = new_m_start + target_pos * new_m_width
                             _best_gap, _best_cx = None, None
                             for n0 in _nudge_pool:
-                                if abs(n0.get('y', -1) - ty) > 3000:
+                                if abs(n0.get('y', -1) - ty) > 600:
                                     continue
                                 n_on = n0.get('onset')
                                 if n_on is None:
@@ -4482,10 +4482,13 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                             for _iter in range(8):
                                 _moved = False
                                 for n0 in _nudge_pool:
-                                    if abs(n0.get('y', -1) - ty) > 3000:
+                                    if abs(n0.get('y', -1) - ty) > 600:
                                         continue
                                     n_on = n0.get('onset')
                                     if n_on is None:
+                                        continue
+                                    # 13 Set 2026: nudge solo note della stessa battuta
+                                    if n0.get('measure_idx') != current_measure_idx:
                                         continue
                                     # 12 Set 2026: n0['x'] post-repos se già riposizionata;
                                     # altrimenti PREDICI con _note_final_x usando i bounds
@@ -4514,6 +4517,11 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                                         _moved = True
                                 if not _moved:
                                     break
+                            # 13 Set 2026 (bug pause sovrapposte): clamp finale —
+                            # il bordo destro della pausa NON deve sbordare nella
+                            # battuta successiva (dove collide con la 1ª nota).
+                            # _try_x è il bordo sinistro; glyph largo ~150-226px.
+                            _try_x = min(_try_x, new_m_end - 226.0)
                             target_pos = (_try_x - new_m_start) / new_m_width
 
                     
@@ -4616,73 +4624,96 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     else:
                         _sector_start = new_m_start
                         _sector_end = new_m_end
-                    for _nudge_iter in range(8):
-                        _nudge_changed = False
+                    # 13 Set 2026 (bug pause sovrapposte): RISCRITTURA del nudge.
+                    # Il vecchio loop right/left oscillava quando la pausa non
+                    # sta TRA due note vicine (es. note a 335px con clear 285:
+                    # right la spinge sulla nota successiva, left sulla
+                    # precedente, ciclo infinito → posizione finale casuale
+                    # sovrapposta). Algoritmo "gap libero": calcola gli
+                    # intervalli liberi tra le note della battuta e metti la
+                    # pausa nel gap più vicino alla posizione target.
+                    if 'Rest' in elem_str and rest_onset_val is not None:
+                        _rest_r = 113.0 if (rest_dtype_val == 'half' or 'M0,-3.3125' in elem_str) else 75.0
+                        # note della stessa battuta (ordinate per X), con x_final
+                        note_xs = []
                         for n0 in _nudge_pool:
-                            if abs(n0.get('y', -1) - ty) > 3000:
+                            if abs(n0.get('y', -1) - ty) > 600:
                                 continue
                             if n0.get('onset') is None:
                                 continue
+                            if n0.get('measure_idx') != current_measure_idx:
+                                continue
                             _cand_x = n0.get('x_final')
                             if _cand_x is None:
-                                # 12 Set 2026: nota di un sistema non ancora
-                                # processato (pre-pass assente): PREDICI la X finale.
+                                # 13 Set 2026: x_final mancante (pre-pass saltato per
+                                # questa battuta): predici con i bounds della battuta
+                                # CORRENTE (le note qui sono tutte di current_measure_idx).
                                 n0_m = n0.get('measure_idx')
-                                if n0_m is None:
-                                    continue
-                                _grp_n = n0_m - _sys_global_idx
-                                if 0 <= _grp_n < len(new_measure_bounds):
-                                    _bn = new_measure_bounds[_grp_n]
-                                else:
-                                    continue
                                 _nb_ts = _ts_beats_for_measure(n0_m)
                                 _nb_sec = _n_sectors_for_measure(n0_m)
                                 _nb_sz = _nb_ts / _nb_sec if _nb_sec > 0 else 1.0
                                 _cand_x = _note_final_x(n0, _nudge_pool, n0_m,
-                                                        _bn[0], _bn[1] - _bn[0],
+                                                        new_m_start, new_m_width,
                                                         _nb_sz, _nb_sec, _nb_ts)
                             if _cand_x is None:
                                 continue
-                            _rest_r = 113.0 if (rest_dtype_val == 'half' or 'M0,-3.3125' in elem_str) else 75.0
-                            _note_r = n0.get('circle_r', 110)
-                            _clear = _rest_r + _note_r * 1.0 + 100.0  # 12 Set: pad comfort (era 20)
-                            # 12 Set 2026: new_tx è il BORDO SINISTRO del glyph rest (il path
-                            # parte da tx), non il centro. Il centro effettivo = new_tx + _rest_r.
-                            _center_tx = new_tx + _rest_r
-                            if abs(_cand_x - _center_tx) < _clear:
-                                # lato con più spazio dentro la battuta.
-                                # 12 Set 2026: preferisci il lato coerente con l'onset:
-                                # se la pausa è a destra della nota nel flusso musicale
-                                # (onset >= onset nota), spingila a destra; altrimenti a sinistra.
-                                _rest_on = rest_onset_val if rest_onset_val is not None else orig_pos * _ts_beats
-                                _n_on = n0.get('onset', 0.0)
-                                # 12 Set 2026 (bug pausa tra settori): confini
-                                # del settore, non della battuta.
-                                _left_ok = _cand_x - _clear >= _sector_start
-                                _right_ok = _cand_x + _clear <= _sector_end
-                                if _rest_on >= _n_on:
-                                    if _right_ok:
-                                        new_tx = _cand_x + _clear - _rest_r
-                                        _nudge_changed = True
-                                    elif _left_ok:
-                                        new_tx = _cand_x - _clear - _rest_r
-                                        _nudge_changed = True
-                                else:
-                                    if _left_ok:
-                                        new_tx = _cand_x - _clear - _rest_r
-                                        _nudge_changed = True
-                                    elif _right_ok:
-                                        new_tx = _cand_x + _clear - _rest_r
-                                        _nudge_changed = True
-                        if not _nudge_changed:
-                            break
-                    # 12 Set 2026 (bug pausa sulla stanghetta): dopo il nudge
-                    # anti-collisione, CLAMPA la pausa dentro la battuta con
-                    # margine dalla stanghetta. In 2/4 una pausa di croma a
-                    # onset 1.5 condivide il settore grigio con la croma a
-                    # onset 1.0: il nudge la spingeva tutta a destra fino a
-                    # farla finire VISIVAMENTE SOPRA la stanghetta.
-                    if 'Rest' in elem_str and rest_onset_val is not None:
+                            if _cand_x is not None:
+                                note_xs.append(_cand_x)
+                        note_xs.sort()
+                        # 13 Set 2026: includi anche le note delle battute ADIACENTI
+                        # (o almeno la loro 1ª/ultima nota) quando sono vicine ai
+                        # confini: una pausa a fine battuta sborda sulla 1ª nota
+                        # della battuta dopo (e viceversa).
+                        for n0 in _nudge_pool:
+                            if abs(n0.get('y', -1) - ty) > 600:
+                                continue
+                            if n0.get('onset') is None:
+                                continue
+                            n0_m = n0.get('measure_idx')
+                            if n0_m is None:
+                                continue
+                            if abs(n0_m - current_measure_idx) != 1:
+                                continue
+                            _cand_x = n0.get('x_final')
+                            # solo la 1ª nota della battuta successiva
+                            if n0_m == current_measure_idx + 1 and n0.get('onset') < 0.25:
+                                if _cand_x is None:
+                                    _grp_n = n0_m - _sys_global_idx
+                                    if 0 <= _grp_n < len(new_measure_bounds):
+                                        _bn = new_measure_bounds[_grp_n]
+                                        _nb_ts = _ts_beats_for_measure(n0_m)
+                                        _nb_sec = _n_sectors_for_measure(n0_m)
+                                        _nb_sz = _nb_ts / _nb_sec if _nb_sec > 0 else 1.0
+                                        _cand_x = _note_final_x(n0, _nudge_pool, n0_m,
+                                                                _bn[0], _bn[1] - _bn[0],
+                                                                _nb_sz, _nb_sec, _nb_ts)
+                                if _cand_x is not None:
+                                    note_xs.append(_cand_x)
+                        note_xs = sorted(set(note_xs))
+                        # clear: distanza minima centro-pausa / centro-nota
+                        _clear = _rest_r + 72 + 10.0  # 13 Set: raggio nota max reale (72) + pad 10 (era 110+100: clear 285 non lasciava gap nelle battute 2/4)
+                        _target = new_tx + _rest_r  # centro attuale
+                        # verifica collisione attuale
+                        _collides = any(abs(_nx - _target) < _clear for _nx in note_xs)
+                        if _collides and note_xs:
+                            # intervalli liberi: [m_start, prima nota], tra le note, [ultima nota, m_end]
+                            gaps = []
+                            bounds = [new_m_start] + note_xs + [new_m_end]
+                            for gi in range(len(bounds) - 1):
+                                g_start = bounds[gi] + (_clear if gi > 0 else 0)
+                                g_end = bounds[gi + 1] - (_clear if gi < len(bounds) - 2 else 0)
+                                if g_end - g_start >= 2 * _rest_r:
+                                    gaps.append(((g_start + g_end) / 2, g_start + _rest_r, g_end - _rest_r))
+                            if gaps:
+                                # gap più vicino al target
+                                _best = min(gaps, key=lambda g: abs(g[0] - _target))
+                                new_tx = _best[0] - _rest_r
+                                # clampa dentro il gap
+                                new_tx = max(new_tx, new_m_start)
+                                new_tx = min(new_tx, new_m_end - 2 * _rest_r)
+                        _nudge_changed = False
+                    # (fine 13 Set 2026)
+
                         _rest_gap = 150.0  # margine minimo centro-pausa dalla stanghetta
                         _rest_r2 = 113.0 if (rest_dtype_val == 'half' or 'M0,-3.3125' in elem_str) else 75.0
                         # 12 Set 2026 (bug pausa tra settori): clamp ai confini
@@ -4691,10 +4722,33 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         _cl_end = _sector_end if rest_onset_val is not None else new_m_end
                         _rest_max = _cl_end - _rest_r2 - _rest_gap
                         if new_tx > _rest_max:
-                            new_tx = max(_rest_max, _cl_start + _rest_r2 + _rest_gap)
+                            # 13 Set 2026 (bug pause sovrapposte): era
+                            # max(_rest_max, _cl_start + _rest_r2 + _rest_gap):
+                            # con settori stretti (<450px) _cl_start+225 > _rest_max
+                            # e max() spingeva la pausa OLTRE il limite destro del
+                            # settore, sbordando nella battuta successiva sopra la
+                            # 1ª nota. min() rispetta sempre _rest_max.
+                            new_tx = min(max(_rest_max, _cl_start + _rest_r2), _rest_max)
                             # se ora collide con una nota, sposta la pausa a sinistra di essa
                             for _n0 in _nudge_pool:
-                                if abs(_n0.get('y', -1) - ty) > 3000:
+                                if abs(_n0.get('y', -1) - ty) > 600:
+                                    continue
+                                if _n0.get('onset') is None:
+                                    continue
+                                if _n0.get('measure_idx') != current_measure_idx:
+                                    continue
+                                _cx = _n0.get('x_final')
+                                if _cx is None:
+                                    continue
+                                _cl = _rest_r2 + _n0.get('circle_r', 110) + 20.0
+                                if abs(_cx - (new_tx + _rest_r2)) < _cl:
+                                    new_tx = _cx - _cl - _rest_r2
+                            new_tx = max(new_tx, _cl_start + _rest_r2 + _rest_gap)
+                            # 13 Set 2026: mai oltre _rest_max (vedi fix sopra)
+                            new_tx = min(new_tx, _rest_max)
+                            # se ora collide con una nota, sposta la pausa a sinistra di essa
+                            for _n0 in _nudge_pool:
+                                if abs(_n0.get('y', -1) - ty) > 600:
                                     continue
                                 if _n0.get('onset') is None:
                                     continue
@@ -4704,7 +4758,6 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                                 _cl = _rest_r2 + _n0.get('circle_r', 110) + 20.0
                                 if abs(_cx - (new_tx + _rest_r2)) < _cl:
                                     new_tx = _cx - _cl - _rest_r2
-                            new_tx = max(new_tx, _cl_start + _rest_r2 + _rest_gap)
                 # per le pause a onset 0.0 (inizio battuta), aggiungi barline_gap
                 # come per le note, per evitare che la pausa sia attaccata alla chiave.
                 # MA NON se la pausa condivide il settore con note (le note hanno già
@@ -5218,7 +5271,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     n['_new_tx_str'] = f"{n['x']:.2f}"
 
         print(f"    Equalized {len(new_measure_bounds)} measures: widths={[round(m[1]-m[0]) for m in new_measure_bounds]}")
-    
+
     # 1a-ll. Shift LedgerLine polylines in X to match their notes
     # Ledger lines have absolute coords (no transform), so equalization doesn't move them.
     # We saved _orig_center_x before equalization; now use the delta to shift ledger lines.
@@ -8729,6 +8782,57 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
     )
     if rest_count > 0:
         print(f"  Rests: {rest_count} enlarged (scale ×{rest_scale_factor:.2f}, eighth rests ×{rest_scale_factor*REST_EIGHTH_SCALE:.2f})")
+    # 13 Set 2026 (bug pause sovrapposte): POST-PROCESSING GLOBALE anti-collisione
+    # pausa-cerchio. Dopo tutto il riposizionamento onset-based, alcune pause finiscono
+    # ancora sopra (o a ridosso di) cerchi nota. Pass finale con GEOMETRIA REALE:
+    # cerchi r=58/72, pausa half-width = 75*scala. Per ogni pausa che collide con un
+    # cerchio (stessa riga), spostala nel punto libero più vicino (sinistra/destra).
+    def _rest_circle_decollide(svg_str):
+        rest_pat = re.compile(r'<path class="Rest" transform="matrix\(([\d.\-]+),0\.0,0\.0,([\d.\-]+),([\d.\-]+),([\d.\-]+)\)"')
+        circle_pat = re.compile(r'<circle cx="([\d.]+)" cy="([\d.]+)"[^>]*r="([\d.]+)"')
+        circles = [(float(m.group(1)), float(m.group(2)), float(m.group(3)))
+                   for m in circle_pat.finditer(svg_str)]
+        n_fixed = 0
+        # tutte le pause con i loro centri e half-width
+        rest_entries = []
+        for m in rest_pat.finditer(svg_str):
+            rx, ry, rsc = float(m.group(3)), float(m.group(4)), float(m.group(2))
+            rest_entries.append([m, rx, ry, 75.0 * rsc, rx + 75.0 * rsc])
+        replacements = []
+        for m, rx, ry, half_w, center in rest_entries:
+            # cerchi vicini nella stessa riga
+            near = [(cx, cr) for cx, cy, cr in circles if abs(cy - ry) < 100]
+            if not near:
+                continue
+            def collides(cx_test):
+                return any(abs(cx - cx_test) < cr + half_w + 18 for cx, cr in near)
+            if not collides(center):
+                continue
+            # trova X libera più vicina: scansiona sinistra/destra
+            best = None
+            for cx_n, cr_n in near:
+                for cand in (cx_n - (cr_n + half_w) - 18, cx_n + (cr_n + half_w) + 18):
+                    if not collides(cand) and (best is None or abs(cand - center) < abs(best - center)):
+                        best = cand
+            if best is not None:
+                new_tx = best - half_w
+                old_tr = m.group(0)
+                new_tr = old_tr.replace(f'{rx:.2f}', f'{new_tx:.2f}', 1) if f'{rx:.2f}' in old_tr else None
+                if new_tr is not None:
+                    replacements.append((old_tr, new_tr))
+                    n_fixed += 1
+        for old_t, new_t in replacements:
+            svg_str = svg_str.replace(old_t, new_t, 1)
+        return svg_str, n_fixed
+
+    
+
+    # 13 Set 2026 (bug pause sovrapposte): anti-collisione pausa-cerchio FINALE.
+    # Deve girare DOPO l'enlarge dei rest (2f) che ricalcola i tx.
+    if rhythm_mode:
+        modified, _n_decol = _rest_circle_decollide(modified)
+        if _n_decol:
+            print(f"    Anti-collisione pause-cerchi: {_n_decol} pause spostate")
     
     # 2f2. Enlarge NoteDots (augmentation dots for dotted notes AND rests)
     # MuseScore renders dots as <path class="NoteDot"> with small scale.
