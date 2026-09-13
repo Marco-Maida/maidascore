@@ -603,7 +603,7 @@ def compute_system_breaks(note_counts, max_notes=MAX_NOTES_PER_SYSTEM,
                           default_measures=UNIFORM_MEASURES_PER_SYSTEM,
                           initial_rest_measures=0, mmrest_groups=None,
                           time_sig_changes=None, time_sigs_per_measure=None,
-                          pack_mmrest=False):
+                          pack_mmrest=False, rhythm_mode=False):
     """
     Calcola dopo quali battute inserire un LayoutBreak (a capo).
     
@@ -680,9 +680,16 @@ def compute_system_breaks(note_counts, max_notes=MAX_NOTES_PER_SYSTEM,
         # fisica → si può impaccare con le altre. Isolarlo solo se richiesto.
         if pack_mmrest:
             # packing normale: tratta l'MMRest come battuta qualsiasi
+            # 13 Set 2026 (richiesta Marco 12 settori/rigo): in notazione completa
+            # MuseScore NON riesce a rendere più di 3 battute per rigo
+            # (larghezza minima note+luci), anche su pagina larga. Cap
+            # MAX_MEASURES_PER_SYSTEM per evitare spezzature.
+            MAX_MEAS_PER_SYSTEM = 3 if not rhythm_mode else 99
             count = 1
             width_so_far = _measure_width(i)
             while i + count < n:
+                if count >= MAX_MEAS_PER_SYSTEM:
+                    break
                 _w = width_so_far + _measure_width(i + count)
                 if _w > MAX_SECTORS_PER_SYSTEM:
                     break
@@ -725,9 +732,14 @@ def compute_system_breaks(note_counts, max_notes=MAX_NOTES_PER_SYSTEM,
             # 12 Set 2026: packing per LARGHEZZA invece che a numero fisso.
             # Riempie il rigo con quante battute ci stanno entro
             # MAX_SECTORS_PER_SYSTEM settori (default 8 = 2 battute 4/4).
+            # 13 Set 2026 (12 settori/rigo): cap 3 battute/rigo in notazione
+            # completa — MuseScore spezza comunque i righi più fitti.
+            MAX_MEAS_PER_SYSTEM = 3 if not rhythm_mode else 99
             count = 1
             width_so_far = _measure_width(i)
             while i + count < n and (i + count) not in mmrest_start_set:
+                if count >= MAX_MEAS_PER_SYSTEM:
+                    break
                 _w = width_so_far + _measure_width(i + count)
                 if _w > MAX_SECTORS_PER_SYSTEM:
                     break
@@ -1392,7 +1404,7 @@ def extract_single_part_mscz(input_mscz, part_index=0, key_sig_changes=None, rhy
                                          mmrest_groups=mmrest_groups,
                                          time_sig_changes=_all_changes,
                                          time_sigs_per_measure=note_info.get('time_sigs_per_measure'),
-                                         pack_mmrest=rhythm_mode)
+                                         pack_mmrest=rhythm_mode, rhythm_mode=rhythm_mode)
     break_before = set(b + 1 for b in break_after if b + 1 < total_measures)
     if break_before:
         with open(xml_path, 'r') as f:
@@ -1803,7 +1815,7 @@ def make_accessible_mscz(input_mscz, output_mscz, part_index=0, rhythm_mode=Fals
                                                     mmrest_groups=mmrest_groups,
                                                     time_sig_changes=all_changes,
                                                     time_sigs_per_measure=_ts_per_measure_local,
-                                                    pack_mmrest=rhythm_mode)
+                                                    pack_mmrest=rhythm_mode, rhythm_mode=rhythm_mode)
             
             # Print system layout (compute actual groups from breaks)
             sys_start = 0
@@ -1890,19 +1902,15 @@ def make_accessible_mscz(input_mscz, output_mscz, part_index=0, rhythm_mode=Fals
         # 13 Set 2026: pagePrintableWidth è il vero limite della larghezza del
         # pentagramma (MuseScore ignora i RightMargin in pagina singola).
         # 7.0889" = default; 7.9" ≈ 8.27 - 2×0.185" (margine minimo stampabile).
-        # 13 Set 2026: pagePrintableWidth allargato SOLO in modalità ritmica
-        # (richiesta Marco). La notazione completa mantiene il default 7.0889".
-        if rhythm_mode:
-            # 13 Set 2026 (20 settori/rigo): il rendering con 20 settori richiede
-            # larghezza minima per battuta che MuseScore non può comprimere oltre
-            # (~1228px per battuta 2/4 densa). Con pagina A4 (7.9") i righi da 10
-            # battute 2/4 si spezzano (8+2, 9+1). Il post-processore equalizza
-            # comunque tutte le posizioni x a UNIFORM_MEASURE_WIDTH, quindi la
-            # larghezza di rendering è IRRELEVANTE per l'output finale: basta
-            # che MuseScore tenga tutte le battute di un rigo su una riga.
-            # Pagina larga 16.5" = le 10 battute entrano comodamente.
-            mss = re.sub(r'<pageWidth>[\d.]+</pageWidth>', '<pageWidth>16.5</pageWidth>', mss)
-            mss = re.sub(r'<pagePrintableWidth>[\d.]+</pagePrintableWidth>', '<pagePrintableWidth>16.1</pagePrintableWidth>', mss)
+        # 13 Set 2026: pagePrintableWidth allargato anche in notazione completa
+        # (richiesta Marco: 12 settori/rigo). Stesso principio della modalità
+        # ritmica: i righi da 12 settori vengono spezzati da MuseScore su
+        # pagina A4; il post-processore equalizza comunque le posizioni x e
+        # restringe il viewBox finale ad A4, quindi la larghezza di rendering
+        # è irrilevante per l'output finale.
+        # Pagina larga 16.5" = i righi da 12 settori entrano comodamente.
+        mss = re.sub(r'<pageWidth>[\d.]+</pageWidth>', '<pageWidth>16.5</pageWidth>', mss)
+        mss = re.sub(r'<pagePrintableWidth>[\d.]+</pagePrintableWidth>', '<pagePrintableWidth>16.1</pagePrintableWidth>', mss)
         mss = re.sub(r'<pageHeight>[\d.]+</pageHeight>', f'<pageHeight>{PAGE_HEIGHT}</pageHeight>', mss)
         mss = re.sub(r'<staffLineWidth>[\d.]+</staffLineWidth>', 
                      f'<staffLineWidth>{STAFF_LINE_WIDTH}</staffLineWidth>', mss)
@@ -3645,13 +3653,27 @@ def build_system_layout(systems, barlines, time_sigs_per_measure, measure_offset
                 n_meas = _exp
 
         # Controlla se questo sistema inizia con un MMRest
-        if _m in _mmrest_set:
+        # 13 Set 2026 (bug numeri sfasati 43,44 / 85,86,87): quando il gruppo
+        # MMRest è SPEZZATO su più righi dal piano LayoutBreak (es. MMRest(2)
+        # → g10=[1] M28 + g11=[1] M29), il rigo MMRest conta n_logical=count
+        # e i righi successivi contano le stesse battute UNA SECONDA VOLTA
+        # (doppio conteggio → measure_offset avanza troppo → numeri saltati
+        # alla fine, drift +N). Con il piano disponibile, il rigo MMRest conta
+        # SOLO le battute che il piano gli assegna (n_meas già = _exp).
+        if _m in _mmrest_set and expected_measures is None:
             # MMRest: 1 visual measure che copre count battute logiche
             mmrest_count = _mmrest_count_map.get(_m, 1)
             measures = [_m]
             n_logical = mmrest_count
             global_idx_start = _m
             _m += mmrest_count
+        elif _m in _mmrest_set:
+            # Piano presente: conta solo le battute assegnate a questo rigo
+            mmrest_count = _mmrest_count_map.get(_m, 1)
+            measures = list(range(_m, _m + n_meas))
+            n_logical = n_meas
+            global_idx_start = _m
+            _m += n_meas
         else:
             measures = list(range(_m, _m + n_meas))
             n_logical = n_meas
@@ -9801,26 +9823,29 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
     # Shift fisso di 500px applicato a tutte le pagine (non solo la prima).
     # Il pentagramma va da ~709 a ~9215. Con shift 500: margine sx=209px, dx=1209px.
     # i sistemi più a sinistra rispetto alla centratura precedente (236px solo pag 1).
-    if rhythm_mode:
-        vb_match = re.search(r'viewBox="([\d.\-]+)\s+([\d.\-]+)\s+([\d.\-]+)\s+([\d.\-]+)"', modified)
-        if vb_match:
-            vb_x, vb_y, vb_w, vb_h = (float(vb_match.group(i)) for i in range(1, 5))
-            CENTERING_SHIFT = 100  # 13 Set 2026: ridotto (era 500) — margini laterali minimi
-            new_vb_x = vb_x + CENTERING_SHIFT
-            # 13 Set 2026: il rendering avviene su pagina larga 16.5" (per far
-            # entrare 10 battute 2/4 per rigo senza spezzare), ma l'output
-            # finale deve essere A4 (richiesta Marco). La musica equalizzata
-            # arriva a STAFF_END_X=9540 < 9924, quindi basta restringere la
-            # viewBox a 8.27"×1200px/in = 9924px. Title e footer (che si
-            # centrano sul viewBox) vengono dopo, quindi si centrano da soli.
-            if vb_w > 9924:
-                vb_w = 9924.0
-            modified = modified.replace(
-                vb_match.group(0),
-                f'viewBox="{new_vb_x:.1f} {vb_y:.1f} {vb_w:.1f} {vb_h:.1f}"')
-            # attributo width fisico → A4
-            modified = re.sub(r'(<svg[^>]*\swidth=")[\d.]+mm(")',
-                             r'\g<1>210mm\g<2>', modified, count=1)
+    # 13 Set 2026 (richiesta Marco: 12 settori/rigo anche in notazione completa):
+    # il restringimento viewBox→A4 vale per ENTRAMBE le modalità, perché anche la
+    # notazione completa ora renderizza su pagina larga 16.5". Il clamp
+    # vb_w > 9924 è un no-op quando la pagina è già A4.
+    vb_match = re.search(r'viewBox="([\d.\-]+)\s+([\d.\-]+)\s+([\d.\-]+)\s+([\d.\-]+)"', modified)
+    if vb_match:
+        vb_x, vb_y, vb_w, vb_h = (float(vb_match.group(i)) for i in range(1, 5))
+        CENTERING_SHIFT = 100  # 13 Set 2026: ridotto (era 500) — margini laterali minimi
+        new_vb_x = vb_x + CENTERING_SHIFT
+        # 13 Set 2026: il rendering avviene su pagina larga 16.5" (per far
+        # entrare i righi da 12-20 settori senza spezzare), ma l'output
+        # finale deve essere A4 (richiesta Marco). La musica equalizzata
+        # arriva a STAFF_END_X=9540 < 9924, quindi basta restringere la
+        # viewBox a 8.27"×1200px/in = 9924px. Title e footer (che si
+        # centrano sul viewBox) vengono dopo, quindi si centrano da soli.
+        if vb_w > 9924:
+            vb_w = 9924.0
+        modified = modified.replace(
+            vb_match.group(0),
+            f'viewBox="{new_vb_x:.1f} {vb_y:.1f} {vb_w:.1f} {vb_h:.1f}"')
+        # attributo width fisico → A4
+        modified = re.sub(r'(<svg[^>]*\swidth=")[\d.]+mm(")',
+                         r'\g<1>210mm\g<2>', modified, count=1)
     
     # in modalità rhythm, RIMUOVI FISICAMENTE le StaffLines
     # invece di renderle solo trasparenti. Alcuni visualizzatori PDF mostrano
@@ -10089,7 +10114,12 @@ def main():
         # ritmica (110 → 55) perché dentro non si scrive il nome della nota.
         globals()['DISC_R_OVERRIDE'] = 72  # 55 * 1.3 (aumento 30%)
         # I dischi (raggio 55, diametro 110) entrano agevolmente nel settore 550
-    
+    else:
+        # 13 Set 2026 (richiesta Marco): 12 settori grigi per rigo anche in
+        # notazione completa (3 battute 4/4). Il default era 8 (2 battute 4/4),
+        # che sprecava spazio e gonfiava il PDF.
+        globals()['_MAX_SECTORS_OVERRIDE'] = 12
+
     # Step 1: Extract notes
     print("[1/5] Estrazione note dal .mscz...")
     note_info = extract_notes_from_mscz(input_mscz, part_index=part_index)
@@ -10191,7 +10221,7 @@ def main():
         _n_meas = len(_parts) - 1
         _break_set = set()
         for _i in range(1, len(_parts)):
-            if '<LayoutBreak>' in _parts[_i] and 'line</subtype>' in _parts[_i]:
+            if '<LayoutBreak>' in _parts[_i] and ('line</subtype>' in _parts[_i] or 'page</subtype>' in _parts[_i]):
                 _break_set.add(_i - 1)
         _counts = []
         _start = 0
