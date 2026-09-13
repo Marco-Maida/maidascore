@@ -905,7 +905,7 @@ def _add_mmrests_to_mscx(mscx_content, note_info):
     return new_mscx
 
 
-def extract_single_part_mscz(input_mscz, part_index=0, key_sig_changes=None):
+def extract_single_part_mscz(input_mscz, part_index=0, key_sig_changes=None, rhythm_mode=False):
     """Estrae una singola parte da un .mscz multi-strumento.
     
     Usa music21 per leggere la parte specifica e MuseScore 4 per convertire
@@ -1364,10 +1364,26 @@ def extract_single_part_mscz(input_mscz, part_index=0, key_sig_changes=None):
     note_counts = [note_counts_by_measure.get(i, 0) for i in range(total_measures)]
     initial_rest = note_info.get('initial_rest_measures', 0)
     mmrest_groups = note_info.get('mmrest_groups', [])
+    # 13 Set 2026 (bug "battute da sole"): il piano dei break deve essere
+    # IDENTICO a quello usato da make_accessible_mscz per i LayoutBreak,
+    # altrimenti i <print new-system> del MusicXML e i LayoutBreak del .mscz
+    # confliggono e MuseScore spezza i sistemi in punti arbitrari (sistemi
+    # orfani di 1-3 battute). Stessi parametri: time_sig_changes + pack_mmrest.
+    _ts_change_set = set()
+    _prev_ts = None
+    for _mi, _ts in sorted((note_info.get('time_sigs_per_measure') or {}).items()):
+        if _prev_ts is not None and _ts != _prev_ts:
+            _ts_change_set.add(_mi)
+        _prev_ts = _ts
+    _all_changes = _ts_change_set
+    if not rhythm_mode:
+        _all_changes = _ts_change_set | (set(key_sig_changes) if key_sig_changes else set())
     break_after = compute_system_breaks(note_counts,
                                          initial_rest_measures=initial_rest,
                                          mmrest_groups=mmrest_groups,
-                                         time_sigs_per_measure=note_info.get('time_sigs_per_measure'))
+                                         time_sig_changes=_all_changes,
+                                         time_sigs_per_measure=note_info.get('time_sigs_per_measure'),
+                                         pack_mmrest=rhythm_mode)
     break_before = set(b + 1 for b in break_after if b + 1 < total_measures)
     if break_before:
         with open(xml_path, 'r') as f:
@@ -7731,13 +7747,29 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 f'text-anchor="start" dy="0.35em">{mn_num}</text>'
             )
             measure_number_count += 1
-        # Advance global measure counter by the number of LOGICAL measures in this system
-        # 4 Ago 2026 (bug KS): MMRest systems count N logical measures, not 1
-        if global_m_idx in _mmrest_map:
+        # Advance global measure counter by the number of LOGICAL measures in this system.
+        # 4 Ago 2026 (bug KS): MMRest systems count N logical measures, not 1.
+        # 13 Set 2026 (bug numeri sfasati dopo MMRest espansi): il ramo "elif"
+        # (pre-MMRest system → +1) era pensato per quando l'MMRest compresso era
+        # un sistema separato da 1 battuta. Ma ora gli MMRest sono ESPANSI in
+        # battute individuali: quando il gruppo inizia a metà sistema (es. sistema
+        # M72-M78 con MMRest a M73-75), quel ramo avanzava di 1 invece che di 7,
+        # sfasando i numeri di TUTTI i sistemi successivi (M79 numerate come 74).
+        # Regola: se il sistema contiene la START dell'MMRest, il conteggio logico
+        # = battute fisiche + (count - 1) [le N-1 battute logiche extra del gruppo].
+        if global_m_idx in _mmrest_map and len(em_bounds) == 1:
+            # MMRest compresso: 1 battuta fisica che rappresenta N logiche
             global_m_idx += _mmrest_map[global_m_idx]
-        elif (global_m_idx + 1) in _mmrest_map:
-            global_m_idx += 1  # pre-MMRest system
+        elif (global_m_idx + len(em_bounds) - 1) >= (global_m_idx + 1) \
+                and any(global_m_idx + _k in _mmrest_map for _k in range(len(em_bounds))) \
+                and len(em_bounds) == 1:
+            # pre-MMRest compressed system (legacy, 1 battuta fisica)
+            global_m_idx += 1
         else:
+            # Sistema normale: dal 13 Set 2026 gli MMRest sono ESPANSI in
+            # battute individuali (1 fisica = 1 logica), quindi il contatore
+            # avanza semplicemente del numero di battute del sistema.
+            # (Il "+count-1" extra valeva per gli MMRest compressi.)
             global_m_idx += len(em_bounds)
     
     if measure_number_texts:
@@ -9598,7 +9630,12 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     y_m = re.search(r'y="([\d.]+)"', match.group(0))
                     if x_m and y_m:
                         x, y = float(x_m.group(1)), float(y_m.group(1))
-                        if msl - 200 < x < msel + 200 and st - 300 < y < sb + 100:
+                        # 13 Set 2026: bordo destro ristretto (msel - 300):
+                        # il numero della battuta DOPO il gruppo può essere
+                        # shiftato a sinistra di 220px (anti-collisione con
+                        # note alte) e con la finestra msel-50 veniva
+                        # cancellato per errore (es. M76 dopo MMRest M73-75).
+                        if msl - 200 < x < msel - 300 and st - 300 < y < sb + 100:
                             return ''
                     return match.group(0)
                 modified = re.sub(r'<text[^>]*font-size="160"[^>]*>\d+</text>', remove_meas_nums_sys, modified)
@@ -9609,7 +9646,8 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     y_m = re.search(r'y="([\d.]+)"', match.group(0))
                     if x_m and y_m:
                         x, y = float(x_m.group(1)), float(y_m.group(1))
-                        if msl - 200 < x < msel + 200 and st - 200 < y < sb + 200:
+                        # 13 Set 2026: anche qui bordo destro ristretto
+                        if msl - 200 < x < msel - 50 and st - 200 < y < sb + 200:
                             return ''
                     return match.group(0)
                 modified = re.sub(r'<rect[^>]*(?:#E8E8E8|#B8B8B8)[^>]*/?>', remove_bg_sys, modified)
@@ -9996,7 +10034,11 @@ def main():
         # con keysig/tempo rimpiccioliti. Area musicale 1500→9540 = 8040px.
         globals()['UNIFORM_MUSIC_START'] = 1500
         # 20 settori grigi per rigo (5 battute 4/4) — richiesta Marco 13 Set 2026.
-        globals()['_MAX_SECTORS_OVERRIDE'] = 20
+        # 13 Set 2026 (bug "battute da sole"): 16 settori (8 battute 2/4,
+        # 4 battute 4/4). A 20 settori MuseScore spezza i righi più densi
+        # (M90-99 = 10 battute 2/4 non entra: 8 + 2 orfane). A 16 settori
+        # tutti i sistemi entrano, la tavola sonora allinea.
+        globals()['_MAX_SECTORS_OVERRIDE'] = 16
         globals()['UNIFORM_MEASURE_WIDTH'] = 335 * 4  # 1340px per battuta 4/4
         globals()['BEAT_WIDTH'] = 335  # 335px per settore grigio
         # 12 Set 2026 (richiesta Marco): dischi ridotti del 50% in modalità
@@ -10038,7 +10080,7 @@ def main():
     # Per i break di sistema: solo gli indici dei cambi (escludi la battuta 0 iniziale)
     key_sig_breaks = {idx for idx in key_sig_changes_dict if idx > 0}
     # Passa il dict completo a extract_single_part_mscz per ricostruire i KeySig intermedi
-    single_part_mscz = extract_single_part_mscz(input_mscz, part_index=part_index, key_sig_changes=key_sig_changes_dict)
+    single_part_mscz = extract_single_part_mscz(input_mscz, part_index=part_index, key_sig_changes=key_sig_changes_dict, rhythm_mode=rhythm_mode)
     accessible_mscz, initial_rest_measures, mmrest_groups = make_accessible_mscz(single_part_mscz, accessible_mscz, part_index=part_index, rhythm_mode=rhythm_mode, key_sig_changes=key_sig_breaks)
     print(f"  ✓ {accessible_mscz} (spatium={SPATIUM}, staffLineWidth={STAFF_LINE_WIDTH})")
     
@@ -10056,6 +10098,66 @@ def main():
     print(f"  measure_idx range: 0-{max(n['measure_idx'] for n in note_info['notes'])}")
     print()
     
+    # 13 Set 2026 (bug "battute da sole"): il piano dei break (in settori grigi)
+    # può essere troppo ottimista: MuseScore spezza un sistema quando la
+    # larghezza REALE del contenuto eccede la pagina, ignorando il LayoutBreak.
+    # Verifica post-render: se qualche sistema pianificato è stato spezzato,
+    # ricalcola il packing con il numero di battute realmente renderizzabili
+    # e rigenera l'.mscz accessibile (max 3 iterazioni).
+    def _measures_per_system_real(svg_path):
+        """Numero di battute per sistema leggendo le barline del SVG renderizzato."""
+        import re as _re
+        from collections import defaultdict as _dd
+        with open(svg_path, 'r') as _f:
+            _svg = _f.read()
+        _by_y = _dd(set)
+        for _m in _re.finditer(
+                r'<polyline class="BarLine"[^>]*points="([\d.\-]+),([\d.\-]+) ([\d.\-]+),([\d.\-]+)', _svg):
+            _ymid = (float(_m.group(2)) + float(_m.group(4))) / 2
+            _by_y[round(_ymid)].add(round(float(_m.group(1))))
+        # n_barlines = n_battute + 1 (barline iniziale + finali) di norma;
+        # ma MuseScore a volte omette la barline iniziale. Se il sistema
+        # successivo inizia alla stessa x, la barline di fine del sistema
+        # precedente e l'inizio coincidono. Contiamo intervalli unici.
+        return [len(_by_y[_y]) for _y in sorted(_by_y)]
+
+    def _layout_matches_plan():
+        """True se il rendering rispetta il piano LayoutBreak."""
+        _planned = _planned_measures_per_system()
+        if _planned is None:
+            return True, None
+        _real = []
+        for _sf in svg_files:
+            _real.extend(_measures_per_system_real(_sf))
+        return _real, _planned
+
+    def _planned_measures_per_system():
+        """Ricostruisce il numero di battute pianificate per sistema dai
+        LayoutBreak nell'.mscz accessibile."""
+        import zipfile as _zf
+        with _zf.ZipFile(accessible_mscz, 'r') as _z:
+            _mscx = None
+            for _n in _z.namelist():
+                if _n.endswith('.mscx') and 'Excerpts' not in _n:
+                    _mscx = _z.read(_n).decode('utf-8', errors='replace')
+                    break
+        if _mscx is None:
+            return None
+        _parts = _mscx.split('<Measure')
+        _n_meas = len(_parts) - 1
+        _break_set = set()
+        for _i in range(1, len(_parts)):
+            if '<LayoutBreak>' in _parts[_i] and 'line</subtype>' in _parts[_i]:
+                _break_set.add(_i - 1)
+        _counts = []
+        _start = 0
+        for _b in sorted(_break_set):
+            _counts.append(_b - _start + 1)
+            _start = _b + 1
+        if _start < _n_meas:
+            _counts.append(_n_meas - _start)
+        return _counts
+
     # Step 3: Export SVG
     print("[3/5] Export SVG da MuseScore 4...")
     svg_prefix = prefix + '_svg'
@@ -10066,6 +10168,44 @@ def main():
     print(f"  ✓ {len(svg_files)} pagina/e SVG: {', '.join(svg_files)}")
     print()
     
+    # 13 Set 2026 (bug "battute da sole"): retry con packing ridotto se il
+    # rendering ha spezzato sistemi. Confronta battute/sistema reali vs piano.
+    for _attempt in range(3):
+        _real, _planned = _layout_matches_plan()
+        if _planned is None:
+            break
+        # Il rendering rispetta il piano se ogni sistema reale ha il numero
+        # di barline atteso: n_barlines = n_battute (+1 se barline iniziale).
+        _ok = len(_real) == len(_planned) and all(
+            abs(r - p) <= 1 for r, p in zip(_real, _planned))
+        if _ok:
+            print(f"  ✓ Layout verificato: {len(_planned)} sistemi coerenti col piano")
+            break
+        print(f"  ⚠ MuseScore ha spezzato dei sistemi:\n    piano  ={_planned}\n    reale  ={_real}")
+        # Riduci le battute per sistema: il sistema spezzato mostra quante
+        # battute MuseScore riesce realmente a mettere in un rigo.
+        # Usa le battute reali del sistema spezzato come nuovo limite.
+        # (filtra r >= 2: i righi da 1 battuta sono fine-brano, non campioni)
+        _min_real = min(
+            (r for r, p in zip(_real, _planned) if p - r >= 2 and r >= 2),
+            default=None)
+        if _min_real and _min_real >= 2:
+            _max_sectors = _min_real * 2  # 2 battute 2/4 per sistema min
+        else:
+            _max_sectors = (globals().get('_MAX_SECTORS_OVERRIDE') or 8) - 2
+        if _max_sectors >= (globals().get('_MAX_SECTORS_OVERRIDE') or 8):
+            _max_sectors = (globals().get('_MAX_SECTORS_OVERRIDE') or 8) - 2
+        print(f"  → Nuovo packing: _MAX_SECTORS_OVERRIDE = {_max_sectors} (tentativo {_attempt + 2})")
+        globals()['_MAX_SECTORS_OVERRIDE'] = _max_sectors
+        accessible_mscz, initial_rest_measures, mmrest_groups = make_accessible_mscz(
+            single_part_mscz, accessible_mscz, part_index=part_index,
+            rhythm_mode=rhythm_mode, key_sig_changes=key_sig_breaks)
+        svg_files = export_svg(accessible_mscz, svg_prefix)
+        if not svg_files:
+            print("  ✗ Errore export SVG nel retry")
+            sys.exit(1)
+    print()
+
     # Step 4: Post-process SVG
     print("[4/5] Post-processing SVG (colori, nomi, sfondi, rettangoli)...")
     processed_svgs = []
