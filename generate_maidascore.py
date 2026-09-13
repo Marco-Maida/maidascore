@@ -9124,19 +9124,46 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             rest_entries.append([m, rx, ry, 48.0 * rsc, rx + 48.0 * rsc])
         replacements = []
         for m, rx, ry, half_w, center in rest_entries:
-            near = [(cx, cr) for cx, cy, cr in circles if abs(cy - ry) < 100]
+            # indice del sistema (banda Y post-stretch) che contiene ry
+            # (anticipato rispetto alla collision-check: serve per filtrare i
+            # cerchi della STESSA battuta, vedi commento sotto)
+            sys_i = None
+            for i_y, sy in enumerate(_sys_ys_post):
+                if sy - 200 < ry < sy + 900:
+                    sys_i = i_y
+                    break
+            # 13 Set 2026 (bug pausa spostata prima della nota): la collisione
+            # va valutata SOLO contro i cerchi della STESSA battuta della pausa.
+            # Una pausa a fine battuta (onset 1.5 in 2/4, frac 0.875) sta
+            # legittimamente vicino alla barline destra e "collide" falsamente
+            # con la prima nota della battuta SUCCESSIVA → veniva spostata
+            # indietro, PRIMA delle note della sua stessa battuta.
+            _early_bounds = None
+            if sys_i is not None and sys_i < len(sks_sorted):
+                _sk_e = sks_sorted[sys_i]
+                _bl_e = raw_barlines_by_system.get(_sk_e)
+                if _bl_e:
+                    _xs_e = sorted(_bl_e)
+                    _lows_e = [b for b in _xs_e if b <= rx + 1]
+                    _highs_e = [b for b in _xs_e if b >= rx - 1]
+                    if not _lows_e and _highs_e:
+                        _lows_e = [b for b in _xs_e if b < min(_highs_e)] or [0]
+                    if not _highs_e and _lows_e:
+                        _highs_e = [max(_xs_e)]
+                    if _lows_e and _highs_e:
+                        _early_bounds = (max(_lows_e), min(_highs_e))
+            if _early_bounds is not None:
+                near = [(cx, cr) for cx, cy, cr in circles
+                        if abs(cy - ry) < 100
+                        and _early_bounds[0] - 10 <= cx <= _early_bounds[1] + 10]
+            else:
+                near = [(cx, cr) for cx, cy, cr in circles if abs(cy - ry) < 100]
             if not near:
                 continue
             def collides(cx_test):
                 return any(abs(cx - cx_test) < cr + half_w + 18 for cx, cr in near)
             if not collides(center):
                 continue
-            # indice del sistema (banda Y post-stretch) che contiene ry
-            sys_i = None
-            for i_y, sy in enumerate(_sys_ys_post):
-                if sy - 200 < ry < sy + 900:
-                    sys_i = i_y
-                    break
             if os.environ.get('MAIDA_DEBUG_RESTS'):
                 print(f"      [rest-debug] DECOLLIDE processing rest@({rx:.0f},{ry:.0f}) sys_i={sys_i}")
             if sys_i is None or sys_i >= len(sks_sorted):
