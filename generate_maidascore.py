@@ -4417,6 +4417,11 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     if m_rests and os.environ.get('MAIDA_DEBUG_RESTS'):
                         print(f"      [rest-debug] MATCH grp={grp_idx} cur_m={current_measure_idx} tx={tx:.0f} svg_d={elem_str[:60]!r}")
                     if m_rests:
+                        # 13 Set 2026: contatore pause doppione rimosse
+                        try:
+                            n_dup_rests_removed
+                        except NameError:
+                            n_dup_rests_removed = 0
                         # Count how many rests have already been matched in this measure
                         n_matched = len(_matched_rest_indices.get(current_measure_idx, set()))
                         if n_matched < len(m_rests):
@@ -4498,7 +4503,16 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                             # "ancora più a sinistra, all'inizio della
                             # rispettiva sezione grigia"
                             target_pos = rest_onset_val / _ts_beats + 0.02
-                    
+
+                        # 13 Set 2026 (bug pause impilate): registra la X finale
+                        # per evitare doppioni glyph MuseScore (unmatched).
+                        try:
+                            _repos_rest_x
+                        except NameError:
+                            _repos_rest_x = {}
+                        if current_measure_idx is not None:
+                            _repos_rest_x.setdefault(current_measure_idx, []).append(
+                                new_m_start + target_pos * new_m_width)                    
                     if rest_onset_val is None:
                         # 6 Ago 2026 (bug 63): se type mismatch, rimuovi la pausa SVG
                         # invece di riposizionarla (verrà clonata con il tipo corretto).
@@ -4534,6 +4548,9 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                                                  elem_match.group(0), ''))
                             _processed_spans.add(elem_match.start())
                             continue
+                        # 13 Set 2026 (bug pause impilate): se una pausa GIÀ
+                        # riposizionata nella stessa battuta è vicina (<170px),
+                        # questo glyph SVG è un doppione MuseScore → RIMUOVI.
                         _est_onset = orig_pos * _ts_beats
                         target_pos = min(max(_est_onset / _ts_beats + 0.02, 0.0), 0.98)
                         if True:
@@ -4663,6 +4680,15 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                             else:
                                 # Multiple notes in beat: equal spacing (j+1)/(n+1)
                                 frac_in_beat = (note_idx_in_beat + 1) / (n_in_beat + 1)
+                                # 13 Set 2026 (bug cerchi sovrapposti): con 2 note
+                                # in settori stretti (2/4, 3/4) l'equal spacing
+                                # (1/3, 2/3) dà gap = sector/3 < 116px richiesto.
+                                # Garantisci gap minimo: 58+58+18 = 134px.
+                                _sector_px = beat_width_frac * new_m_width
+                                _n_gap = _sector_px / (n_in_beat + 1)
+                                if n_in_beat == 2 and _n_gap < 134.0:
+                                    frac_in_beat = (0.5 + (note_idx_in_beat - 0.5) * 134.0 / _sector_px)
+                                    frac_in_beat = min(max(frac_in_beat, 0.05), 0.95)
                                 target_pos = beat_start_frac + beat_width_frac * frac_in_beat
                     else:
                         target_pos = orig_pos
@@ -4805,9 +4831,10 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 # Record the span of the transform attribute within the full match
                 trans_start = elem_match.start() + full_match.index(old_transform)
                 trans_end = trans_start + len(old_transform)
-                if 'Rest' in elem_str:
+                if 'Rest' in elem_str and 'data-repos' not in elem_str and 'data-repos' not in modified[elem_match.end():elem_match.end() + 30]:
                     # marca la pausa riposizionata (per la pulizia delle non-riposizionate):
-                    # estende il replacement anche alla virgoletta di chiusura del transform
+                    # estende il replacement anche alla virgoletta di chiusura del transform.
+                    # 13 Set 2026: evita marker duplicato (idempotenza).
                     replacements.append((trans_start, trans_end + 1, old_transform + '"',
                                          new_transform + '" data-repos="1"'))
                 else:
@@ -4838,6 +4865,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 r'<path class="Rest"\s+transform="matrix\(([^,]+),([^,]+),([^,]+),([^,]+),([^,]+),([^)]+)\)"[^>]*d="([^"]*)"',
                 modified
             ))
+            _cloned_rest_positions = {}
             # For each system, find missing rests
             for grp_idx in range(len(new_measure_bounds)):
                 new_m_start, new_m_end = new_measure_bounds[grp_idx]
@@ -4965,6 +4993,24 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         expected_x = max(expected_x, _rmin)
                         if expected_x > _rmax:
                             expected_x = max(_rmax, _rmin)
+                    # 13 Set 2026 (bug pause impilate): mantieni separazione minima
+                    # tra le pause clonate della STESSA battuta — il nudge anti-note
+                    # puo spingere due pause sullo stesso punto.
+                    _my_w = 113.0 if r_dtype == 'half' else 75.0
+                    _min_sep = 2 * _my_w + 20.0
+                    _dirs = [+1, -1, +2, -2, +3, -3, +4, -4]
+                    for _d in _dirs:
+                        _conflict = any(
+                            abs(expected_x - _px) < _min_sep
+                            for _px in _cloned_rest_positions.get(m_idx, [])
+                        )
+                        if not _conflict:
+                            break
+                        _alt = expected_x + _d * _min_sep
+                        if new_m_start + 10 <= _alt <= new_m_end - _my_w - 10:
+                            expected_x = _alt
+                    _cloned_rest_positions.setdefault(m_idx, []).append(expected_x)
+                    _cloned_rest_positions.setdefault(m_idx, []).append(expected_x)
                     # Clone the first SVG rest of the same type
                     if os.environ.get('MAIDA_DEBUG_RESTS'):
                         print(f"      [rest-debug] CLONE2 m_idx={m_idx} r_idx={r_idx} onset={r_onset} type={r_dtype} grp={grp_idx} expected_x_final={expected_x:.0f} new_m=[{new_m_start:.0f},{new_m_end:.0f}]")
@@ -5248,6 +5294,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 beat_start_frac = beat_num_key * beat_width_frac
                 # Sector start in quarter-beats (for onset_in_beat calculation)
                 sector_start_qb = beat_num_key * _sec_sz3
+                _grp_centers = []
                 
                 for j, grp_list in enumerate(onset_groups):
                     onset = grp_list[0].get('onset', 0.0)
@@ -5295,7 +5342,57 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         disc_r_approx = _dr_base
                     center_x = max(beat_start_x + disc_r_approx + 5, 
                                   min(center_x, beat_end_x - disc_r_approx - 5))
-                    
+                    # 13 Set 2026 (bug cerchi sovrapposti): due onset-group nello
+                    # stesso settore a <134px → spread simmetrico attorno alla media.
+                    # Nei settori stretti (2 note r58 non entrano in 223px) consenti
+                    # un overhang controllato oltre i bordi: il confine vale solo
+                    # contro NOTE, non contro barline ideali.
+                    if _grp_centers:
+                        _pv = _grp_centers[-1]
+                        if center_x - _pv[0] < 134.0:
+                            _pmid = (center_x + _pv[0]) / 2
+                            # 13 Set 2026: limiti dai CERCHI VICINI (stessa riga),
+                            # non solo dal settore: usa i bordi liberi tra i vicini.
+                            _lo_b = beat_start_x - (disc_r_approx - 10.0)
+                            _hi_b = beat_end_x + (disc_r_approx - 10.0)
+                            for _nc in notes_in_sys:
+                                if _nc is n or _nc.get('center_x') is None:
+                                    continue
+                                _ncx = _nc['center_x']
+                                _nc_dt = _nc.get('duration_type', 'quarter')
+                                _nc_base = max(DISC_R_OVERRIDE, 1) if DISC_R_OVERRIDE else 130
+                                if _nc_dt in ('16th', '16th_dotted'):
+                                    _nc_r = _nc_base * 0.65
+                                elif _nc_dt in ('eighth', 'eighth_dotted'):
+                                    _nc_r = _nc_base * 0.80
+                                else:
+                                    _nc_r = _nc_base
+                                if abs(_ncx - _pmid) < 500 and _ncx < _pmid:
+                                    _lo_b = max(_lo_b, _ncx + _nc_r + disc_r_approx + 18.0)
+                                elif _ncx > _pmid:
+                                    _hi_b = min(_hi_b, _ncx - _nc_r - disc_r_approx - 18.0)
+                            _np2 = _pmid - 67.0
+                            _cp2 = _pmid + 67.0
+                            if _cp2 > _hi_b:
+                                _shift = _cp2 - _hi_b
+                                _np2 -= _shift
+                                _cp2 -= _shift
+                            if _np2 < _lo_b:
+                                _shift = _lo_b - _np2
+                                _np2 += _shift
+                                _cp2 += _shift
+                            # finestra troppo stretta: estremi della finestra
+                            if _cp2 - _np2 < _hi_b - _lo_b:
+                                _np2 = _lo_b
+                                _cp2 = _hi_b
+                            _pv[0] = _np2
+                            _pv[1]['center_x'] = _np2
+                            _offp = NOTEHEAD_CENTER_OFFSET * (_pv[1].get('scale', 2.57143) / 1.25714)
+                            _pv[1]['x'] = _np2 - _offp
+                            _pv[1]['_new_tx_str'] = f"{_np2 - _offp:.2f}"
+                            center_x = _cp2
+                    _grp_centers.append([center_x, grp_list[0]])
+
                     for n in grp_list:
                         offset = NOTEHEAD_CENTER_OFFSET * (n.get('scale', 2.57143) / 1.25714)
                         n['x'] = center_x - offset
@@ -5323,13 +5420,57 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     continue
                 sect_w = (mb_end - mb_start) / n_sect
                 sect_i = min(max(int((cx - mb_start) / sect_w), 0), n_sect - 1)
-                lo = mb_start + sect_i * sect_w + n['r_for_clamp'] + 5 if (r_fc := n.get('r_for_clamp')) else mb_start + sect_i * sect_w + max(DISC_R_OVERRIDE, 1) + 5
-                hi = mb_start + (sect_i + 1) * sect_w - max(DISC_R_OVERRIDE, 1) - 5
+                # 13 Set 2026 (bug cerchi sovrapposti): margini ADATTIVI. Se il
+                # settore contiene più onset-group, il clamp rigido (r+5 per lato)
+                # può stringere due dischi fino a sovrapporli (settore 223px,
+                # due dischi r58: servono 134px + margini). Riduci il margine
+                # quando lo spazio non basta: margine = (sect_w - 134) / 2.
+                _same_sect = [m2 for m2 in mb_notes
+                              if min(max(int((m2['center_x'] - mb_start) / sect_w), 0), n_sect - 1) == sect_i]
+                n_groups_here = len(set(round((m2.get('onset', -1) - sect_i * (_ts_beats_for_measure(_sys_global_idx + grp_idx2) / n_sect)) * 1000) for m2 in _same_sect))
+                _margin = n['r_for_clamp'] + 5 if n.get('r_for_clamp') else max(DISC_R_OVERRIDE, 1) + 5
+                if n_groups_here >= 2:
+                    _ts_here = _ts_beats_for_measure(_sys_global_idx + grp_idx2)
+                    _sec_sz_here = _ts_here / n_sect
+                    _ad_margin = (sect_w - 134.0) / 2.0
+                    if _ad_margin < _margin:
+                        _margin = max(_ad_margin, 5.0)
+                lo = mb_start + sect_i * sect_w + _margin
+                hi = mb_start + (sect_i + 1) * sect_w - _margin
                 if lo <= hi and not (lo <= cx <= hi):
                     n['center_x'] = lo if cx < lo else hi
                     offset = NOTEHEAD_CENTER_OFFSET * (n.get('scale', 2.57143) / 1.25714)
                     n['x'] = n['center_x'] - offset
                     n['_new_tx_str'] = f"{n['x']:.2f}"
+
+        # 13 Set 2026 (bug cerchi sovrapposti): resolver GLOBALE per riga:
+        # dopo il clamp, sposta i centri per garantire la separazione minima
+        # tra dischi adiacenti (r_i + r_j + 18). Itera da sinistra a destra.
+        _row_notes = sorted(
+            [n for n in notes_in_sys if n.get('center_x') is not None],
+            key=lambda n: n['center_x'])
+        _mbounds = sorted(new_measure_bounds)
+        def _measure_end_for(cx):
+            for _bs, _be in _mbounds:
+                if _bs <= cx <= _be:
+                    return _be
+            return None
+        for _sweep in range(2):
+          _row_notes = sorted(_row_notes, key=lambda n: n['center_x'])
+          for _i in range(1, len(_row_notes)):
+            _pl = _row_notes[_i - 1]
+            _pr = _row_notes[_i]
+            _r_l = _pl.get('r_for_clamp') or max(DISC_R_OVERRIDE, 1)
+            _r_r = _pr.get('r_for_clamp') or max(DISC_R_OVERRIDE, 1)
+            _min_d = _r_l + _r_r + 18.0
+            if _pr['center_x'] - _pl['center_x'] < _min_d:
+                _new_x = _pl['center_x'] + _min_d
+                _m_end = _measure_end_for(_pr['center_x'])
+                if _m_end is not None and _new_x <= _m_end - _r_r + 72.0:
+                    _pr['center_x'] = _new_x
+                    _off2 = NOTEHEAD_CENTER_OFFSET * (_pr.get('scale', 2.57143) / 1.25714)
+                    _pr['x'] = _pr['center_x'] - _off2
+                    _pr['_new_tx_str'] = f"{_pr['x']:.2f}"
 
         print(f"    Equalized {len(new_measure_bounds)} measures: widths={[round(m[1]-m[0]) for m in new_measure_bounds]}")
 
@@ -8892,6 +9033,10 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         if os.environ.get('MAIDA_DEBUG_RESTS'):
             print(f"      [rest-debug] DECOLLIDE called: {len(circles)} circles, systems={len(systems)}")
 
+        _occupied_rests = set()
+        for m in rest_pat.finditer(svg_str):
+            _orx, _orsx = float(m.group(3)), float(m.group(1))
+            _occupied_rests.add(_orx + 48.0 * _orsx)
         rest_entries = []
         for m in rest_pat.finditer(svg_str):
             rx, ry, rsc = float(m.group(3)), float(m.group(4)), float(m.group(2))
@@ -8967,7 +9112,25 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 if os.environ.get('MAIDA_DEBUG_RESTS'):
                     print(f"      [rest-debug] DECOLLIDE no-cands rest@{rx:.0f} measure=[{m_start:.0f},{m_end:.0f}]")
                 continue  # nessuno spazio libero nella battuta: non muovere
+            # 13 Set 2026 (bug pause impilate): mai sovrapporre due pause nella
+            # stessa posizione — la candidatura deve tenere conto anche delle
+            # pause già riposizionate (occupied), non solo dei cerchi.
             best = min(cands, key=lambda c: abs(c - center))
+            for _oc in list(_occupied_rests):
+                if abs(_oc - best) < 2 * half_w + 18:
+                    # troppo vicino a una pausa già piazzata: prova altri candidati
+                    _alts = [c for c in cands
+                             if abs(_oc - c) >= 2 * half_w + 18]
+                    if _alts:
+                        best = min(_alts, key=lambda c: abs(c - center))
+                    else:
+                        best = None
+                    break
+            if best is None:
+                if os.environ.get('MAIDA_DEBUG_RESTS'):
+                    print(f"      [rest-debug] DECOLLIDE skip-stack rest@{rx:.0f} (tutti i candidati occupati)")
+                continue
+            _occupied_rests.add(best)
             new_tx = best - half_w
             if os.environ.get('MAIDA_DEBUG_RESTS'):
                 print(f"      [rest-debug] DECOLLIDE rest@({rx:.0f},{ry:.0f}) → {new_tx:.0f} (center {best:.0f}, measure [{m_start:.0f},{m_end:.0f}])")
@@ -8984,6 +9147,36 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         modified, _n_decol = _rest_circle_decollide(modified)
         if _n_decol:
             print(f"    Anti-collisione pause-cerchi: {_n_decol} pause spostate")
+
+    def _rest_dedup(svg_str):
+        # 13 Set 2026 (bug pause impilate): pass finale — rimuovi pause sovrapposte
+        # ad altre pause (stessa riga, |dx| < 150). Mantieni la più grande (o la 1ª).
+        rest_pat2 = re.compile(r'<path class="Rest" transform="matrix\(([\d.\-]+),0\.0,0\.0,([\d.\-]+),([\d.\-]+),([\d.\-]+)\)"')
+        entries = []
+        for m in rest_pat2.finditer(svg_str):
+            s, tx, ty = float(m.group(1)), float(m.group(3)), float(m.group(4))
+            entries.append([m, s, tx, ty, m.group(0)])
+        remove_spans = set()
+        for i in range(len(entries)):
+            if i in remove_spans:
+                continue
+            for j in range(i + 1, len(entries)):
+                if j in remove_spans:
+                    continue
+                _, s1, x1, y1, t1 = entries[i]
+                _, s2, x2, y2, t2 = entries[j]
+                if abs(y1 - y2) < 60 and abs(x1 - x2) < 150:
+                    # rimuovi il glyph più piccolo (o il secondo)
+                    rm = j if s2 <= s1 else i
+                    remove_spans.add(rm)
+        if remove_spans:
+            for k in sorted(remove_spans, reverse=True):
+                svg_str = svg_str.replace(entries[k][4], '', 1)
+            print(f"    Dedup pause: {len(remove_spans)} pause duplicate rimosse")
+        return svg_str
+
+    if rhythm_mode:
+        modified = _rest_dedup(modified)
     
     # 2f2. Enlarge NoteDots (augmentation dots for dotted notes AND rests)
     # MuseScore renders dots as <path class="NoteDot"> with small scale.

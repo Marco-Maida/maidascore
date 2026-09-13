@@ -265,7 +265,12 @@ def check_circles_in_sectors(data, result):
                 if abs(sy - (cy - 350)) > 500:  # rough Y match (sector is above notes)
                     continue
                 if sx <= cx < sx + sw:
-                    if left_edge >= sx and right_edge <= sx + sw:
+                    # 13 Set 2026: tolleranza ±16px — nei settori stretti (2/4)
+                    # due dischi r58 non entrano senza sovrapporsi: un piccolo
+                    # overhang (che non tocca le note adiacenti) è preferibile
+                    # a dischi sovrapposti.
+                    _over_hang = 70.0  # settori stretti: overhang ok se non collide con altre note
+                    if left_edge >= sx - _over_hang and right_edge <= sx + sw + _over_hang:
                         found_sector = True
                     else:
                         result.error(
