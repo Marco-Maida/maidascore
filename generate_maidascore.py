@@ -1791,16 +1791,12 @@ def make_accessible_mscz(input_mscz, output_mscz, part_index=0, rhythm_mode=Fals
                 group_notes = note_counts[sys_start:]
                 print(f"      M{sys_start+1}-M{len(note_counts)} ({len(group_notes)} meas, {sum(group_notes)} notes: {group_notes})")
             
-            # 13 Set 2026 (righi pieni, richiesta Marco): in modalità rhythm NON
-            # inserire LayoutBreak. Il packing manuale (6 battute 4/4 / 12 battute
-            # 2/4) spesso non entra nella larghezza pagina di MuseScore, che quindi
-            # spezza PRIMA del break → battute orfane (es. M7-M11 + M12 sola).
-            # Il wrapping naturale di MuseScore riempie sempre il rigo (5-14
-            # battute a seconda della densità) e non produce mai righi vuoti.
-            if rhythm_mode:
-                break_set = set()      # nessun line break manuale
-            else:
-                break_set = set(break_indices)
+            # 13 Set 2026 (richiesta Marco: 20 settori grigi/rigo): in modalità
+            # rhythm INSERIRE i LayoutBreak dal packing a 20 settori. Il wrapping
+            # naturale di MuseScore riempiva solo 5-10 battute a seconda della
+            # densità; con il break forzato l'equalizzatore riscala comunque il
+            # gruppo a 335px/settore, quindi anche i righi densi restano leggibili.
+            break_set = set(break_indices)
             # Insert LayoutBreak after the specified measures
             # Also insert a PAGE break after the 5th system to split across 2 pages
             measure_count = [0]  # mutable counter
@@ -6316,6 +6312,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             # REALE della battuta equalizzata, altrimenti sfora la barline.
             sector_width = m_width / n_sectors_m if n_sectors_m > 0 else BEAT_WIDTH
 
+
             for q in range(n_sectors_m):
                 bg_color = BG_COLOR_LIGHT if global_q % 2 == 0 else BG_COLOR_DARK
                 q_x = m_start + q * sector_width
@@ -9927,8 +9924,8 @@ def main():
         # 13 Set 2026 (richiesta Marco): margine sinistro ulteriormente ridotto
         # con keysig/tempo rimpiccioliti. Area musicale 1500→9540 = 8040px.
         globals()['UNIFORM_MUSIC_START'] = 1500
-        # 6 battute 4/4 per rigo (24 settori) + 12 battute 2/4.
-        globals()['_MAX_SECTORS_OVERRIDE'] = 24
+        # 20 settori grigi per rigo (5 battute 4/4) — richiesta Marco 13 Set 2026.
+        globals()['_MAX_SECTORS_OVERRIDE'] = 20
         globals()['UNIFORM_MEASURE_WIDTH'] = 335 * 4  # 1340px per battuta 4/4
         globals()['BEAT_WIDTH'] = 335  # 335px per settore grigio
         # 12 Set 2026 (richiesta Marco): dischi ridotti del 50% in modalità
