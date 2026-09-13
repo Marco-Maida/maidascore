@@ -9807,9 +9807,20 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             vb_x, vb_y, vb_w, vb_h = (float(vb_match.group(i)) for i in range(1, 5))
             CENTERING_SHIFT = 100  # 13 Set 2026: ridotto (era 500) — margini laterali minimi
             new_vb_x = vb_x + CENTERING_SHIFT
+            # 13 Set 2026: il rendering avviene su pagina larga 16.5" (per far
+            # entrare 10 battute 2/4 per rigo senza spezzare), ma l'output
+            # finale deve essere A4 (richiesta Marco). La musica equalizzata
+            # arriva a STAFF_END_X=9540 < 9924, quindi basta restringere la
+            # viewBox a 8.27"×1200px/in = 9924px. Title e footer (che si
+            # centrano sul viewBox) vengono dopo, quindi si centrano da soli.
+            if vb_w > 9924:
+                vb_w = 9924.0
             modified = modified.replace(
                 vb_match.group(0),
                 f'viewBox="{new_vb_x:.1f} {vb_y:.1f} {vb_w:.1f} {vb_h:.1f}"')
+            # attributo width fisico → A4
+            modified = re.sub(r'(<svg[^>]*\swidth=")[\d.]+mm(")',
+                             r'\g<1>210mm\g<2>', modified, count=1)
     
     # in modalità rhythm, RIMUOVI FISICAMENTE le StaffLines
     # invece di renderle solo trasparenti. Alcuni visualizzatori PDF mostrano
