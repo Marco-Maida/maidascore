@@ -2968,16 +2968,34 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
         if mmrest_groups:
             _mmrest_set_local = set(gs for gs, _gc in mmrest_groups)
         
+        # 13 Set 2026 (bug "battuta di pausa in più"): la cella tratteggiata
+        # dell'MMRest deve coprire TUTTE le battute del gruppo (start+count),
+        # non solo la prima. Prima del fix, M28 (dashed "2 battute") + M29
+        # (celle nere disegnate come battuta normale) sembravano una pausa
+        # extra dopo le "2 battute di pausa".
+        _mmrest_group_map_local = dict(mmrest_groups) if mmrest_groups else {}
+        _mmrest_skip_measures = set()
+        for _gs, _gc in _mmrest_group_map_local.items():
+            _mmrest_skip_measures.update(range(_gs + 1, _gs + _gc))
         for m_idx, (m_start, m_end) in enumerate(measures):
             global_measure_idx = system_start_measure + m_idx
+            if global_measure_idx in _mmrest_skip_measures:
+                # battuta interna di un MMRest già disegnato: salta
+                continue
             if global_measure_idx in _mmrest_set_local:
                 # battuta MMRest dentro un sistema misto: cella tratteggiata
+                # che copre l'intero gruppo (start + count battute)
                 mmrest_count = 1
                 for gs, gc in mmrest_groups:
                     if gs == global_measure_idx:
                         mmrest_count = gc
                         break
-                mmrest_width = m_end - m_start
+                # estende la cella alle battute successive del gruppo se presenti
+                mmrest_end = m_end
+                for _ in range(1, mmrest_count):
+                    if m_idx + _ < len(measures):
+                        mmrest_end = measures[m_idx + _][1]
+                mmrest_width = mmrest_end - m_start
                 tavola_svg += (f'<rect x="{m_start:.1f}" y="{tavola_top:.1f}" '
                               f'width="{mmrest_width:.1f}" height="{tavola_row_height}" '
                               f'fill="white" rx="8" '
