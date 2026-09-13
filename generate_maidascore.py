@@ -694,6 +694,15 @@ def compute_system_breaks(note_counts, max_notes=MAX_NOTES_PER_SYSTEM,
                     end_idx = j - 1
                     count = j - i
                     break
+            # 13 Set 2026 (battuta orfana finale): se questo è l'ultimo sistema
+            # e la battuta successiva (ultima del brano) resterebbe da sola
+            # in un sistema a sé, assorbila qui anche se eccede il limite
+            # (il raggio finale 24 settori entra comunque nella pagina).
+            if i + count == n - 1 and end_idx == i + count - 1:
+                end_idx = i + count  # = n - 1, ultima battuta del brano
+                count += 1
+                if i + count < n:  # pragma: no cover (matematicamente falso)
+                    pass
             if i + count < n:  # don't break after the last measure
                 breaks.append(end_idx)
             i += count
@@ -1884,7 +1893,16 @@ def make_accessible_mscz(input_mscz, output_mscz, part_index=0, rhythm_mode=Fals
         # 13 Set 2026: pagePrintableWidth allargato SOLO in modalità ritmica
         # (richiesta Marco). La notazione completa mantiene il default 7.0889".
         if rhythm_mode:
-            mss = re.sub(r'<pagePrintableWidth>[\d.]+</pagePrintableWidth>', '<pagePrintableWidth>7.9</pagePrintableWidth>', mss)
+            # 13 Set 2026 (20 settori/rigo): il rendering con 20 settori richiede
+            # larghezza minima per battuta che MuseScore non può comprimere oltre
+            # (~1228px per battuta 2/4 densa). Con pagina A4 (7.9") i righi da 10
+            # battute 2/4 si spezzano (8+2, 9+1). Il post-processore equalizza
+            # comunque tutte le posizioni x a UNIFORM_MEASURE_WIDTH, quindi la
+            # larghezza di rendering è IRRELEVANTE per l'output finale: basta
+            # che MuseScore tenga tutte le battute di un rigo su una riga.
+            # Pagina larga 16.5" = le 10 battute entrano comodamente.
+            mss = re.sub(r'<pageWidth>[\d.]+</pageWidth>', '<pageWidth>16.5</pageWidth>', mss)
+            mss = re.sub(r'<pagePrintableWidth>[\d.]+</pagePrintableWidth>', '<pagePrintableWidth>16.1</pagePrintableWidth>', mss)
         mss = re.sub(r'<pageHeight>[\d.]+</pageHeight>', f'<pageHeight>{PAGE_HEIGHT}</pageHeight>', mss)
         mss = re.sub(r'<staffLineWidth>[\d.]+</staffLineWidth>', 
                      f'<staffLineWidth>{STAFF_LINE_WIDTH}</staffLineWidth>', mss)
@@ -3523,7 +3541,8 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
 
 
 def build_system_layout(systems, barlines, time_sigs_per_measure, measure_offset,
-                        mmrest_groups, uniform=UNIFORM_MEASURES_PER_SYSTEM):
+                        mmrest_groups, uniform=UNIFORM_MEASURES_PER_SYSTEM,
+                        expected_measures=None):
     """Single Source of Truth: calcola la partizione battute→sistemi UNA volta.
 
     Architettura Fable 5 (12 Ago 2026): il numero di battute per sistema viene
@@ -3605,8 +3624,25 @@ def build_system_layout(systems, barlines, time_sigs_per_measure, measure_offset
     # è un MMRest, il sistema contiene 1 visual measure che copre N battute.
     _m = measure_offset
     layout = {}
+    # 13 Set 2026: il piano LayoutBreak (verificato post-render con tolleranza
+    # ±1) è la fonte autorevole del numero di battute per sistema: il conteggio
+    # barline fallisce sui righi 2/4 densi (falso positivo "barline iniziale").
+    # expected_measures è il piano COMPLETO del brano (battute per sistema,
+    # in ordine): skippa le battute già assegnate alle pagine precedenti e
+    # allinea i restanti sistemi in ordine di Y.
+    _plan_list = [p for p in (expected_measures or [])]
+    # Skippa i sistemi delle pagine precedenti: consuma sistemi finché
+    # la somma cumulativa raggiunge measure_offset.
+    _consumed = 0
+    while _plan_list and measure_offset > 0 and _consumed < measure_offset:
+        _consumed += _plan_list.pop(0)
+    _plan_iter = iter(_plan_list)
     for sys_key in sorted_sys_keys:
         n_meas = sys_n_measures[sys_key]
+        if expected_measures is not None:
+            _exp = next(_plan_iter, None)
+            if _exp is not None and _exp <= 16:
+                n_meas = _exp
 
         # Controlla se questo sistema inizia con un MMRest
         if _m in _mmrest_set:
@@ -3694,7 +3730,7 @@ def _note_final_x(n, all_notes_in_sys, current_measure_idx, new_m_start, new_m_w
     return center_x
 
 
-def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False, title_text=None, part_text=None, measure_offset=0, initial_rest_measures=0, mmrest_groups=None, rhythm_mode=False, key_sig_changes_dict=None):
+def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False, title_text=None, part_text=None, measure_offset=0, initial_rest_measures=0, mmrest_groups=None, rhythm_mode=False, key_sig_changes_dict=None, expected_system_plan=None):
     parsed = parse_svg(svg_content)
     systems = parsed['systems']
     barlines = parsed['barlines_by_system']
@@ -3791,7 +3827,8 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         _time_sigs_pm = note_info.get('time_sigs_per_measure', {}) if note_info else {}
         _system_layout = build_system_layout(
             systems, barlines, _time_sigs_pm, measure_offset,
-            mmrest_groups, uniform=UNIFORM_MEASURES_PER_SYSTEM)
+            mmrest_groups, uniform=UNIFORM_MEASURES_PER_SYSTEM,
+            expected_measures=expected_system_plan)
         
         # Track which mscz notes have been matched (to handle duplicate onsets)
         matched_mscz_indices = set()
@@ -10033,12 +10070,8 @@ def main():
         # 13 Set 2026 (richiesta Marco): margine sinistro ulteriormente ridotto
         # con keysig/tempo rimpiccioliti. Area musicale 1500→9540 = 8040px.
         globals()['UNIFORM_MUSIC_START'] = 1500
-        # 20 settori grigi per rigo (5 battute 4/4) — richiesta Marco 13 Set 2026.
-        # 13 Set 2026 (bug "battute da sole"): 16 settori (8 battute 2/4,
-        # 4 battute 4/4). A 20 settori MuseScore spezza i righi più densi
-        # (M90-99 = 10 battute 2/4 non entra: 8 + 2 orfane). A 16 settori
-        # tutti i sistemi entrano, la tavola sonora allinea.
-        globals()['_MAX_SECTORS_OVERRIDE'] = 16
+        # 20 settori grigi per rigo — richiesta Marco 13 Set 2026.
+        globals()['_MAX_SECTORS_OVERRIDE'] = 20
         globals()['UNIFORM_MEASURE_WIDTH'] = 335 * 4  # 1340px per battuta 4/4
         globals()['BEAT_WIDTH'] = 335  # 335px per settore grigio
         # 12 Set 2026 (richiesta Marco): dischi ridotti del 50% in modalità
@@ -10206,6 +10239,11 @@ def main():
             sys.exit(1)
     print()
 
+    # 13 Set 2026: piano LayoutBreak del rendering finale — fonte autorevole
+    # del numero di battute per sistema (il conteggio barline del post SVG
+    # fallisce sui righi 2/4 densi). Passato a process_svg.
+    _expected_plan = _planned_measures_per_system()
+
     # Step 4: Post-process SVG
     print("[4/5] Post-processing SVG (colori, nomi, sfondi, rettangoli)...")
     processed_svgs = []
@@ -10236,6 +10274,7 @@ def main():
         # Il titolo solo sulla prima pagina (title_text=None per le successive)
         processed, meas_count = process_svg(svg, note_info, note_offset=note_offset,
                                 is_first_page=(i == 0),
+                                expected_system_plan=_expected_plan,
                                 title_text=extract_score_title(original_input) if i == 0 else None,
                                 part_text=extract_score_author(original_input) if i == 0 else None,
                                 measure_offset=measure_offset,
