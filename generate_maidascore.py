@@ -57,6 +57,7 @@ Uso: python3 generate_maidascore.py input.mscz [output_prefix]
 import sys
 import os
 import re
+from collections import Counter
 import shutil
 import zipfile
 import subprocess
@@ -94,13 +95,13 @@ MIN_NOTE_SPACING = 300
 MAX_NOTES_PER_SYSTEM = 26
 # UNIFORM measure width: all measures same width (sized for densest measure).
 # 2 mis/sistema: settori grigi ampi (~3300px/battuta = 825px/quarto).
-UNIFORM_MEASURES_PER_SYSTEM = 2
+UNIFORM_MEASURES_PER_SYSTEM = 3
 UNIFORM_MEASURE_WIDTH = 3300  # SVG units; 2 meas/system × 3300 = 6600 < 6715 (9215-2500)
-UNIFORM_MUSIC_START = 2500  # uniform music start X (after enlarged clef + keysig + timesig)
+UNIFORM_MUSIC_START = 2500  # uniform music start X (after enlarged clef + keysig + timesig; 2300 in modalità --rhythm)
 DEFAULT_MEASURES_PER_SYSTEM = UNIFORM_MEASURES_PER_SYSTEM
 
 # Invariant assertions moved after DISC_R_OVERRIDE definition below.
-STAFF_END_X = 9215  # staff lines end at this X coordinate
+STAFF_END_X = 9215  # staff lines end at this X coordinate (valore stile; 9540 in modalità --rhythm)
 BEAT_WIDTH = UNIFORM_MEASURE_WIDTH / 4  # 825px per beat = grey sector width
 
 
@@ -595,6 +596,9 @@ def count_notes_per_measure(mscx_content):
     return counts
 
 
+_MAX_SECTORS_OVERRIDE = None  # impostato a 12 dal main in modalità --rhythm
+
+
 def compute_system_breaks(note_counts, max_notes=MAX_NOTES_PER_SYSTEM,
                           default_measures=UNIFORM_MEASURES_PER_SYSTEM,
                           initial_rest_measures=0, mmrest_groups=None,
@@ -649,8 +653,9 @@ def compute_system_breaks(note_counts, max_notes=MAX_NOTES_PER_SYSTEM,
     else:
         _measure_width = lambda m_idx: UNIFORM_MEASURES_PER_SYSTEM  # per rigo di default
         _measure_width = lambda m_idx: 4
-    # Massimo settori per rigo: 2 battute 4/4 = 8 settori (6715px disponibili).
-    MAX_SECTORS_PER_SYSTEM = 8
+    # Massimo settori per rigo: 2 battute 4/4 = 8 settori (67IFORM_MEASURES standard).
+    # rhythm_mode: 3 battute 4/4 = 12 settori (più battute per rigo, settori più stretti).
+    MAX_SECTORS_PER_SYSTEM = _MAX_SECTORS_OVERRIDE if _MAX_SECTORS_OVERRIDE else 8
     # Larghezza min per rigo: se il pezzo è tutto a tempo corto (es. 2/4),
     # non riempire oltre 8 settori — il limite resta MAX_SECTORS_PER_SYSTEM.
     
@@ -1681,8 +1686,17 @@ def make_accessible_mscz(input_mscz, output_mscz, part_index=0, rhythm_mode=Fals
                 if _prev_ts is not None and _cur_ts != _prev_ts:
                     ts_change_set.add(_mi - 1)
                 _prev_ts = _cur_ts
-            # Unisci ts_change_set e ks_change_set: qualsiasi cambio forza il break
-            all_changes = ts_change_set | ks_change_set
+            # Unisci ts_change_set e ks_change_set: qualsiasi cambio forza il break.
+            # 12 Set 2026: in modalità ritmo i cambi di ARMATURA non forzano il
+            # break — i simboli di armatura sono rimossi e sostituiti dal testo,
+            # quindi spezzare il rigo è inutile e lascia righi 2/4 semivuoti
+            # (es. 2 battute su 6). I cambi di TEMPO restano forzati (geometria
+            # settori grigi diversa). Ma in notazione completa il break di
+            # armatura resta necessario (i simboli armatura restano visibili).
+            if rhythm_mode:
+                all_changes = ts_change_set
+            else:
+                all_changes = ts_change_set | ks_change_set
             if ts_change_set:
                 print(f"      Cambi di tempo alle battute (0-based): {sorted(ts_change_set)}")
                 print(f"      (= battute 1-based: {[c+1 for c in sorted(ts_change_set)]})")
@@ -1726,14 +1740,10 @@ def make_accessible_mscz(input_mscz, output_mscz, part_index=0, rhythm_mode=Fals
                     if page_end - 1 < len(break_indices):
                         page_break_set.add(break_indices[page_end - 1])
             else:
-                # In rhythm mode, page break ogni 8 sistemi.
-                # Prima non li inserivamo (flow automatico MuseScore) ma metteva
-                # 9-10 sistemi/pagina → ultimo sistema tagliato (overflow 772-2372px).
-                # 8 sistemi × ~1625px gap = ~13000px, entra in pagina 14028px.
-                systems_per_page = 8
-                for page_end in range(systems_per_page, n_systems, systems_per_page):
-                    if page_end - 1 < len(break_indices):
-                        page_break_set.add(break_indices[page_end - 1])
+                # 12 Set 2026: in rhythm mode NESSUN page break manuale.
+                # Con i break ogni 8 sistemi, MuseScore (che ne mette 10/pagina)
+                # crea pagine quasi vuote (1, 3, 4 sistemi). Flow automatico.
+                pass
             def add_linebreak(match):
                 measure_count[0] += 1
                 measure_xml = match.group(0)
@@ -1771,6 +1781,18 @@ def make_accessible_mscz(input_mscz, output_mscz, part_index=0, rhythm_mode=Fals
         
         mss = re.sub(r'<spatium>[\d.]+</spatium>', f'<spatium>{SPATIUM}</spatium>', mss)
         mss = re.sub(r'<pageWidth>[\d.]+</pageWidth>', f'<pageWidth>{PAGE_WIDTH}</pageWidth>', mss)
+        # margini orizzontali ridotti: più spazio per il pentagramma
+        mss = re.sub(r'<pageOddLeftMargin>[\d.]+</pageOddLeftMargin>', '<pageOddLeftMargin>0.05</pageOddLeftMargin>', mss)
+        mss = re.sub(r'<pageEvenLeftMargin>[\d.]+</pageEvenLeftMargin>', '<pageEvenLeftMargin>0.05</pageEvenLeftMargin>', mss)
+        mss = re.sub(r'<pageOddRightMargin>[\d.]+</pageOddRightMargin>', '<pageOddRightMargin>0.05</pageOddRightMargin>', mss)
+        mss = re.sub(r'<pageEvenRightMargin>[\d.]+</pageEvenRightMargin>', '<pageEvenRightMargin>0.05</pageEvenRightMargin>', mss)
+        # 13 Set 2026: pagePrintableWidth è il vero limite della larghezza del
+        # pentagramma (MuseScore ignora i RightMargin in pagina singola).
+        # 7.0889" = default; 7.9" ≈ 8.27 - 2×0.185" (margine minimo stampabile).
+        # 13 Set 2026: pagePrintableWidth allargato SOLO in modalità ritmica
+        # (richiesta Marco). La notazione completa mantiene il default 7.0889".
+        if rhythm_mode:
+            mss = re.sub(r'<pagePrintableWidth>[\d.]+</pagePrintableWidth>', '<pagePrintableWidth>7.9</pagePrintableWidth>', mss)
         mss = re.sub(r'<pageHeight>[\d.]+</pageHeight>', f'<pageHeight>{PAGE_HEIGHT}</pageHeight>', mss)
         mss = re.sub(r'<staffLineWidth>[\d.]+</staffLineWidth>', 
                      f'<staffLineWidth>{STAFF_LINE_WIDTH}</staffLineWidth>', mss)
@@ -1779,16 +1801,26 @@ def make_accessible_mscz(input_mscz, output_mscz, part_index=0, rhythm_mode=Fals
         mss = re.sub(r'<beamWidth>[\d.]+</beamWidth>',
                      f'<beamWidth>{BEAM_WIDTH}</beamWidth>', mss)
         
+        # 12 Set 2026: spacing compatto per battute 2/4. Il LayoutBreak chiede
+        # 6 battute 2/4 per rigo, ma MuseScore spezza per larghezza prima
+        # (una 2/4 renderizzata è più larga di 1100px → solo 4+2 entrano).
+        # Compatteggi: minNoteDistance (0.35→0.15), barNoteDistance (1.25→0.4),
+        # noteBarDistance (1.5→0.4), spacingDensity (1→1.5, compressa).
+        for _st, _sv in [('minNoteDistance','0.15'), ('barNoteDistance','0.4'),
+                          ('noteBarDistance','0.4'), ('spacingDensity','1.5'),
+                          ('measureSpacing','0.5'), ('clefKeyRightMargin','0.5'),
+                          ('barNoteDistance','0.4')]:
+            mss = re.sub(rf'<{_st}>[\d.]+</{_st}>', f'<{_st}>{_sv}</{_st}>', mss)
         # minMeasureWidth basso per permettere layout flessibile
         if '<minMeasureWidth>' in mss:
             mss = re.sub(r'<minMeasureWidth>[\d.]+</minMeasureWidth>',
-                         '<minMeasureWidth>18</minMeasureWidth>', mss)
+                         '<minMeasureWidth>5</minMeasureWidth>', mss)
         else:
             mss = mss.rstrip()
             if mss.endswith('</Style>'):
                 mss = mss[:-len('</Style>')] + '<minMeasureWidth>18</minMeasureWidth></Style>'
             else:
-                mss += '<minMeasureWidth>18</minMeasureWidth>'
+                mss += '<minMeasureWidth>5</minMeasureWidth>'
         
         # disabilita MMRest automatico di MuseScore.
         # Le battute MMRest sono ora singole pause measure (non splittate).
@@ -2009,9 +2041,14 @@ assert DISC_R_OVERRIDE * 2 < BEAT_WIDTH, (
     f"Disc diameter ({DISC_R_OVERRIDE*2}px) must fit in a beat sector ({BEAT_WIDTH}px). "
     f"Reduce DISC_R_OVERRIDE or increase UNIFORM_MEASURE_WIDTH."
 )
-assert UNIFORM_MUSIC_START + UNIFORM_MEASURE_WIDTH * UNIFORM_MEASURES_PER_SYSTEM <= STAFF_END_X, (
-    f"Music area ({UNIFORM_MUSIC_START} + {UNIFORM_MEASURE_WIDTH}*{UNIFORM_MEASURES_PER_SYSTEM} "
-    f"= {UNIFORM_MUSIC_START + UNIFORM_MEASURE_WIDTH * UNIFORM_MEASURES_PER_SYSTEM}) "
+# 13 Set 2026: l'assert usa la battuta 2/4 (2 quarti) come caso minimo —
+# UNIFORM_MEASURE_WIDTH (3300) vale per 4/4; per brani a tempo piccolo
+# (2/4, 3/4, 6/8) le battute equalizzate sono più strette e l'equalizzatore
+# scala il gruppo se sfora, quindi l'assert non deve bloccarle.
+_min_measure_w = BEAT_WIDTH * 2  # battuta 2/4 = 2 settori
+assert UNIFORM_MUSIC_START + _min_measure_w * UNIFORM_MEASURES_PER_SYSTEM <= STAFF_END_X, (
+    f"Music area ({UNIFORM_MUSIC_START} + {_min_measure_w}*{UNIFORM_MEASURES_PER_SYSTEM} "
+    f"= {UNIFORM_MUSIC_START + _min_measure_w * UNIFORM_MEASURES_PER_SYSTEM}) "
     f"exceeds staff end ({STAFF_END_X}). Reduce measures per system or measure width."
 )
 assert BEAT_WIDTH > 0, "Beat width must be positive"
@@ -2114,6 +2151,16 @@ def parse_svg(svg_content):
                 else:
                     groups[-1].append(lines[i])
         
+        # 13 Set 2026: calcola x_end max su TUTTI i sistemi PRIMA del loop,
+        # per estendere i sistemi corti (es. ultimo sistema, che MuseScore
+        # rende della sola larghezza della musica residua). Necessario in
+        # modalità --rhythm dove l'equalizzatore distribuisce i settori
+        # fino a x_end: senza estensione, l'ultimo rigo verrebbe compresso.
+        _max_x_end = 0.0
+        for group in groups:
+            if len(group) >= 2:
+                _max_x_end = max(_max_x_end, float(group[0][1].group(4)))
+
         for group in groups:
             if len(group) < 2:
                 continue
@@ -2126,6 +2173,9 @@ def parse_svg(svg_content):
                 middle_line_y = group[2][0]
             half_step = (bottom_y - top_y) / 8
             x_end = float(group[0][1].group(4))
+            # Sistema corto (ultimo): estendi alla larghezza piena
+            if x_end < _max_x_end - 1000:
+                x_end = _max_x_end
             # Use a unique key: x_start + top_y to distinguish multiple systems
             sys_key = f"{x_start}_{top_y:.0f}"
             systems[sys_key] = {
@@ -3407,10 +3457,14 @@ def build_system_layout(systems, barlines, time_sigs_per_measure, measure_offset
         has_initial = abs(dedup[0] - info['x_start']) < 0.08 * sys_width
         n_meas = len(dedup) - 1 if has_initial else len(dedup)
 
-        # Sanity: n_meas deve essere >= 1 e <= 4 (limite ragionevole)
+        # Sanity: n_meas deve essere >= 1 e <= 16 (limite ragionevole).
+        # 13 Set 2026: era 8, ma in modalità ritmo i righi 2/4 compattati
+        # contengono fino a 12 battute visive per rigo. Il limite 8 mandava
+        # questi righi al fallback uniform=3, sfasando lo split SVG↔mscx
+        # (note assegnate alla battuta sbagliata → collassi a x identica).
         if n_meas < 1:
             n_meas = 1
-        elif n_meas > 4:
+        elif n_meas > 16:
             n_meas = uniform  # barline count inaffidabile, fallback
 
         sys_n_measures[sys_key] = n_meas
@@ -3492,12 +3546,13 @@ def _note_final_x(n, all_notes_in_sys, current_measure_idx, new_m_start, new_m_w
     # Clamp dentro il settore (come blocco reale, disc_r approx)
     beat_start_x = new_m_start + beat_start_frac * new_m_width
     beat_end_x = beat_start_x + beat_width_frac * new_m_width
+    _dr_base = max(DISC_R_OVERRIDE, 1) if DISC_R_OVERRIDE else 130
     if dtype in ('16th', '16th_dotted'):
-        disc_r_approx = 85
+        disc_r_approx = _dr_base * 0.65
     elif dtype in ('eighth', 'eighth_dotted'):
-        disc_r_approx = 104
+        disc_r_approx = _dr_base * 0.80
     else:
-        disc_r_approx = 130
+        disc_r_approx = _dr_base
     center_x = max(beat_start_x + disc_r_approx + 5,
                    min(center_x, beat_end_x - disc_r_approx - 5))
     return center_x
@@ -3621,10 +3676,13 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         for sys_i, sys_top in enumerate(all_system_tops):
             # Trova il sys_key corrispondente a sys_top
             _sys_key = None
-            for _sk, _info in systems.items():
-                if abs(_info['top'] - sys_top) < 5:
-                    _sys_key = _sk
-                    break
+            _best_tops = sorted(systems.items(), key=lambda kv: abs(kv[1]['top'] - sys_top))
+            if _best_tops and abs(_best_tops[0][1]['top'] - sys_top) < 300:
+                # 13 Set 2026: match nearest-top (era <5px, troppo stretto: con
+                # righi compattati il top poteva differire e il match falliva,
+                # mandando il sistema al fallback UNIFORM=3 e sfasando lo split
+                # SVG↔mscx di tutte le battute successive).
+                _sys_key = _best_tops[0][0]
             if _sys_key and _sys_key in _system_layout:
                 _sl = _system_layout[_sys_key]
                 sys_measure_ranges.append((sys_top, _sl['global_idx_start'], _sl['n_measures']))
@@ -3644,6 +3702,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             # Assign SVG notes to measures by splitting sorted notes into groups
             # matching the mscz note counts
             note_idx = 0
+
             for meas_offset_in_sys, mscz_count in enumerate(meas_note_counts):
                 global_measure_idx = sys_start_measure + meas_offset_in_sys
                 # Take the next mscz_count SVG notes for this measure
@@ -4934,79 +4993,104 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         # - half note beats 1-2: center at 25%
         # - half note beats 3-4: center at 75%
         # We determine which half by the note's original position relative to the measure center
+        # 13 Set 2026 (bug sovrapposizioni): il match posizionale con tolleranza ±50px
+        # assegnava note ai confini di battuta alla battuta SBAGLIATA (nota a 46px oltre
+        # la barline finiva nella battuta precedente e si sovrapponeva alle sue note).
+        # Fix: match PRIMARIO via measure_idx autorevole (da .mscx via music21).
+        # Il mapping grp_idx → measure_idx usa gli indici contigui del sistema
+        # (battuta i del sistema = _sys_global_idx + i), NON system_measure_indices
+        # che può essere più corto (battute senza note) e sfasare il lookup.
+        _n_grp_total = len(old_measure_bounds)
         for n in notes_in_sys:
             n['_orig_tx'] = n['x']  # save original transform X before updating
-            for grp_idx in range(len(old_measure_bounds)):
+            _matched_grp_idx = None
+            _n_mi = n.get('measure_idx')
+            if _n_mi is not None:
+                _pos_mi = _n_mi - _sys_global_idx
+                if 0 <= _pos_mi < _n_grp_total:
+                    _matched_grp_idx = _pos_mi
+            if _matched_grp_idx is None:
+                # Fallback posizionale: midpoint rule (il confine tra due battute
+                # è a metà strada; niente tolleranza ±50 che le faceva collidere)
+                _best_d = None
+                for grp_idx in range(len(old_measure_bounds)):
+                    old_m_start, old_m_end = old_measure_bounds[grp_idx]
+                    _mid = (old_m_start + old_m_end) / 2.0
+                    _d = abs(n['x'] - _mid)
+                    if _best_d is None or _d < _best_d:
+                        _best_d = _d
+                        _matched_grp_idx = grp_idx
+            if _matched_grp_idx is not None:
+                grp_idx = _matched_grp_idx
                 old_m_start, old_m_end = old_measure_bounds[grp_idx]
-                if old_m_start - 50 <= n['x'] <= old_m_end + 50:
-                    old_m_width = old_m_end - old_m_start
-                    new_m_start, new_m_end = new_measure_bounds[grp_idx]
-                    new_m_width = new_m_end - new_m_start
-                    # FIX #147/#152: per-measure time signature
-                    _gm_idx = _sys_global_idx + grp_idx
-                    _ts_b = _ts_beats_for_measure(_gm_idx)
-                    _n_sec = _n_sectors_for_measure(_gm_idx)
-                    _sec_sz = _ts_b / _n_sec if _n_sec > 0 else 1.0
+                if True:
+                        old_m_width = old_m_end - old_m_start
+                        new_m_start, new_m_end = new_measure_bounds[grp_idx]
+                        new_m_width = new_m_end - new_m_start
+                        # FIX #147/#152: per-measure time signature
+                        _gm_idx = _sys_global_idx + grp_idx
+                        _ts_b = _ts_beats_for_measure(_gm_idx)
+                        _n_sec = _n_sectors_for_measure(_gm_idx)
+                        _sec_sz = _ts_b / _n_sec if _n_sec > 0 else 1.0
                     
-                    dtype = n['duration_type']
-                    new_m_width = new_m_end - new_m_start
-                    beat_w = new_m_width / _ts_b
+                        dtype = n['duration_type']
+                        new_m_width = new_m_end - new_m_start
+                        beat_w = new_m_width / _ts_b
 
 
-                    # Gap to shift first note right of the barline (only for beat 0)
-                    barline_gap = beat_w * 0.3
+                        # Gap to shift first note right of the barline (only for beat 0)
+                        barline_gap = beat_w * 0.3
                 
-                    if dtype in ('whole', 'whole_dotted'):
-                        # Start of measure: center the circle just right of m_start
-                        offset = NOTEHEAD_CENTER_OFFSET * (n.get('scale', 2.57143) / 1.25714)
-                        n['x'] = new_m_start + barline_gap - offset
-                        n['center_x'] = new_m_start + barline_gap
-                    elif dtype in ('half', 'half_dotted'):
-                        # Fix 3 Ago: assign _beat_num so half/half_dotted enter the
-                        # onset-based positioning block below (like quarter/eighth).
-                        # Previously they used fixed positions (half_gap for onset<2,
-                        # 50%+half_gap for onset>=2) which caused overlaps with quarter
-                        # notes at onset 0.0 (both at ~5% of measure).
-                        onset = n.get('onset', 0.0)
-                        n['_beat_num'] = int(onset)
-                        n['_onset_in_beat'] = onset - int(onset)
-                        dur_map = {'half': 2.0, 'half_dotted': 3.0}
-                        n['_dur_in_beat'] = dur_map.get(dtype, 2.0)
-                        # Temporary position (will be overridden in onset-based block)
-                        target_pos = onset / 4.0
-                        gap = barline_gap if onset == 0.0 else 0
-                        n['x'] = new_m_start + target_pos * new_m_width + gap
-                        n['center_x'] = n['x'] + NOTEHEAD_CENTER_OFFSET * (n.get('scale', 2.57143) / 1.25714)
-                    else:
-                        # Quarter or shorter: EQUAL SPACING within beat
-                        # Group notes by beat (0,1,2,3), distribute equally within each beat.
-                        # This ensures 16th notes don't overlap (proportional onset placement
-                        # puts onsets 0.5 and 0.75 only 6.25% of measure apart = too close).
-                        onset = n.get('onset', 0.0)  # quarter-beats within measure
-                        beat_num = int(onset / _sec_sz)  # grey sector index
-                        # Will be repositioned below in the beat-grouping pass
-                        n['_beat_num'] = beat_num
-                        n['_onset_in_beat'] = (onset / _sec_sz) - beat_num  # 0.0-1.0 within sector
-                        # Duration in beats for centering (aligns with Tavola Sonora cells)
-                        dur_map = {'eighth': 0.5, '16th': 0.25, '32nd': 0.125,
-                                   'quarter': 1.0, 'quarter_dotted': 1.5,
-                                   'half': 2.0, 'half_dotted': 3.0,
-                                   'whole': 4.0, 'whole_dotted': 6.0}
-                        n['_dur_in_beat'] = dur_map.get(n.get('duration_type', 'quarter'), 1.0)
-                        # Temporary proportional position (will be overridden)
-                        target_pos = onset / _ts_b
-                        gap = barline_gap if onset == 0.0 else 0
-                        n['x'] = new_m_start + target_pos * new_m_width + gap
-                        n['center_x'] = n['x'] + NOTEHEAD_CENTER_OFFSET * (n.get('scale', 2.57143) / 1.25714)
-                    # NOTE: do NOT update full_match — it must match the ORIGINAL path in the SVG
-                    # The coloring step will replace the old path (with old transform) with a new
-                    # colored path that has the updated transform X
-                    old_tx_str = str(n['_orig_tx'])
-                    new_tx_str = f'{n["x"]:.2f}'
-                    # Store the new transform X for the coloring step to use
-                    n['_new_tx_str'] = new_tx_str
-                    n['_old_tx_str'] = old_tx_str
-                    break
+                        if dtype in ('whole', 'whole_dotted'):
+                            # Start of measure: center the circle just right of m_start
+                            offset = NOTEHEAD_CENTER_OFFSET * (n.get('scale', 2.57143) / 1.25714)
+                            n['x'] = new_m_start + barline_gap - offset
+                            n['center_x'] = new_m_start + barline_gap
+                        elif dtype in ('half', 'half_dotted'):
+                            # Fix 3 Ago: assign _beat_num so half/half_dotted enter the
+                            # onset-based positioning block below (like quarter/eighth).
+                            # Previously they used fixed positions (half_gap for onset<2,
+                            # 50%+half_gap for onset>=2) which caused overlaps with quarter
+                            # notes at onset 0.0 (both at ~5% of measure).
+                            onset = n.get('onset', 0.0)
+                            n['_beat_num'] = int(onset)
+                            n['_onset_in_beat'] = onset - int(onset)
+                            dur_map = {'half': 2.0, 'half_dotted': 3.0}
+                            n['_dur_in_beat'] = dur_map.get(dtype, 2.0)
+                            # Temporary position (will be overridden in onset-based block)
+                            target_pos = onset / 4.0
+                            gap = barline_gap if onset == 0.0 else 0
+                            n['x'] = new_m_start + target_pos * new_m_width + gap
+                            n['center_x'] = n['x'] + NOTEHEAD_CENTER_OFFSET * (n.get('scale', 2.57143) / 1.25714)
+                        else:
+                            # Quarter or shorter: EQUAL SPACING within beat
+                            # Group notes by beat (0,1,2,3), distribute equally within each beat.
+                            # This ensures 16th notes don't overlap (proportional onset placement
+                            # puts onsets 0.5 and 0.75 only 6.25% of measure apart = too close).
+                            onset = n.get('onset', 0.0)  # quarter-beats within measure
+                            beat_num = int(onset / _sec_sz)  # grey sector index
+                            # Will be repositioned below in the beat-grouping pass
+                            n['_beat_num'] = beat_num
+                            n['_onset_in_beat'] = (onset / _sec_sz) - beat_num  # 0.0-1.0 within sector
+                            # Duration in beats for centering (aligns with Tavola Sonora cells)
+                            dur_map = {'eighth': 0.5, '16th': 0.25, '32nd': 0.125,
+                                       'quarter': 1.0, 'quarter_dotted': 1.5,
+                                       'half': 2.0, 'half_dotted': 3.0,
+                                       'whole': 4.0, 'whole_dotted': 6.0}
+                            n['_dur_in_beat'] = dur_map.get(n.get('duration_type', 'quarter'), 1.0)
+                            # Temporary proportional position (will be overridden)
+                            target_pos = onset / _ts_b
+                            gap = barline_gap if onset == 0.0 else 0
+                            n['x'] = new_m_start + target_pos * new_m_width + gap
+                            n['center_x'] = n['x'] + NOTEHEAD_CENTER_OFFSET * (n.get('scale', 2.57143) / 1.25714)
+                        # NOTE: do NOT update full_match — it must match the ORIGINAL path in the SVG
+                        # The coloring step will replace the old path (with old transform) with a new
+                        # colored path that has the updated transform X
+                        old_tx_str = str(n['_orig_tx'])
+                        new_tx_str = f'{n["x"]:.2f}'
+                        # Store the new transform X for the coloring step to use
+                        n['_new_tx_str'] = new_tx_str
+                        n['_old_tx_str'] = old_tx_str
         
         # ONSET-BASED POSITIONING:
         # Position each note at the CENTER of its duration cell:
@@ -5024,10 +5108,16 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             _ts_b3 = _ts_beats_for_measure(_gm_idx3)
             _n_sec3 = _n_sectors_for_measure(_gm_idx3)
             _sec_sz3 = _ts_b3 / _n_sec3 if _n_sec3 > 0 else 1.0
-            # Find short notes (quarter or shorter) in this measure's X range.
+            # 13 Set 2026: seleziona le note della battuta via measure_idx autorevole
+            # (il fallback su n['x'] — già rimappata dal loop precedente — causava
+            # doppio-processing e sovrapposizioni). Fallback posizionale solo per
+            # note senza measure_idx.
+            _midx_here = _sys_global_idx + grp_idx
             measure_notes = [n for n in notes_in_sys
                            if n.get('_beat_num') is not None
-                           and new_m_start - 50 <= n['x'] <= new_m_end + 50]
+                           and ((n.get('measure_idx') is not None and n.get('measure_idx') == _midx_here)
+                                or (n.get('measure_idx') is None
+                                    and new_m_start - 50 <= n['x'] <= new_m_end + 50))]
             from itertools import groupby
             beat_width_frac = 1.0 / _n_sec3  # fraction of measure per sector
             
@@ -5082,12 +5172,13 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     beat_end_x = beat_start_x + beat_width_frac * new_m_width
                     # disc_r approximation for clamping (proportional for croma/semicroma)
                     n_dtype = grp_list[0].get('duration_type', 'quarter') if grp_list else 'quarter'
+                    _dr_base = max(DISC_R_OVERRIDE, 1) if DISC_R_OVERRIDE else 130
                     if n_dtype in ('16th', '16th_dotted'):
-                        disc_r_approx = 85  # 130 * 0.65
+                        disc_r_approx = _dr_base * 0.65
                     elif n_dtype in ('eighth', 'eighth_dotted'):
-                        disc_r_approx = 104  # 130 * 0.80
+                        disc_r_approx = _dr_base * 0.80
                     else:
-                        disc_r_approx = 130
+                        disc_r_approx = _dr_base
                     center_x = max(beat_start_x + disc_r_approx + 5, 
                                   min(center_x, beat_end_x - disc_r_approx - 5))
                     
@@ -5097,6 +5188,35 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         n['center_x'] = center_x
                         n['_new_tx_str'] = f'{n["x"]:.2f}'
         
+        # 12 Set 2026 (3 battute/rigo): post-clamp di sicurezza. Tutte le note di
+        # questo sistema devono stare dentro il proprio settore grigio. Le note
+        # posizionate da rami non-clampati (whole, posizionamenti temporanei,
+        # edge case onset) possono sforare di ~30-50px quando i settori sono
+        # stretti (550px in modalità ritmo). Clamp al settore di appartenenza.
+        for grp_idx2 in range(len(new_measure_bounds)):
+            mb_start, mb_end = new_measure_bounds[grp_idx2]
+            # 13 Set 2026: raccogli le note PER BATTUTA (measure_idx autorevole),
+            # NON per prossimità X: la finestra ±550px raccoglieva note della battuta
+            # successiva e le clampava al settore sbagliato, collassandole in x uguali.
+            mb_notes = [n for n in notes_in_sys
+                        if n.get('center_x') is not None
+                        and n.get('measure_idx') is not None
+                        and n.get('measure_idx') - _sys_global_idx == grp_idx2]
+            for n in mb_notes:
+                cx = n['center_x']
+                n_sect = _n_sectors_for_measure(_sys_global_idx + grp_idx2)
+                if n_sect <= 0:
+                    continue
+                sect_w = (mb_end - mb_start) / n_sect
+                sect_i = min(max(int((cx - mb_start) / sect_w), 0), n_sect - 1)
+                lo = mb_start + sect_i * sect_w + n['r_for_clamp'] + 5 if (r_fc := n.get('r_for_clamp')) else mb_start + sect_i * sect_w + max(DISC_R_OVERRIDE, 1) + 5
+                hi = mb_start + (sect_i + 1) * sect_w - max(DISC_R_OVERRIDE, 1) - 5
+                if lo <= hi and not (lo <= cx <= hi):
+                    n['center_x'] = lo if cx < lo else hi
+                    offset = NOTEHEAD_CENTER_OFFSET * (n.get('scale', 2.57143) / 1.25714)
+                    n['x'] = n['center_x'] - offset
+                    n['_new_tx_str'] = f"{n['x']:.2f}"
+
         print(f"    Equalized {len(new_measure_bounds)} measures: widths={[round(m[1]-m[0]) for m in new_measure_bounds]}")
     
     # 1a-ll. Shift LedgerLine polylines in X to match their notes
@@ -5874,7 +5994,11 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             m_width = m_end - m_start
             _gm_grey = sys_global_start + m_idx
             n_sectors_m = _n_sectors_for_measure(_gm_grey)
-            sector_width = BEAT_WIDTH  # always 825px = 1 quarter beat
+            # 12 Set 2026: la battuta equalizzata può essere più stretta di
+            # UNIFORM_MEASURE_WIDTH (es. 3 battute/rigo: l'equalizzatore scala il
+            # gruppo per stare in STAFF_END_X). Il settore grigio segue la larghezza
+            # REALE della battuta equalizzata, altrimenti sfora la barline.
+            sector_width = m_width / n_sectors_m if n_sectors_m > 0 else BEAT_WIDTH
 
             for q in range(n_sectors_m):
                 bg_color = BG_COLOR_LIGHT if global_q % 2 == 0 else BG_COLOR_DARK
@@ -7604,7 +7728,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         # non il centro. La linea va a sys_top + margin + 0.90*fs per riempire tutta l'altezza
         # (con delta simmetrico 0.55*fs, top visivo = ty - 0.90*fs).
         _ts_margin = 20  # margine sopra e sotto
-        TS_FONT_SZ = round((TOTAL_HEIGHT - 2 * _ts_margin) / 1.80)
+        TS_FONT_SZ = round((TOTAL_HEIGHT - 2 * _ts_margin) / 2.60)  # 13 Set 2026: ridotto (era /1.80) per margine sinistro più stretto
         TS_LINE_Y_offset = _ts_margin + 0.90 * TS_FONT_SZ  # offset dal sys_top
         for k in list(system_centers.keys()):
             sys_top = k  # k è round(sys_top)
@@ -7618,7 +7742,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         # Alterazioni in verticale: font proporzionale all'altezza TOTALE disponibile.
         # Ogni alterazione su una riga. "Fa#" + "Do#" = 2 righe.
         # KS_FONT_SZ grande abbastanza da essere leggibile ma contenuto nell'altezza.
-        KS_FONT_SZ = round(TOTAL_HEIGHT / 4.0)  # es. 745/4.0 ≈ 186 (più grande di prima)
+        KS_FONT_SZ = round(TOTAL_HEIGHT / 5.5)  # 13 Set 2026: ridotto (era /4.0 ≈ 186 → ≈135) per margine sinistro più stretto
         KS_LINE_SPACING = KS_FONT_SZ * 1.4  # spazio tra righe verticali
         
         def _rhythm_ts_fraction_svg(tx, ty, ts_num, ts_den, scale=1.0):
@@ -7670,12 +7794,18 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             return ''.join(parts)
         
         # Posizionamento: alterazioni a sinistra, tempo a destra
-        KS_TEXT_X = 1270  # X di partenza (dove era la chiave)
-        MUSIC_START = 2500  # UNIFORM_MUSIC_START (settore grigio)
+        KS_TEXT_X = 700  # 13 Set 2026: spostato a sinistra (era 1270) — margine sinistro ridotto
+        MUSIC_START = globals().get('UNIFORM_MUSIC_START', 2500)  # 13 Set 2026: usa il valore reale (era hardcoded 2500, con override rhythm 1500 il tempo finiva DENTRO il settore grigio)
         # Alterazioni a sinistra (text-anchor=end, quindi KS_TEXT_X è il lato destro)
-        # Tempo centrato nello spazio tra alterazioni e settore grigio
+        # Tempo centrato nello spazio tra alterazioni e settore grigio,
+        # con clamp per restare dentro (KS_TEXT_X, MUSIC_START - half_width)
         # Spazio disponibile: da KS_TEXT_X + gap a MUSIC_START - margin
-        ts_block_x = (KS_TEXT_X + 200 + MUSIC_START) / 2  # centro del tempo
+        ts_block_x = (KS_TEXT_X + 100 + MUSIC_START) / 2  # centro del tempo (13 Set: gap ridotto)
+        # 13 Set 2026: clamp anti-overlap col settore grigio (mezza larghezza blocco ~170px)
+        ts_max_x = MUSIC_START - 180  # settore grigio inizia a MUSIC_START
+        ts_min_x = KS_TEXT_X + 180    # dopo le alterazioni
+        ts_block_x = min(ts_block_x, ts_max_x)
+        ts_block_x = max(ts_block_x, ts_min_x)
         
         # per-measure time sig: ts_num e ts_den per il primo sistema
         ts_num_first = ts_info_r[0]
@@ -8505,6 +8635,11 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
     # Rests have transform="matrix(a,0,0,d,tx,ty)" with scale ~1.143.
     # After Y-stretch, notes have 260px diameter circles — rests must scale up too.
     rest_scale_factor = 2.963  # standard Y-stretch factor (280/94.5)
+    # 12 Set 2026 (richiesta Marco): in modalità ritmo le pause seguono la stessa
+    # scala dei dischi. I dischi sono passati da r=110 a r=DISC_R_OVERRIDE,
+    # quindi la scala delle pause si riduce dello stesso fattore.
+    if rhythm_mode and DISC_R_OVERRIDE:
+        rest_scale_factor *= (DISC_R_OVERRIDE / 110.0)
     # Pause di croma (eighth rest) rimpicciolite nel pentagramma
     
     rest_count = 0
@@ -8973,7 +9108,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         vb_match = re.search(r'viewBox="([\d.\-]+)\s+([\d.\-]+)\s+([\d.\-]+)\s+([\d.\-]+)"', modified)
         if vb_match:
             vb_x, vb_y, vb_w, vb_h = (float(vb_match.group(i)) for i in range(1, 5))
-            CENTERING_SHIFT = 500  # shift fisso a sinistra
+            CENTERING_SHIFT = 100  # 13 Set 2026: ridotto (era 500) — margini laterali minimi
             new_vb_x = vb_x + CENTERING_SHIFT
             modified = modified.replace(
                 vb_match.group(0),
@@ -9226,6 +9361,26 @@ def main():
     print(f"Output prefix: {prefix}")
     print(f"Part index: {part_index} (0=primo, 1=secondo, 2=terzo, ecc.)")
     print()
+    
+    # 12 Set 2026 (richiesta Marco): in modalità ritmica, 3 battute per rigo
+    # (12 settori grigi) — beat più stretti ma pentagramma più sfruttato.
+    if rhythm_mode:
+        # 13 Set 2026 (richiesta Marco): margini laterali ridotti SOLO in
+        # modalità ritmica. pagePrintableWidth 7.9" allarga il pentagramma
+        # da 8506 a 9540px; CENTERING_SHIFT riduce il vuoto a sinistra.
+        # Le modifiche NON valgono per la versione a notazione completa.
+        globals()['STAFF_END_X'] = 9540
+        # 13 Set 2026 (richiesta Marco): margine sinistro ulteriormente ridotto
+        # con keysig/tempo rimpiccioliti. Area musicale 1500→9540 = 8040px.
+        globals()['UNIFORM_MUSIC_START'] = 1500
+        # 6 battute 4/4 per rigo (24 settori) + 12 battute 2/4.
+        globals()['_MAX_SECTORS_OVERRIDE'] = 24
+        globals()['UNIFORM_MEASURE_WIDTH'] = 335 * 4  # 1340px per battuta 4/4
+        globals()['BEAT_WIDTH'] = 335  # 335px per settore grigio
+        # 12 Set 2026 (richiesta Marco): dischi ridotti del 50% in modalità
+        # ritmica (110 → 55) perché dentro non si scrive il nome della nota.
+        globals()['DISC_R_OVERRIDE'] = 72  # 55 * 1.3 (aumento 30%)
+        # I dischi (raggio 55, diametro 110) entrano agevolmente nel settore 550
     
     # Step 1: Extract notes
     print("[1/5] Estrazione note dal .mscz...")
