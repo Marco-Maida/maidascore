@@ -5774,6 +5774,11 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         sy2 = float(sm.group(5))
         # Find which note owns this stem (stem X near note's right edge, Y near note)
         owner = None
+        # 14 Set 2026 (bug gambo mancante): con note ravvicinate (es. due So
+        # adiacenti a tx=875/1012), il primo match del range X assorbiva il
+        # gambo della nota successiva (range w+40 ≈ 390px). Scegliere la nota
+        # con tx PIÙ VICINO al gambo, non la prima che matcha.
+        _owner_candidates = []
         for n in notes:
             if '_orig_tx' not in n:
                 continue
@@ -5781,8 +5786,9 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             w = 123.453 * n['scale']  # glyph width
             if (_match_tx - 40 <= sx <= _match_tx + w + 40
                     and min(abs(n['y'] - sy1), abs(n['y'] - sy2)) < 100):
-                owner = n
-                break
+                _owner_candidates.append((abs(_match_tx - sx), n))
+        if _owner_candidates:
+            owner = min(_owner_candidates, key=lambda t: t[0])[1]
         if owner is None:
             continue
         # Determine stem direction: which end of the stem is near the notehead?
