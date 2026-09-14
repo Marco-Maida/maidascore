@@ -4328,6 +4328,14 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 _ns = _n_sectors_for_measure(_gm)
                 measure_widths.append(_ns * BEAT_WIDTH)
             total_needed = sum(measure_widths)
+            # 14 Set 2026 (bug note sovrapposte nell'ultimo rigo): MuseScore
+            # shrinka l'ultimo sistema (rigo di coda con poche battute):
+            # x_end < music_start → staff_width NEGATIVO → _scale negativo →
+            # new_measure_bounds con larghezza negativa (widths=[-52,-52]) →
+            # tutte le note collassate alla stessa X (sovrapposizione totale).
+            # Fix: il rigo stretto va ALLARGATO, non compresso.
+            if staff_width <= 0:
+                staff_width = total_needed
             # Scale down if total exceeds staff width
             if total_needed > staff_width:
                 _scale = staff_width / total_needed
@@ -6738,6 +6746,12 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             # Find the rightmost x_end among all StaffLines (this is the normal width)
             _all_x_ends = [float(m.group(4)) for m in _sl_matches]
             _max_x_end = max(_all_x_ends) if _all_x_ends else 0
+            # 14 Set 2026: se l'ULTIMA pagina contiene SOLO il rigo di coda,
+            # tutte le staffline sono corte (es. 2396) e max non estende nulla.
+            # Estendi sempre a STAFF_END_X: l'equalizzatore posiziona i settori
+            # a larghezza piena su ogni rigo, quindi le staffline devono
+            # raggiungere la fine del rigo equalizzato.
+            _max_x_end = max(_max_x_end, STAFF_END_X)
             # Find StaffLines that are shorter than max (last system)
             _short_sl = [m for m in _sl_matches if float(m.group(4)) < _max_x_end - 1000]
             if _short_sl:
