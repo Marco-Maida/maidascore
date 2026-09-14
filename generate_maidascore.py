@@ -4693,10 +4693,16 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                             _frac_in_beat = _onset_in_beat + 0.25
                             target_pos = (_sec_i + _frac_in_beat) * _sec_w_frac
                         else:
-                            # Pausa sola nel settore: all'INIZIO (come le note)
-                            # "ancora più a sinistra, all'inizio della
-                            # rispettiva sezione grigia"
-                            target_pos = rest_onset_val / _ts_beats + 0.02
+                            # 14 Set 2026 (richiesta Marco): la pausa di SEMIMINIMA
+                            # sola nel settore va al CENTRO della sezione grigia
+                            # (le altre durate restano all'inizio, come le note).
+                            if rest_dtype_val == 'quarter':
+                                _quarter_center_off = 82.0
+                                _q_center_pos = (_sec_i + 0.5) * _sec_w_frac
+                                _q_center_pos -= (_quarter_center_off / new_m_width) if new_m_width > 0 else 0.0
+                                target_pos = _q_center_pos
+                            else:
+                                target_pos = rest_onset_val / _ts_beats + 0.02
 
                         # 14 Set 2026 (bug pausa a cavallo del settore): la pausa
                         # DEVE stare interamente dentro il suo settore grigio.
@@ -4715,8 +4721,21 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         _rest_glyph_w = 150.0
                         _lo = _sec_start_x - new_m_start
                         _hi = _sec_end_x - new_m_start - _rest_glyph_w
+                        # 14 Set 2026: il clamp "pausa interamente nel settore"
+                        # usa il BORDO sinistro (tx) come riferimento, ma per le
+                        # pause di semiminima centrate (che puntano al centro
+                        # visivo) deve ammettere tx < sec_start (il glyph parte
+                        # prima ma il centro visivo è nel settore). Solo la
+                        # semiminima centrata: estendi _lo di 82px.
+                        if rest_dtype_val == 'quarter' and not notes_in_same_beat:
+                            _lo -= 82.0
+                        # 14 Set 2026 (bug clamp px/frazione): _lo/_hi sono in PIXEL
+                        # ma target_pos è FRAZIONARIO: max(_lo, min(target_pos, _hi))
+                        # schiacciava qualunque target < _lo px a _lo px (es. target
+                        # 0.338 → 478px = 0.213). Converte prima in px.
                         if _hi >= _lo:
-                            target_pos = max(_lo, min(target_pos, _hi)) / new_m_width
+                            _t_px = max(_lo, min(target_pos * new_m_width, _hi))
+                            target_pos = _t_px / new_m_width
 
                         # 13 Set 2026 (bug pause impilate): registra la X finale
                         # per evitare doppioni glyph MuseScore (unmatched).
