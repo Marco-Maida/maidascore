@@ -4690,6 +4690,26 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                             # rispettiva sezione grigia"
                             target_pos = rest_onset_val / _ts_beats + 0.02
 
+                        # 14 Set 2026 (bug pausa a cavallo del settore): la pausa
+                        # DEVE stare interamente dentro il suo settore grigio.
+                        # La formula onset-based posiziona onset+0.25, ma il
+                        # glyph largo ~226px con onset frazionario (es. 0.75 nel
+                        # settore) sconfina nella battuta/settore successivo.
+                        # Il tx del rest è il bordo SINISTRO del glyph (il path
+                        # parte da tx e si estende per ~150px scalati), quindi
+                        # clamp: settore_sin <= tx e tx + rest_w <= settore_dx.
+                        _sec_w_px = (new_m_width / _n_sectors_m) if _n_sectors_m else new_m_width
+                        _sec_start_x = new_m_start + _sec_i * _sec_w_px
+                        _sec_end_x = _sec_start_x + _sec_w_px
+                        # Larghezza visiva reale del glyph rest di MuseScore:
+                        # il path ~150 unità (quarter/eighth), scalata da 'a'.
+                        # 48*2=96 era troppo stretto e lasciava pause a cavallo.
+                        _rest_glyph_w = 150.0
+                        _lo = _sec_start_x - new_m_start
+                        _hi = _sec_end_x - new_m_start - _rest_glyph_w
+                        if _hi >= _lo:
+                            target_pos = max(_lo, min(target_pos, _hi)) / new_m_width
+
                         # 13 Set 2026 (bug pause impilate): registra la X finale
                         # per evitare doppioni glyph MuseScore (unmatched).
                         try:
