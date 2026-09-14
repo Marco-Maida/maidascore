@@ -351,3 +351,30 @@ First public release.
 
 ### Corretto
 - Stanghette staccate dalle travature inclinate: il FIX #151 restringeva lo spessore della travatura usando il centro del bounding-box globale, appiattendo le travature inclinate. Ora i due bordi verticali vengono clampati indipendentemente preservando l'inclinazione originale, così le stanghette arrivano sempre fino alla travatura.
+
+## [1.2.1] - 2026-09-14
+
+### Corretto
+- **Pausa di semiminima centrata nel settore grigio**: la pausa veniva
+  spinta verso destra dal nudge anti-collisione; ora è centrata nella
+  propria sezione grigia.
+- **Gambo mancante su note ravvicinate**: con note molto vicine, il
+  matching stem per X falliva; ora usa la vicinanza (nearest match).
+- **Note sovrapposte nell'ultimo rigo**: battute di coda con righi
+  parziali non vengono più compresse con sovrapposizioni.
+- **Pause interamente dentro il proprio settore grigio**: clamp
+  migliorato per le pause rispetto ai settori.
+- **Canzon "solo ritmo" degradava a 1 battuta/rigo**: il retry
+  anti-spezzatura calcolava il limite in settori come
+  "battute reali × 2" (formula pensata per battute 2/4); con battute 4/4
+  dava 4 settori = 1 sola battuta per rigo. Ora ×4 settori. Inoltre la
+  pagina di rendering della modalità ritmo passa a 32 pollici: i righi da
+  20 settori con battute dense (10+ note) venivano spezzati da MuseScore
+  anche su pagina da 16.5".
+
+### Modificato
+- **Documentazione delle due versioni**: docstring, README e descrizione
+  del repository spiegano ora le due uscite — notazione completa con
+  pentagramma a dimensioni allargate (per lo studio) e "solo ritmo" più
+  compressa (più battute per rigo, occupa meno spazio sulle partiture
+  lunghe — utile come traccia durante i concerti).
