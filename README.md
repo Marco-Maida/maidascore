@@ -18,6 +18,16 @@ Note names are available in **Italian** (Do Re Mi Fa Sol La Si) and **English**
 
 ## What it produces
 
+MaidaScore produces **two versions** of each score:
+
+1. **Full notation** (default) — enlarged staff (thick lines, large spacing,
+  readable clefs and key signatures) with colored circles, note names and
+  gray quarter-backgrounds. Designed for study.
+2. **Rhythm only** (`--rhythm`) — a more compact layout with more measures
+  per system, so long scores take up less space. Useful as a cue sheet
+  during concerts, and for students who have already consolidated pitch
+  reading and need to focus on rhythm.
+
 Each output page contains:
 
 - **Colored circles** — one color per pitch class (Do/Re/Mi/Fa/Sol/La/Si), with the
@@ -35,6 +45,8 @@ Each output page contains:
 A simplified view focused on **rhythm only**: staff lines are removed, notes become
 plain circles on a single line, with beamed flags, enlarged accidentals, and the sound
 table. Ideal for students who need to focus on rhythmic reading before pitch.
+The layout is also **more compact** — more measures per system, so long scores take
+up less space: it works well as a **cue sheet during concerts**.
 
 ### Instrument support
 

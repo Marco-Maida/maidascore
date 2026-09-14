@@ -36,8 +36,19 @@ the colored circles), `NOTE_NAMES_TAVOLA` (full labels in the sound table) and
 logic. Adding a new language is just a matter of adding a new entry to each
 dictionary.
 
+Vengono prodotte DUE versioni di ogni spartito:
+
+1. NOTAZIONE COMPLETA (default): pentagramma a dimensioni allargate (linee
+   spesse, spatium grande, chiavi e armature leggibili) con cerchi colorati,
+   nomi delle note e sfondi grigi per i quarti. Pensata per lo studio.
+
+2. SOLO RITMO (--rhythm): versione più compressa — più battute per rigo —
+   che occupa meno spazio sulle partiture lunghe. Utile come traccia
+   durante i concerti e per chi ha già consolidata la lettura dell'altezza
+   delle note e vuole concentrarsi solo sull'articolazione ritmica.
+
 Input:  file .mscz (MuseScore 4) con la partitura originale
-Output: 
+Output:
   - file .mscz con layout accessibile (spatium grande, linee spesse)
   - file .pdf con note colorate + nomi note + sfondo quarti + rettangoli durata
 
