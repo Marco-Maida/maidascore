@@ -97,11 +97,11 @@ MAX_NOTES_PER_SYSTEM = 26
 # 2 mis/sistema: settori grigi ampi (~3300px/battuta = 825px/quarto).
 UNIFORM_MEASURES_PER_SYSTEM = 3
 UNIFORM_MEASURE_WIDTH = 3300  # SVG units; 2 meas/system × 3300 = 6600 < 6715 (9215-2500)
-UNIFORM_MUSIC_START = 2500  # uniform music start X (after enlarged clef + keysig + timesig; 2300 in modalità --rhythm)
+UNIFORM_MUSIC_START = 2094  # 14 Set 2026 (richiesta Marco): inizio settori 2cm dopo (era 1150), fine invariata a 9750
 DEFAULT_MEASURES_PER_SYSTEM = UNIFORM_MEASURES_PER_SYSTEM
 
 # Invariant assertions moved after DISC_R_OVERRIDE definition below.
-STAFF_END_X = 9215  # staff lines end at this X coordinate (valore stile; 9540 in modalità --rhythm)
+STAFF_END_X = 9750  # 14 Set 2026 (richiesta Marco): bordo dx pentagramma, margini ridotti
 BEAT_WIDTH = UNIFORM_MEASURE_WIDTH / 4  # 825px per beat = grey sector width
 
 
@@ -597,6 +597,7 @@ def count_notes_per_measure(mscx_content):
 
 
 _MAX_SECTORS_OVERRIDE = None  # impostato a 12 dal main in modalità --rhythm
+_RENDER_PAGE_WIDTH = ('32.0', '31.6')  # pagina di rendering rhythm (20 settori, battute dense)
 
 
 def compute_system_breaks(note_counts, max_notes=MAX_NOTES_PER_SYSTEM,
@@ -1938,8 +1939,14 @@ def make_accessible_mscz(input_mscz, output_mscz, part_index=0, rhythm_mode=Fals
         # restringe il viewBox finale ad A4, quindi la larghezza di rendering
         # è irrilevante per l'output finale.
         # Pagina larga 16.5" = i righi da 12 settori entrano comodamente.
-        mss = re.sub(r'<pageWidth>[\d.]+</pageWidth>', '<pageWidth>16.5</pageWidth>', mss)
-        mss = re.sub(r'<pagePrintableWidth>[\d.]+</pagePrintableWidth>', '<pagePrintableWidth>16.1</pagePrintableWidth>', mss)
+        # 14 Set 2026: in modalità ritmo i righi da 20 settori con battute
+        # dense (fino a 10 note) vengono spezzati da MuseScore su pagina 16.5"
+        # (es. Canzon: piano 5 battute → spezzato in 2+3). Pagina più larga
+        # per il rendering: l'equalizzatore rimappa comunque le X su A4.
+        _render_pw, _render_prw = (_RENDER_PAGE_WIDTH if rhythm_mode
+                                   and _RENDER_PAGE_WIDTH else ('16.5', '16.1'))
+        mss = re.sub(r'<pageWidth>[\d.]+</pageWidth>', f'<pageWidth>{_render_pw}</pageWidth>', mss)
+        mss = re.sub(r'<pagePrintableWidth>[\d.]+</pagePrintableWidth>', f'<pagePrintableWidth>{_render_prw}</pagePrintableWidth>', mss)
         mss = re.sub(r'<pageHeight>[\d.]+</pageHeight>', f'<pageHeight>{PAGE_HEIGHT}</pageHeight>', mss)
         mss = re.sub(r'<staffLineWidth>[\d.]+</staffLineWidth>', 
                      f'<staffLineWidth>{STAFF_LINE_WIDTH}</staffLineWidth>', mss)
@@ -4314,7 +4321,12 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             # Variable measure width based on time signature (Marco 8 Ago, Fix #3).
             # 4/4 → 4 × BEAT_WIDTH = 3300px, 3/4 → 3 × BEAT_WIDTH = 2475px,
             # 2/4 → 2 × BEAT_WIDTH = 1650px. Each grey sector is always BEAT_WIDTH (825px).
-            staff_width = info['x_end'] - music_start  # available width
+            # 14 Set 2026 (bug pagina di coda): il pentagramma è UNIFORME su
+            # tutti i righi (staffline estese a STAFF_END_X), ma l'ultimo rigo
+            # ha la barline originale vicina (es. x=2396). Se staff_width si
+            # basa su x_end di quello, i settori collassano. Usa SEMPRE la
+            # larghezza completa del pentagramma equalizzato.
+            staff_width = STAFF_END_X - music_start  # available width
             # 13 Set 2026 (richiesta Marco 16 settori): il rendering avviene su
             # pagina larga 16.5" ma il viewBox finale è A4 (9924px). L'equalizzatore
             # deve far entrare il rigo nel viewBox finale, non nel SVG largo,
@@ -4336,8 +4348,11 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             # Fix: il rigo stretto va ALLARGATO, non compresso.
             if staff_width <= 0:
                 staff_width = total_needed
-            # Scale down if total exceeds staff width
-            if total_needed > staff_width:
+            # 14 Set 2026 (richiesta Marco: sezioni grigie più ampie): scala
+            # le battute per riempire ESATTAMENTE staff_width, in entrambe
+            # le direzioni (compressione se eccede, espansione se avanza
+            # spazio — prima lo spazio extra restava vuoto a destra).
+            if abs(total_needed - staff_width) > 1 and total_needed > 0:
                 _scale = staff_width / total_needed
                 measure_widths = [w * _scale for w in measure_widths]
                 total_needed = sum(measure_widths)
@@ -6757,7 +6772,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                                      top_margin=700, bottom_margin=700,
                                      page_height=None)  # None = no auto-gap
     # TAVOLA_ROW_HEIGHT=175 (era 350), gap totale = 150+175+250 = 575 (era 750)
-    
+
     # Extend StaffLines of the last system to cover all
     # grey sectors. MuseScore shrinks the last system's StaffLines, but our
     # equalization places grey sectors and barlines at full width. Extend
@@ -6790,6 +6805,21 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     new_elem = f'{prefix}{x1},{y1} {_max_x_end:.2f},{y2}{suffix}'
                     modified = modified[:m.start()] + new_elem + modified[m.end():]
                 print(f"  [Step1] Extended {len(_short_sl)} StaffLines in last system to x={_max_x_end:.0f}")
+
+    # 14 Set 2026 (richiesta Marco): chiave a x=78 → staffline estese a
+    # sinistra fino a x=70 su TUTTI i righi (da ~532) per non lasciare i
+    # glifi sospesi fuori dal pentagramma.
+    _STAFF_START_NEW = 70.0
+    _n_left = [0]
+    def _ext_left(m):
+        if float(m.group(2)) > _STAFF_START_NEW + 5:
+            _n_left[0] += 1
+            return f'{m.group(1)}{_STAFF_START_NEW:.2f},{m.group(3)} {m.group(4)},{m.group(5)}'
+        return m.group(0)
+    modified = re.sub(
+        r'(<polyline class="StaffLines"[^>]*points=")([\d.\-]+),([\d.\-]+) ([\d.\-]+),([\d.\-]+)',
+        _ext_left, modified)
+    print(f"  [Step1] Staffline estese a sinistra fino a x={_STAFF_START_NEW:.0f} (righe: {_n_left[0]})")
     
     # FIX #151: Step1 (modalità normale) — riduci spessore beam dopo y_stretch.
     # y_stretch_systems scala le Y di ~3x → il spessore beam originale (~47px)
@@ -8021,7 +8051,9 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 # +280 too low (touched E4), +140 still touched E4, +70 = sweet spot.
                 # Uniform tx: the first system has tx=1597 (extra space for time sig),
                 # but we move KeySig/TimeSig separately, so set all clefs to tx=1256
-                uniform_tx = 1256.02
+                # 14 Set 2026 (richiesta Marco): chiave ~1.5cm (706px) più a sinistra
+                # 14 Set 2026: ulteriore -1cm (472px) → chiave a x=78
+                uniform_tx = 78.0
                 clef_count += 1
                 return f'<path class="Clef" transform="matrix({new_a:.4f},{b},{c},{new_d:.4f},{uniform_tx:.2f},{new_ty:.2f})"'
         return match.group(0)
@@ -8046,7 +8078,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
     KEYSIG_WIDTH_REF = 162.0   # width of one KeySig glyph at scale 2.0 (measured: 70.9 × 1.1429 × 2.0 = 162.1)
     TIMESIG_WIDTH_REF = 334.0  # width of TimeSig at scale 2.0 (measured: 146.3 × 1.1429 × 2.0 = 334.4; era 283, sottostimato del 18%)
     STAGGER_REF = 180.0        # stagger offset at scale 2.0 (measured: 103.6 / 1.1429 × 2.0 = 181.3)
-    CLEF_END_X = 1861.0         # approximate end of enlarged clef
+    CLEF_END_X = 683.0          # fine approssimativa chiave ingrandita (14 Set 2026: 78+605)
     # 12 Ago 2026: AVAILABLE_WIDTH deve usare UNIFORM_MUSIC_START (inizio settori grigi)
     # NON MUSIC_START_X (2650, centro prima nota). I simboli chiave+armatura+tempo
     # devono stare PRIMA del primo settore grigio, non prima della prima nota.
@@ -8347,7 +8379,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             return ''.join(parts)
         
         # Posizionamento: alterazioni a sinistra, tempo a destra
-        KS_TEXT_X = 700  # 13 Set 2026: spostato a sinistra (era 1270) — margine sinistro ridotto
+        KS_TEXT_X = 400  # 14 Set 2026: compattato per anticipare l'inizio dei settori
         MUSIC_START = globals().get('UNIFORM_MUSIC_START', 2500)  # 13 Set 2026: usa il valore reale (era hardcoded 2500, con override rhythm 1500 il tempo finiva DENTRO il settore grigio)
         # Alterazioni a sinistra (text-anchor=end, quindi KS_TEXT_X è il lato destro)
         # Tempo centrato nello spazio tra alterazioni e settore grigio,
@@ -9940,7 +9972,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
     vb_match = re.search(r'viewBox="([\d.\-]+)\s+([\d.\-]+)\s+([\d.\-]+)\s+([\d.\-]+)"', modified)
     if vb_match:
         vb_x, vb_y, vb_w, vb_h = (float(vb_match.group(i)) for i in range(1, 5))
-        CENTERING_SHIFT = 100  # 13 Set 2026: ridotto (era 500) — margini laterali minimi
+        CENTERING_SHIFT = 0  # 14 Set 2026: margini minimi (chiave a x=78, viewBox da x=100)
         new_vb_x = vb_x + CENTERING_SHIFT
         # 13 Set 2026: il rendering avviene su pagina larga 16.5" (per far
         # entrare i righi da 12-20 settori senza spezzare), ma l'output
@@ -10212,17 +10244,21 @@ def main():
         # modalità ritmica. pagePrintableWidth 7.9" allarga il pentagramma
         # da 8506 a 9540px; CENTERING_SHIFT riduce il vuoto a sinistra.
         # Le modifiche NON valgono per la versione a notazione completa.
-        globals()['STAFF_END_X'] = 9540
-        # 13 Set 2026 (richiesta Marco): margine sinistro ulteriormente ridotto
-        # con keysig/tempo rimpiccioliti. Area musicale 1500→9540 = 8040px.
-        globals()['UNIFORM_MUSIC_START'] = 1500
+        # 14 Set 2026 (richiesta Marco): allargato come la versione notazione.
+        globals()['STAFF_END_X'] = 9750
+        # Chiave a x=78 (fine 683) → i settori partono a 1150 (uguale alla
+        # notazione completa). Area musicale 1150→9750 = 8600px.
+        # 14 Set 2026 (richiesta Marco): anticipa l'inizio settori (3cm richiesti,
+        # non raggiungibili: glifi keysig+tempo occupano fino a ~x=1100 e la
+        # pagina inizia a x=0; max fisico = 800 con glifi compattati a sx).
+        globals()['UNIFORM_MUSIC_START'] = 800
         # 20 settori grigi per rigo — richiesta Marco 13 Set 2026.
         globals()['_MAX_SECTORS_OVERRIDE'] = 20
-        globals()['UNIFORM_MEASURE_WIDTH'] = 335 * 4  # 1340px per battuta 4/4
-        globals()['BEAT_WIDTH'] = 335  # 335px per settore grigio
-        # 12 Set 2026 (richiesta Marco): dischi ridotti del 50% in modalità
-        # ritmica (110 → 55) perché dentro non si scrive il nome della nota.
-        globals()['DISC_R_OVERRIDE'] = 72  # 55 * 1.3 (aumento 30%)
+        globals()['UNIFORM_MEASURE_WIDTH'] = 447 * 4  # battuta 4/4 = 1788px
+        globals()['BEAT_WIDTH'] = 447  # 447px per settore grigio (8950px / 20 settori, UNIFORM_MEASURE_WIDTH=447*4)
+        # 12 Set 2026 (richiesta Marco): dischi ridotti perché dentro non si
+        # scrive il nome della nota. Scalati col settore (era 72).
+        globals()['DISC_R_OVERRIDE'] = 90
         # I dischi (raggio 55, diametro 110) entrano agevolmente nel settore 550
     else:
         # 13 Set 2026 (richiesta Marco): 16 settori grigi per rigo SEMPRE
@@ -10374,7 +10410,12 @@ def main():
             (r for r, p in zip(_real, _planned) if p - r >= 2 and r >= 2),
             default=None)
         if _min_real and _min_real >= 2:
-            _max_sectors = _min_real * 2  # 2 battute 2/4 per sistema min
+            # 14 Set 2026 (bug Canzon 1 battuta/rigo): _min_real*2 settori
+            # andava bene per battute 2/4, ma con 4/4 dava 4 settori =
+            # 1 sola battuta per rigo (degradazione severa). Il nuovo limite
+            # deve contenere ALMENO le battute reali che MuseScore ha reso
+            # nel sistema spezzato: usa _min_real battute × 4 settori (4/4).
+            _max_sectors = _min_real * 4
         else:
             _max_sectors = (globals().get('_MAX_SECTORS_OVERRIDE') or 8) - 2
         if _max_sectors >= (globals().get('_MAX_SECTORS_OVERRIDE') or 8):
