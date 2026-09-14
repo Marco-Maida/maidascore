@@ -2179,9 +2179,9 @@ DURATION_RECT_RADIUS = 6
 # Disc radius override: when spatium is small (for 4-measures-per-line on A4 portrait),
 # the auto-calculated disc_r is too small for readability. This override makes
 # colored circles ~1.4 staff spaces regardless of spatium. Set to None for auto.
-# 13 Set 2026 (richiesta Marco: 16 settori/rigo, tutto rimpicciolito):
-# dischi ridotti per far entrare 16 settori nel rigo A4 (settore ~420px).
-DISC_R_OVERRIDE = 72
+# 14 Set 2026 (richiesta Marco: 12 settori/rigo): dischi r=110 come per
+# 3 battute/rigo (settore ~550px).
+DISC_R_OVERRIDE = 110
 
 # Invariant assertions on layout constants.
 # Checked at import time — if someone changes a constant and breaks the geometry,
@@ -10169,7 +10169,7 @@ def main():
         # 13 Set 2026 (richiesta Marco): 16 settori grigi per rigo SEMPRE
         # in notazione completa (4 battute 4/4, 8 battute 2/4, ecc.).
         # Tutto il rigo viene rimpicciolito per farli entrare (settore ~460px).
-        globals()['_MAX_SECTORS_OVERRIDE'] = 16
+        globals()['_MAX_SECTORS_OVERRIDE'] = 12
 
     # Step 1: Extract notes
     print("[1/5] Estrazione note dal .mscz...")
