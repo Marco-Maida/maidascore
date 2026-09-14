@@ -684,7 +684,7 @@ def compute_system_breaks(note_counts, max_notes=MAX_NOTES_PER_SYSTEM,
             # MuseScore NON riesce a rendere più di 3 battute per rigo
             # (larghezza minima note+luci), anche su pagina larga. Cap
             # MAX_MEASURES_PER_SYSTEM per evitare spezzature.
-            MAX_MEAS_PER_SYSTEM = 3 if not rhythm_mode else 99
+            MAX_MEAS_PER_SYSTEM = 8 if not rhythm_mode else 99
             count = 1
             width_so_far = _measure_width(i)
             while i + count < n:
@@ -715,7 +715,11 @@ def compute_system_breaks(note_counts, max_notes=MAX_NOTES_PER_SYSTEM,
             i += count
             continue
         # Se questa battuta è un MMRest, mettila in un sistema da sola
-        if i in mmrest_start_set and i > 0:
+        # 13 Set 2026 (richiesta Marco: 16 settori SEMPRE): in notazione
+        # completa le battute MMRest/pause si impaccaNO col resto del rigo
+        # (le pause espanse occupano i loro settori). L'isolamento MMRest
+        # lasciava righi da 8-12 settori.
+        if False and i in mmrest_start_set and i > 0:
             # Break prima
             if breaks and breaks[-1] != i - 1:
                 breaks.append(i - 1)
@@ -723,7 +727,7 @@ def compute_system_breaks(note_counts, max_notes=MAX_NOTES_PER_SYSTEM,
             if i + 1 < n:
                 breaks.append(i)
             i += 1
-        elif i + 1 < n and (i + 1) in mmrest_start_set:
+        elif False and i + 1 < n and (i + 1) in mmrest_start_set:
             # La prossima battuta è un MMRest → sistema da 1 battuta
             if i + 1 < n:
                 breaks.append(i)
@@ -734,10 +738,13 @@ def compute_system_breaks(note_counts, max_notes=MAX_NOTES_PER_SYSTEM,
             # MAX_SECTORS_PER_SYSTEM settori (default 8 = 2 battute 4/4).
             # 13 Set 2026 (12 settori/rigo): cap 3 battute/rigo in notazione
             # completa — MuseScore spezza comunque i righi più fitti.
-            MAX_MEAS_PER_SYSTEM = 3 if not rhythm_mode else 99
+            MAX_MEAS_PER_SYSTEM = 8 if not rhythm_mode else 99
+            # 13 Set 2026 (richiesta Marco: 16 settori SEMPRE): impacca anche
+            # le battute MMRest/pause come battute normali, per riempire il
+            # rigo fino a 16 settori. Le pause espanse occupano i loro settori.
             count = 1
             width_so_far = _measure_width(i)
-            while i + count < n and (i + count) not in mmrest_start_set:
+            while i + count < n:
                 if count >= MAX_MEAS_PER_SYSTEM:
                     break
                 _w = width_so_far + _measure_width(i + count)
@@ -745,19 +752,41 @@ def compute_system_breaks(note_counts, max_notes=MAX_NOTES_PER_SYSTEM,
                     break
                 width_so_far = _w
                 count += 1
-            # Tronca il gruppo al cambio di tempo/armatura interno:
-            # il break va PRIMA della battuta col cambio, così il
-            # nuovo tempo inizia su un rigo nuovo.
-            end_idx = i + count - 1
-            for j in range(i + 1, i + count):
-                if j in ts_change_set and j < n - 1:
-                    # Cambio a una battuta successiva: tronca prima di j
-                    end_idx = j - 1
-                    count = j - i
+            # 13 Set 2026 (richiesta Marco: 16 settori SEMPRE): NON troncare
+            # più al cambio di tempo/armatura interno. Il rigo impilato
+            # mescola battute con time signature diverse fino a 16 settori;
+            # il cambio di tempo è visibile dalla larghezza delle battute.
+            # FIX 13 Set 2026 (pause spezzate): MuseScore fonde SEMPRE un
+            # gruppo MMRest in un unico rigo: se il piano lo divide (fine
+            # rigo dentro il gruppo), il rendering diverge dal piano.
+            # Riduci count finché la fine del rigo NON cade dentro un gruppo
+            # di pause (tranne quando il gruppo inizia il rigo).
+            while count > 1:
+                _end = i + count - 1
+                _inside_mmrest = False
+                for _gs, _gc in (mmrest_groups or []):
+                    if _gs <= _end < _gs + _gc - 1:
+                        _inside_mmrest = True
+                        break
+                if not _inside_mmrest:
                     break
+                count -= 1
             if i + count < n:  # don't break after the last measure
-                breaks.append(end_idx)
+                breaks.append(i + count - 1)
             i += count
+    # 13 Set 2026 (pause attaccate al rigo precedente): MuseScore fonde
+    # SEMPRE un gruppo MMRest col rigo precedente: se nel piano un gruppo
+    # di pause inizia un rigo, attacca il gruppo al rigo prima.
+    _mm_by_start = {gs: gc for gs, gc in (mmrest_groups or [])}
+    _changed = True
+    while _changed:
+        _changed = False
+        for _bi, _b in enumerate(breaks):
+            _gs = _b + 1  # il rigo successivo inizia qui
+            if _gs in _mm_by_start and _gs < n - 1:
+                _gc = _mm_by_start[_gs]
+                breaks[_bi] = _gs + _gc - 1
+                _changed = True
     return breaks
 
 
@@ -2150,7 +2179,9 @@ DURATION_RECT_RADIUS = 6
 # Disc radius override: when spatium is small (for 4-measures-per-line on A4 portrait),
 # the auto-calculated disc_r is too small for readability. This override makes
 # colored circles ~1.4 staff spaces regardless of spatium. Set to None for auto.
-DISC_R_OVERRIDE = 110  # reduced from 130 for 3 meas/system (beat_w=550)
+# 13 Set 2026 (richiesta Marco: 16 settori/rigo, tutto rimpicciolito):
+# dischi ridotti per far entrare 16 settori nel rigo A4 (settore ~420px).
+DISC_R_OVERRIDE = 72
 
 # Invariant assertions on layout constants.
 # Checked at import time — if someone changes a constant and breaks the geometry,
@@ -4284,6 +4315,12 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             # 4/4 → 4 × BEAT_WIDTH = 3300px, 3/4 → 3 × BEAT_WIDTH = 2475px,
             # 2/4 → 2 × BEAT_WIDTH = 1650px. Each grey sector is always BEAT_WIDTH (825px).
             staff_width = info['x_end'] - music_start  # available width
+            # 13 Set 2026 (richiesta Marco 16 settori): il rendering avviene su
+            # pagina larga 16.5" ma il viewBox finale è A4 (9924px). L'equalizzatore
+            # deve far entrare il rigo nel viewBox finale, non nel SVG largo,
+            # altrimenti i settori oltre x=10024 vengono tagliati nel PDF.
+            if not rhythm_mode and music_start + staff_width > STAFF_END_X:
+                staff_width = STAFF_END_X - music_start
             # Compute per-measure widths based on time signature
             measure_widths = []
             for i in range(n_groups):
@@ -6413,14 +6450,23 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             # REALE della battuta equalizzata, altrimenti sfora la barline.
             sector_width = m_width / n_sectors_m if n_sectors_m > 0 else BEAT_WIDTH
 
-
-            for q in range(n_sectors_m):
+            # 13 Set 2026 (richiesta Marco: 16 settori SEMPRE): le battute di
+            # pausa (MMRest) hanno anch'esse i loro settori grigi, altrimenti
+            # il rigo mostra meno di 16 settori visibili. Un MMRest di gc
+            # battute disegna gc * n_sectors settori dentro il suo box.
+            _mm_mult = 1
+            if mmrest_groups:
+                for _gs, _gc in mmrest_groups:
+                    if _gs == _gm_grey:
+                        _mm_mult = _gc
+                        break
+            for q in range(n_sectors_m * _mm_mult):
                 bg_color = BG_COLOR_LIGHT if global_q % 2 == 0 else BG_COLOR_DARK
                 q_x = m_start + q * sector_width
                 bg_elements.append(
                     f'<rect x="{q_x:.1f}" y="{staff_top:.1f}" '
                     f'width="{sector_width:.1f}" height="{grey_height:.1f}" '
-                    f'fill="{bg_color}" opacity="{BG_OPACITY}" />'
+                    f'fill="{bg_color}" opacity="{BG_OPACITY}" data-mm="{_gm_grey}" />'
                 )
                 global_q += 1
     
@@ -9701,6 +9747,11 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 
                 # Rimuovi settori grigi in questo sistema
                 def remove_bg_sys(match, msl=sys_start_x, msel=sys_end_x, st=st, sb=sb):
+                    # 14 Set 2026: i settori grigi del box MMRest (tag data-m)
+                    # sono generati appositamente dal loop bg_elements con
+                    # moltiplicatore _mm_mult: NON rimuoverli.
+                    if 'data-mm=' in match.group(0):
+                        return match.group(0)
                     x_m = re.search(r'x="([\d.]+)"', match.group(0))
                     y_m = re.search(r'y="([\d.]+)"', match.group(0))
                     if x_m and y_m:
@@ -10115,10 +10166,10 @@ def main():
         globals()['DISC_R_OVERRIDE'] = 72  # 55 * 1.3 (aumento 30%)
         # I dischi (raggio 55, diametro 110) entrano agevolmente nel settore 550
     else:
-        # 13 Set 2026 (richiesta Marco): 12 settori grigi per rigo anche in
-        # notazione completa (3 battute 4/4). Il default era 8 (2 battute 4/4),
-        # che sprecava spazio e gonfiava il PDF.
-        globals()['_MAX_SECTORS_OVERRIDE'] = 12
+        # 13 Set 2026 (richiesta Marco): 16 settori grigi per rigo SEMPRE
+        # in notazione completa (4 battute 4/4, 8 battute 2/4, ecc.).
+        # Tutto il rigo viene rimpicciolito per farli entrare (settore ~460px).
+        globals()['_MAX_SECTORS_OVERRIDE'] = 16
 
     # Step 1: Extract notes
     print("[1/5] Estrazione note dal .mscz...")
