@@ -3123,17 +3123,19 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
             mmrest_end = last_meas[1]
             mmrest_width = mmrest_end - mmrest_start
             
+            # 15 Set 2026 (direttiva): celle MMRest con sfondo NERO e testo
+            # BIANCO, come tutte le celle di pausa.
             tavola_svg += (f'<rect x="{mmrest_start:.1f}" y="{tavola_top:.1f}" '
                           f'width="{mmrest_width:.1f}" height="{tavola_row_height}" '
-                          f'fill="white" rx="8" '
-                          f'stroke="#999" stroke-width="3" stroke-dasharray="20,12"/>')
+                          f'fill="#111111" rx="8" '
+                          f'stroke="#111111" stroke-width="2"/>')
             font_size = 100
             text_x = mmrest_start + mmrest_width / 2
             text_y = tavola_top + tavola_row_height / 2 + font_size * 0.35
             tavola_svg += (f'<text x="{text_x:.1f}" y="{text_y:.1f}" '
                           f'text-anchor="middle" font-family="Atkinson Hyperlegible" '
-                          f'font-size="{font_size}" font-weight="600" '
-                          f'fill="#999" font-style="italic">{total_count} battute di pausa</text>')
+                          f'font-size="{font_size}" font-weight="700" '
+                          f'fill="white">{total_count} battute di pausa</text>')
             continue  # salta il disegno delle celle per questo sistema
         
         # For each measure in this system, draw the cells
@@ -3171,15 +3173,15 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
                 mmrest_width = m_end - m_start
                 tavola_svg += (f'<rect x="{m_start:.1f}" y="{tavola_top:.1f}" '
                               f'width="{mmrest_width:.1f}" height="{tavola_row_height}" '
-                              f'fill="white" rx="8" '
-                              f'stroke="#999" stroke-width="3" stroke-dasharray="20,12"/>')
+                              f'fill="#111111" rx="8" '
+                              f'stroke="#111111" stroke-width="2"/>')
                 font_size = 100
                 text_x = m_start + mmrest_width / 2
                 text_y = tavola_top + tavola_row_height / 2 + font_size * 0.35
                 tavola_svg += (f'<text x="{text_x:.1f}" y="{text_y:.1f}" '
                               f'text-anchor="middle" font-family="Atkinson Hyperlegible" '
-                              f'font-size="{font_size}" font-weight="600" '
-                              f'fill="#999" font-style="italic">{mmrest_count} battute di pausa</text>')
+                              f'font-size="{font_size}" font-weight="700" '
+                              f'fill="white">{mmrest_count} battute di pausa</text>')
                 continue
             m_width = m_end - m_start
             bpm = _beats_for_measure(global_measure_idx)
