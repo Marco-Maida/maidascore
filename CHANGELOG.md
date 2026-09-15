@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.2] - 2026-09-15
+
+### Fixed
+- **Double rest glyphs (bug doppia pausa)**: MuseScore sometimes renders MORE
+  Rest glyphs than the .mscz declares (e.g. a quarter rest split into an extra
+  eighth glyph). The post-processor repositioned the extra glyph at its original
+  position, producing two overlapping eighth rests ~175px apart in the same
+  grey sector. Extra glyphs are now removed when every rest of the measure has
+  already been matched.
+- **Un-repositioned rests removed in notation mode too** (previously
+  rhythm-mode only): original MuseScore rests left at their original
+  position/scale overlapped notes after layout.
+- **Empty staff after initial multi-measure rest**: the initial rest group is
+  no longer isolated on its own system; it now packs compactly in the first
+  system together with the first music measures.
+- **Beams overlapping, grey sectors out of margin, "4" box clipped** at the
+  page edge; eighth rests placed outside their sector.
+- **Double xvfb-run**: MuseScore segfaulted when the `mscore` wrapper already
+  launches xvfb-run (skip the second wrapper).
+
 ## [1.1.6] - 2026-09-12
 
 ### Fixed
