@@ -4408,7 +4408,41 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     groups.append([b])
                 else:
                     groups[-1].append(b)
-        
+            # 15 Set 2026 (bug sistema misto MMRest + battute reali): quando il
+            # sistema contiene un gruppo MMRest ESPANSO (pause iniziali espanse
+            # in battute individuali), le barline interne del gruppo vanno
+            # COLLASE in un'unica battuta. Senza questo collasso l'equalizzatore
+            # crea 4 battute da 1276px con celle grigie da 80px (via _mm_mult)
+            # e la pulizia MMRest rimuove le barline interne: risultato righi
+            # con micro-settori incoerenti e battute reali compresse.
+            _mmrest_count_here = 0
+            _first_grp = -1
+            if mmrest_groups:
+                _gm_probe = _sys_to_global_idx.get(x_start, measure_offset)
+                for _gs, _gc in mmrest_groups:
+                    if _gm_probe <= _gs < _gm_probe + len(bls):
+                        _first_grp = _gs - _gm_probe  # index of first collapsed group
+                        _mmrest_count_here = _gc
+                        if 0 <= _first_grp < len(groups):
+                            _collapsed = []
+                            for g in groups[_first_grp:_first_grp + _gc]:
+                                _collapsed.extend(g)
+                            if _collapsed:
+                                groups = (groups[:_first_grp] + [_collapsed] +
+                                          groups[_first_grp + _gc:])
+                        break
+            # 15 Set 2026 (bug pause sovrapposte sistema misto): i bounds delle
+            # battute (old_measure_bounds) usano i CENTRI dei gruppi. Per il
+            # gruppo MMRest COLLASO il centro (media barline interne) cade a
+            # metà gruppo: le pause raw tra centro e fine-gruppo (quarter a
+            # 4768, eighth a 5157 col gruppo [1716..5110]) finivano nella
+            # battuta reale successiva, riposizionate lì sopra le note.
+            # Override: confini del gruppo collassato = [min, max] delle sue
+            # barline, così le pause interne restano nel gruppo collassato
+            # (dove la pulizia MMRest le rimuove).
+            _mm_bounds_override = {}
+            if _mmrest_count_here and _first_grp >= 0:
+                _mm_bounds_override[_first_grp] = (min(groups[_first_grp]), max(groups[_first_grp]))
             n_groups = len(groups)
             group_centers = [sum(g)/len(g) for g in groups]
         
@@ -4475,8 +4509,22 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     grp_max = max(grp)
                     new_c = new_c - (grp_max - old_c)
                 shift = new_c - old_c
+                # 15 Set 2026 (bug sistema misto MMRest): per il gruppo COLLASO
+                # MMRest lo shift costante sparpaglia le barline interne FUORI
+                # dalla battuta collassata (finiscono nelle battute reali).
+                # Usa scala proporzionale: le barline interne restano DENTRO
+                # la battuta collassata (dove la pulizia MMRest le rimuove).
+                _mm_collapse_scale = None
+                if _mmrest_count_here and _gi == _first_grp:
+                    # battuta collassata = [confine sinistro, new_c]
+                    _coll_left = music_start if _gi == 0 else new_centers[_gi - 1]
+                    _mm_collapse_scale = (_coll_left, new_c, grp[0], grp[-1])
                 for b in grp:
-                    new_b = b + shift
+                    if _mm_collapse_scale is not None:
+                        _ns, _ne, _os, _oe = _mm_collapse_scale
+                        new_b = _ns + (b - _os) * (_ne - _ns) / (_oe - _os) if _oe != _os else new_c
+                    else:
+                        new_b = b + shift
                     # Find the full polyline element and replace both X coordinates
                     # MuseScore esporta alcune barlines con X intero
                     # (es. "5279") e altre con decimali (es. "5242.74"). str(5279.0)
@@ -4502,10 +4550,10 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                             y2_val = target_match.group(3)
                             prefix = target_match.group(1)
                             new_elem = f'{prefix}{new_x_str},{y1_val} {new_x_str},{y2_val}"'
+                            if os.environ.get('MAIDA_DEBUG_BARLINE'):
+                                print(f"      [barline-debug] sys_top={sys_top:.0f} b={b:.2f} -> {new_x_str}")
                             modified = modified[:target_match.start()] + new_elem + modified[target_match.end():]
                             break
-        
-            # Save individual barline positions (after shifting) for duration bar clipping
             # We need the ACTUAL barline X positions (not group centers) to clip duration bars
             individual_barlines = []
             for grp, new_c in zip(groups, new_centers):
@@ -4534,12 +4582,16 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             orig_music_start = info['x_start']  # staff line start = true measure start
             old_measure_bounds = []
             old_measure_bounds.append((orig_music_start, group_centers[0]))
-            # DEBUG 4ago
-            if len(notes_in_sys) > 0:
-                print(f"    DEBUG sys: notes={len(notes_in_sys)} groups={n_groups} group_centers={group_centers[:5]} orig_music_start={orig_music_start:.0f}")
-                print(f"    DEBUG old_measure_bounds={old_measure_bounds[:3]}")
             for i in range(len(group_centers) - 1):
                 old_measure_bounds.append((group_centers[i], group_centers[i + 1]))
+            # 15 Set 2026 (bug pause sovrapposte sistema misto): sostituisci i
+            # confini del gruppo collasso MMRest con [min, max] delle sue barline
+            # (vedi _mm_bounds_override sopra per la motivazione).
+            for _mm_gi, _mm_bnd in _mm_bounds_override.items():
+                if _mm_gi == 0:
+                    old_measure_bounds[0] = (orig_music_start, _mm_bnd[1])
+                else:
+                    old_measure_bounds[_mm_gi] = _mm_bnd
         
             new_measure_bounds = []
             new_measure_bounds.append((music_start, new_centers[0]))
@@ -4568,6 +4620,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             # (numero di battute nel sistema), ricostruire gli indici in modo contiguo
             # partendo da _sys_global_idx (indice logico della prima battuta del sistema).
             n_groups_in_sys = len(old_measure_bounds)
+            _smi_was_rebuilt = False
             if len(system_measure_indices) < n_groups_in_sys and n_groups_in_sys > 0:
                 # Ricostruisce indici contigui: [_sys_global_idx, _sys_global_idx+1, ...]
                 rebuilt = list(range(_sys_global_idx, _sys_global_idx + n_groups_in_sys))
@@ -4575,6 +4628,45 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 known = set(system_measure_indices)
                 if all(k in rebuilt for k in known):
                     system_measure_indices = rebuilt
+                    _smi_was_rebuilt = True
+
+            # 15 Set 2026 (bug sistema misto MMRest + battute reali): con il
+            # collasso MMRest, old/new_measure_bounds hanno MENOS elementi
+            # delle battute fisiche. Il gruppo collassato = battuta logica
+            # _gs con _gc battute fisiche: rimappa system_measure_indices da
+            # "una per battuta fisica" a "una per gruppo equalizzato", usando
+            # l'indice logico corretto (_sys_global_idx + offset logico).
+            if mmrest_groups:
+                _gm_here = _sys_to_global_idx.get(x_start, measure_offset)
+                _mm_pair_here = None
+                for _gs, _gc in mmrest_groups:
+                    if _gm_here <= _gs < _gm_here + n_groups:
+                        _mm_pair_here = (_gs, _gc)
+                        break
+                if _mm_pair_here is not None:
+                    _gs0, _gc0 = _mm_pair_here
+                    _mm_pos = _gs0 - _gm_here  # posizione del gruppo collassato
+                    if 0 <= _mm_pos < len(system_measure_indices):
+                        # 15 Set 2026 (bug pause battute 5-6): distinguere due casi.
+                        # (a) lista REBUILDATA contigua (una per battuta fisica):
+                        #     inserisci _gs0 e salta le _gc0-1 battute fisiche del
+                        #     gruppo collassato (comportamento storico).
+                        # (b) lista NOTE-DERIVED post-collasso (es. [4,5] nel
+                        #     sistema MMRest b1-4 + b5 + b6: le battute MMRest
+                        #     non hanno note): _gc0 elementi NON esistono dopo
+                        #     _mm_pos — inserisci _gs0 senza saltare nulla.
+                        if _smi_was_rebuilt:
+                            system_measure_indices = (
+                                system_measure_indices[:_mm_pos] +
+                                [_gs0] +
+                                system_measure_indices[_mm_pos + _gc0:]
+                            )
+                        else:
+                            system_measure_indices = (
+                                system_measure_indices[:_mm_pos] +
+                                [_gs0] +
+                                system_measure_indices[_mm_pos:]
+                            )
         
         # Track which rests have been matched (by position) in each measure
         # 12 Set 2026: pool di note per i nudge delle pause: TUTTE le note della
@@ -4604,6 +4696,10 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                                                     _b_new[0], _b_new[1] - _b_new[0],
                                                     _sector_size_p, _n_sectors_p, _ts_beats_p)
         
+        # 15 Set 2026 (bug rest croma battuta 5): bounds dei gruppi SUCCESSIVI,
+        # per la regola "interno vince" nello slack ±50px (vedi loop sotto).
+        all_later_bounds = [old_measure_bounds[i] for i in range(1, len(old_measure_bounds))]
+
         for grp_idx in range(len(old_measure_bounds)):
             old_m_start, old_m_end = old_measure_bounds[grp_idx]
             new_m_start, new_m_end = new_measure_bounds[grp_idx]
@@ -4659,6 +4755,24 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 left_bound = old_m_start - 50
                 if not (left_bound <= tx <= old_m_end + 50):
                     continue
+                # 15 Set 2026 (bug rest croma battuta 5 eliminato): lo slack ±50px
+                # sui confini fa sì che un elemento appena oltre la barline venga
+                # assegnato alla battuta PRECEDENTE (es. eighth rest di b5 a 5157
+                # con confine MMRest a 5110 → +47px dentro lo slack del gruppo 0,
+                # rimosso come extra MMRest). Regola "interno vince": se l'elemento
+                # sta DENTRO i bounds di questo gruppo (senza slack), processalo
+                # QUI; lo slack serve solo per elementi di frontend (chiave ecc.).
+                _strict_in = old_m_start <= tx <= old_m_end
+                if not _strict_in:
+                    # elemento nello slack: processalo solo se NESSUN gruppo
+                    # successivo lo contiene strettamente
+                    _claimed_by_later = False
+                    for _lb in all_later_bounds:
+                        if _lb[0] <= tx <= _lb[1]:
+                            _claimed_by_later = True
+                            break
+                    if _claimed_by_later:
+                        continue
                 
                 # Skip elements already repositioned in a previous measure group
                 # (byte offsets can shift by ±1 after in-place text replacements)
@@ -5471,17 +5585,24 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                             template_d = HALF_REST_PATH
                             template_scale = 3.386  # scale pieno come semiminime
                         if template_d:
-                            # Clone the rest at the expected position
-                            # Y: center of staff (same as other rests in this system)
-                            staff_mid_y = (info['top'] + info['bottom']) / 2
-                            # Adjust Y for the rest type (quarter rests are centered,
-                            # eighth rests are offset)
-                            if r_dtype == 'eighth':
-                                rest_y = staff_mid_y - 80  # eighth rests sit higher
-                            elif r_dtype == 'half':
-                                rest_y = staff_mid_y - 50  # half rests centered on staff
+                            # 15 Set 2026 (fix definitivo): questo blocco opera in
+                            # coordinate PRE y-stretch (verificato: rest_y=2223 per
+                            # battuta 5, sistema middle PRE=2303). La Y corretta per
+                            # i rest clonati è la middle_line PRE del sistema:
+                            # - eighth rest: ty = middle_line esatta (verificato su
+                            #   SVG raw MuseScore: eighth originale a ty=2303 = middle)
+                            # - quarter rest: ty = middle_line - 94 (quarter raw a
+                            #   ty=2209, middle=2303 → -94 = -1 staff space pre)
+                            # - half rest: gestita sotto col rettangolo.
+                            # Lo y-stretch remappa poi la middle PRE alla middle POST
+                            # mantenendo l'allineamento corretto.
+                            _ml_pre = info.get('middle_line_y')
+                            if _ml_pre is None:
+                                _ml_pre = (info['top'] + info['bottom']) / 2
+                            if r_dtype == 'quarter':
+                                rest_y = _ml_pre - 94.0   # quarter: 1 space sopra la middle
                             else:
-                                rest_y = staff_mid_y - 50  # quarter rests centered
+                                rest_y = _ml_pre          # eighth/other: sulla middle
                             if r_dtype == 'half':
                                 # Half rest: disegna come rettangolo nero direttamente
                                 # (il path MuseScore è troppo piccolo con scale normale).
@@ -5538,7 +5659,14 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             _matched_grp_idx = None
             _n_mi = n.get('measure_idx')
             if _n_mi is not None:
+                # 15 Set 2026 (bug note sistema misto): con il collasso MMRest la
+                # battuta fisica i del sistema NON è _sys_global_idx + i (il gruppo
+                # collassato copre N battute logiche). Cerca il gruppo che ha
+                # quest'indice in system_measure_indices (es. smi=[0,4,5]: la nota
+                # m=4 sta nel gruppo 1). Fallback contiguo solo se smi non lo contiene.
                 _pos_mi = _n_mi - _sys_global_idx
+                if _n_mi in system_measure_indices:
+                    _pos_mi = system_measure_indices.index(_n_mi)
                 if 0 <= _pos_mi < _n_grp_total:
                     _matched_grp_idx = _pos_mi
             if _matched_grp_idx is None:
@@ -5637,6 +5765,8 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             new_m_width = new_m_end - new_m_start
             # FIX #147/#152: per-measure time signature
             _gm_idx3 = _sys_global_idx + grp_idx
+            if measure_idx_position < len(system_measure_indices):
+                _gm_idx3 = system_measure_indices[measure_idx_position]
             _ts_b3 = _ts_beats_for_measure(_gm_idx3)
             _n_sec3 = _n_sectors_for_measure(_gm_idx3)
             _sec_sz3 = _ts_b3 / _n_sec3 if _n_sec3 > 0 else 1.0
@@ -5645,6 +5775,13 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             # doppio-processing e sovrapposizioni). Fallback posizionale solo per
             # note senza measure_idx.
             _midx_here = _sys_global_idx + grp_idx
+            # 15 Set 2026 (bug note sistema misto): nel sistema MMRest collassato
+            # (es. MMRest b1-4 + b5 + b6), _sys_global_idx + grp_idx dà indici
+            # SBAGLIATI (1, 2 invece di 4, 5): le note restano non-matchate via
+            # measure_idx e il fallback posizionale le sparpaglia oltre la barline.
+            # Usa system_measure_indices (gia' rimappata col gruppo collassato).
+            if measure_idx_position < len(system_measure_indices):
+                _midx_here = system_measure_indices[measure_idx_position]
             measure_notes = [n for n in notes_in_sys
                            if n.get('_beat_num') is not None
                            and ((n.get('measure_idx') is not None and n.get('measure_idx') == _midx_here)
@@ -9342,8 +9479,12 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         _n_unmarked = len(_unmarked_pat.findall(modified))
         modified = _unmarked_pat.sub('', modified)
         print(f"  Pause non riposizionate rimosse: {_n_unmarked}")
-        # pulizia: rimuovi gli attributi-marker (non servono nell'SVG finale)
-        modified = modified.replace(' data-repos="1"', '').replace(' data-clone="1"', '')
+        # pulizia: rimuovi gli attributi-marker (non servono nell'SVG finale).
+        # 15 Set 2026 (bug pausa b5 scomparsa): la pulizia era qui, ma la
+        # remove_rests_sys del blocco MMRest sotto usa i marker per distinguere
+        # le pause riposizionate dalle pause spurie del gruppo collassato.
+        # Spostata DOPO il blocco MMRest (vedi sotto).
+        pass
 
     # 2f. Enlarge rests to match stretched staff
     # Rests have transform="matrix(a,0,0,d,tx,ty)" with scale ~1.143.
@@ -9472,7 +9613,8 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         _occupied_rests = set()
         for m in rest_pat.finditer(svg_str):
             _orx, _orsx = float(m.group(3)), float(m.group(1))
-            _occupied_rests.add(_orx + 48.0 * _orsx)
+            _ory_t = float(m.group(4))
+            _occupied_rests.add((_orx + 48.0 * _orsx, _ory_t))
         rest_entries = []
         for m in rest_pat.finditer(svg_str):
             rx, ry, rsc = float(m.group(3)), float(m.group(4)), float(m.group(2))
@@ -9511,10 +9653,10 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         _early_bounds = (max(_lows_e), min(_highs_e))
             if _early_bounds is not None:
                 near = [(cx, cr) for cx, cy, cr in circles
-                        if abs(cy - ry) < 100
+                        if abs(cy - ry) < 600
                         and _early_bounds[0] - 10 <= cx <= _early_bounds[1] + 10]
             else:
-                near = [(cx, cr) for cx, cy, cr in circles if abs(cy - ry) < 100]
+                near = [(cx, cr) for cx, cy, cr in circles if abs(cy - ry) < 600]
             if not near:
                 continue
             rest_pat_rx = re.compile(r'<path class="Rest" transform="matrix\(([^,]+),0.0,0.0,([^,]+),([^,]+),([^,]+)\)"')
@@ -9539,12 +9681,29 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             if sys_i is None or sys_i >= len(sks_sorted):
                 continue
             sk = sks_sorted[sys_i]
-            bl_x = raw_barlines_by_system.get(sk)
-            if not bl_x:
-                if os.environ.get('MAIDA_DEBUG_RESTS'):
-                    print(f"      [rest-debug] DECOLLIDE no-bl_x sk={sk}")
-                continue
-            xs = sorted(bl_x)
+            # 15 Set 2026 (bug pausa b5 non decollisa): usa i bounds EQUALIZZATI
+            # quando disponibili — raw_barlines_by_system contiene le barline
+            # PRE-equalizzazione (collasso MMRest/scala proporzionale), quindi
+            # m=[4080,5212] invece di [4646,7198] → tutti i candidati cadevano
+            # "fuori settore".
+            _eq_bounds = equalized_measures.get(sk) or []
+            if _eq_bounds:
+                _lb = [b for b in _eq_bounds if b[0] <= rx <= b[1]]
+                # la pausa può stare nello slack: cerca anche i bounds adiacenti
+                if not _lb:
+                    _lb = [min(_eq_bounds, key=lambda b: abs(b[0] - rx))]
+                if _lb:
+                    _eq_l = _lb[0]
+                    xs = [_eq_l[0], _eq_l[1]]
+                else:
+                    xs = []
+            else:
+                bl_x = raw_barlines_by_system.get(sk)
+                if not bl_x:
+                    if os.environ.get('MAIDA_DEBUG_RESTS'):
+                        print(f"      [rest-debug] DECOLLIDE no-bl_x sk={sk}")
+                    continue
+                xs = sorted(bl_x)
             lows = [b for b in xs if b <= rx + 1]
             highs = [b for b in xs if b >= rx - 1]
             # 13 Set 2026: pausa clonata spinta FUORI dalla sua battuta dal nudge:
@@ -9616,13 +9775,19 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 if os.environ.get('MAIDA_DEBUG_RESTS'):
                     print(f"      [rest-debug] DECOLLIDE keep-in-sector rest@{rx:.0f} (cands fuori settore)")
                 continue
-            for _oc in list(_occupied_rests):
+            # 15 Set 2026: _occupied_rests è ora (x, ty) — confronta solo
+            # pause della STESSA riga Y (|dy|<600), non pause di altri
+            # sistemi che casualmente hanno la stessa X.
+            _my_center = rx + half_w
+            for _oct in list(_occupied_rests):
+                _oc, _oc_y = _oct
+                if abs(_oc_y - ry) > 600:
+                    continue
+                # 15 Set 2026: non confrontare la pausa con la PROPRIA posizione
+                # (prepopolata da _occupied_rests) — bloccherebbe ogni candidato.
+                if abs(_oc - _my_center) < 1.0 and abs(_oc_y - ry) < 1.0:
+                    continue
                 if abs(_oc - best) < 2 * half_w + 18:
-                    # troppo vicino a una pausa già piazzata: prova altri candidati.
-                    # 13 Set 2026 (bug pausa nel margine): _alts deve partire dai
-                    # candidati DENTRO il settore (_cand_in_sect), non da cands
-                    # completi — altrimenti l'anti-impilamento scavalcava il
-                    # filtro keep-in-sector e mandava la pausa fuori cella.
                     _alts = [c for c in _cand_in_sect
                              if abs(_oc - c) >= 2 * half_w + 18]
                     if _alts:
@@ -9634,7 +9799,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 if os.environ.get('MAIDA_DEBUG_RESTS'):
                     print(f"      [rest-debug] DECOLLIDE skip-stack rest@{rx:.0f} (tutti i candidati occupati)")
                 continue
-            _occupied_rests.add(best)
+            _occupied_rests.add((best, ry))
             new_tx = best - half_w
             if os.environ.get('MAIDA_DEBUG_RESTS'):
                 print(f"      [rest-debug] DECOLLIDE rest@({rx:.0f},{ry:.0f}) → {new_tx:.0f} (center {best:.0f}, measure [{m_start:.0f},{m_end:.0f}])")
@@ -9647,10 +9812,13 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             svg_str = svg_str.replace(old_t, new_t, 1)
         return svg_str, n_fixed
 
-    if rhythm_mode:
-        modified, _n_decol = _rest_circle_decollide(modified)
-        if _n_decol:
-            print(f"    Anti-collisione pause-cerchi: {_n_decol} pause spostate")
+    # 15 Set 2026 (bug pausa sovrapposta alla croma, notation mode): il
+    # decollide girava solo in rhythm mode, ma i dischi cerchio esistono
+    # anche in notazione → la pausa eighth di b5 restava sovrapposta alla
+    # croma successiva. Attivo SEMPRE (il dedup resta rhythm-only).
+    modified, _n_decol = _rest_circle_decollide(modified)
+    if _n_decol:
+        print(f"    Anti-collisione pause-cerchi: {_n_decol} pause spostate")
 
     def _rest_dedup(svg_str):
         # 13 Set 2026 (bug pause impilate): pass finale — rimuovi pause sovrapposte
@@ -9855,6 +10023,8 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         global_m_idx = measure_offset  # parte dal measure_offset della pagina
         _mmrest_map_mmr = dict(mmrest_groups)
         _mmrest_set_mmr = set(_mmrest_map_mmr.keys())
+        _sys_to_global_idx_post = _sys_to_global_idx
+        _mmrest_start_set_post = _mmrest_set_mmr
         for sys_i, sk in enumerate(sorted_sys_keys):
             si = systems_post[sk]
             # Match per indice: il sys_i-esimo sistema corrisponde al sys_i-esimo em_key
@@ -9862,11 +10032,26 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             if sys_i < len(em_sorted_keys):
                 measures = equalized_measures[em_sorted_keys[sys_i]]
             if measures:
-                # 15 Set 2026: gli MMRest sono ESPANSI in N battute fisiche
-                # → ogni battuta fisica avanza di 1 (mappatura 1:1).
-                for m_start, m_end in measures:
-                    all_meas_info.append((global_m_idx, m_start, m_end, sk, si))
-                    global_m_idx += 1
+                # 15 Set 2026 (bug sistema misto): mappatura LOGICA tra battute
+                # equalizzate e indici globali. Il gruppo MMRest collassato
+                # occupa 1 battuta equalizzata ma count battute logiche.
+                # La numerazione logica segue _sys_to_global_idx e salta le
+                # battute logiche coperte dai gruppi MMRest di questo sistema.
+                _sys_g0 = _sys_to_global_idx_post.get(sk, global_m_idx)
+                _logical = _sys_g0
+                for _mi_loc, (m_start, m_end) in enumerate(measures):
+                    _gm = _logical
+                    if _gm not in _mmrest_start_set_post:
+                        all_meas_info.append((_gm, m_start, m_end, sk, si))
+                        _logical += 1
+                    else:
+                        # battuta collassata MMRest: 1 indice logico ma il numero
+                        # mostrato (_mmrest_map_mmr[_gm]) copre gm..gm+count-1.
+                        # La pulizia usa la finestra X di QUESTA sola battuta.
+                        all_meas_info.append((_gm, m_start, m_end, sk, si))
+                        _logical += _mmrest_map_mmr.get(_gm, 1)
+                global_m_idx = _logical
+
         
         # Per ogni gruppo MMRest, trova le battute che appartengono a questa pagina
         for grp_start, grp_count in mmrest_groups:
@@ -9915,6 +10100,11 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 
                 # Rimuovi pause in questo sistema nel range MMRest
                 def remove_rests_sys(match, msl=sys_start_x, msel=sys_end_x, st=st, sb=sb, sh=sh):
+                    # 15 Set 2026: NON rimuovere pause riposizionate o clonate:
+                    # appartengono a battute reali del sistema misto e cadono
+                    # nella finestra slack ±200px del gruppo MMRest collassato.
+                    if 'data-repos' in match.group(0) or 'data-clone' in match.group(0):
+                        return match.group(0)
                     tx_m = re.search(r'transform="matrix\([^,]+,[^,]+,[^,]+,[^,]+,([\d.\-]+),([\d.\-]+)\)"', match.group(0))
                     if tx_m:
                         tx, ty = float(tx_m.group(1)), float(tx_m.group(2))
@@ -10030,6 +10220,10 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             modified = modified.replace('</svg>', mmrest_svg + '\n</svg>')
             
             print(f"    MMRest: centro={rect_center_x:.0f}, numero={display_count}, sistemi={len(by_system)}")
+            # 15 Set 2026 (bug pausa b5 scomparsa): pulizia dei marker DOPO il
+            # blocco MMRest — remove_rests_sys usa i marker data-repos/data-clone
+            # per non cancellare le pause delle battute reali del sistema misto.
+            modified = modified.replace(' data-repos="1"', '').replace(' data-clone="1"', '')
     
     # calcola il numero totale di battute in questa pagina
     # 12 Ago 2026 (architettura Fable 5): usa _system_layout (Single Source of
