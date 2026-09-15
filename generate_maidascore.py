@@ -4277,9 +4277,15 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     break
         
         if _is_mmrest_sys:
-            # Sistema MMRest: 1 battuta che occupa tutto il sistema
-            staff_start = info['x_start']
-            staff_end = info.get('x_end', 9215)
+            # Sistema MMRest: 1 battuta che occupa tutto il sistema.
+            # 15 Set 2026 (bug box "4" decentrato + tavola mancante, Danza):
+            # x_start/x_end raw sono in coordinate NATIVE (canvas largo
+            # 32" in rhythm mode, fino a x=37980): il box nero MMRest e la
+            # cella tavola "N battute di pausa" venivano disegnati fuori
+            # dal viewBox finale (9924) o clampati al bordo destro.
+            # Usa SEMPRE i limiti equalizzati uniformi come i sistemi normali.
+            staff_start = UNIFORM_MUSIC_START
+            staff_end = STAFF_END_X
             equalized_measures[x_start] = [(staff_start, staff_end)]
             continue
         
