@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.4] - 2026-09-15
+
+### Fixed
+- **Spurious barlines in mixed MMRest + real measures systems**: the x_end
+  alignment correction for the last group of a system (`new_c -= grp_max -
+  old_c`) was also applied to the collapsed MMRest group. With 7+ internal
+  barlines grp_max >> old_c, making new_c negative (e.g. -4200): the collapse
+  proportional scale inverted and the internal barlines were scattered far
+  outside the MMRest box, outside the MMRest cleanup window — surviving as
+  stray barlines across the staff. The collapsed MMRest group is now excluded
+  from that correction.
+
 ## [1.2.3] - 2026-09-15
 
 ### Fixed
