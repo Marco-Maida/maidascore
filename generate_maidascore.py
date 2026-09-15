@@ -10559,10 +10559,11 @@ def main():
         # non raggiungibili: glifi keysig+tempo occupano fino a ~x=1100 e la
         # pagina inizia a x=0; max fisico = 800 con glifi compattati a sx).
         globals()['UNIFORM_MUSIC_START'] = 800
-        # 20 settori grigi per rigo — richiesta Marco 13 Set 2026.
-        globals()['_MAX_SECTORS_OVERRIDE'] = 20
+        # 16 settori grigi per rigo — richiesta Marco 15 Set 2026 (era 20):
+        # meno settori = settori più larghi e leggibili.
+        globals()['_MAX_SECTORS_OVERRIDE'] = 16
         globals()['UNIFORM_MEASURE_WIDTH'] = 447 * 4  # battuta 4/4 = 1788px
-        globals()['BEAT_WIDTH'] = 447  # 447px per settore grigio (8950px / 20 settori, UNIFORM_MEASURE_WIDTH=447*4)
+        globals()['BEAT_WIDTH'] = 8950 / 16  # 559px per settore grigio (8950px / 16 settori, UNIFORM_MEASURE_WIDTH=447*4)
         # 12 Set 2026 (richiesta Marco): dischi ridotti perché dentro non si
         # scrive il nome della nota. Scalati col settore (era 72).
         globals()['DISC_R_OVERRIDE'] = 90
