@@ -4513,7 +4513,15 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 # 13 Set 2026: per l'ULTIMO gruppo del sistema, allinea la barline
                 # più esterna a x_end invece del centro — una doppia barline finale
                 # (thin+thick) centrata su x_end sfora il rigo di metà spessore.
-                if _gi == len(groups) - 1 and len(grp) >= 2:
+                # 15 Set 2026 (bug stanghette sfasate b50): NON applicare
+                # l'allineamento x_end al gruppo MMRest COLLASSO: con 7+
+                # barline interne grp_max >> old_c e new_c diventa NEGATIVO
+                # (es. -4200) → la scala proporzionale si inverte e le barline
+                # interne finiscono MOLTO lontano dal box (fuori dalla finestra
+                # della pulizia MMRest → sopravvivono come stanghette spurie
+                # sparse nel rigo).
+                if (_gi == len(groups) - 1 and len(grp) >= 2
+                        and not (_mmrest_count_here and _gi == _first_grp)):
                     grp_max = max(grp)
                     new_c = new_c - (grp_max - old_c)
                 shift = new_c - old_c
@@ -4527,6 +4535,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     # battuta collassata = [confine sinistro, new_c]
                     _coll_left = music_start if _gi == 0 else new_centers[_gi - 1]
                     _mm_collapse_scale = (_coll_left, new_c, grp[0], grp[-1])
+
                 for b in grp:
                     if _mm_collapse_scale is not None:
                         _ns, _ne, _os, _oe = _mm_collapse_scale
