@@ -265,6 +265,13 @@ def check_circles_in_sectors(data, result):
                 if abs(sy - (cy - 350)) > 500:  # rough Y match (sector is above notes)
                     continue
                 if sx <= cx < sx + sw:
+                    # 15 Set 2026: cerchio ESATTAMENTE sul confine tra due settori
+                    # (cx == sx: onset al primo istante del settore): ammesso —
+                    # metà disco sporge nel settore precedente, come una nota sul
+                    # beat che cade a cavallo della linea di separazione.
+                    if abs(cx - sx) < 1.0 or abs(cx - (sx + sw)) < 1.0:
+                        found_sector = True
+                        break
                     # 13 Set 2026: tolleranza ±16px — nei settori stretti (2/4)
                     # due dischi r58 non entrano senza sovrapporsi: un piccolo
                     # overhang (che non tocca le note adiacenti) è preferibile
