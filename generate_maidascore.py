@@ -5769,6 +5769,12 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         # Clamp center_x to keep circles inside the beat sector.
         time_sig_beats = time_sig_beats_global  # quarter-beats per measure (4 in 4/4, 3 in 6/8)
         for grp_idx in range(len(new_measure_bounds)):
+            # 15 Set 2026 (bug minima b35): measure_idx_position era stantia (valore
+            # dell'ultimo gruppo del loop precedente) → _midx_here sbagliato → le
+            # note della battuta non matchavano via measure_idx e mantenevano la
+            # posizione temporanea (onset/4 hardcoded 4/4) invece del riposizionamento
+            # onset-based. Resetto a grp_idx come nel loop "Also update note positions".
+            measure_idx_position = grp_idx
             new_m_start, new_m_end = new_measure_bounds[grp_idx]
             new_m_width = new_m_end - new_m_start
             # FIX #147/#152: per-measure time signature
@@ -5795,6 +5801,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                            and ((n.get('measure_idx') is not None and n.get('measure_idx') == _midx_here)
                                 or (n.get('measure_idx') is None
                                     and new_m_start - 50 <= n['x'] <= new_m_end + 50))]
+
             from itertools import groupby
             beat_width_frac = 1.0 / _n_sec3  # fraction of measure per sector
             
