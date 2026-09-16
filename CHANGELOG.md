@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.5] - 2026-09-16
+
+### Fixed
+- **Measure numbering after multi-measure rests**: measure numbers used the
+  geometric SVG group index (m_idx+1): each MMRest(N) collapsed into a single
+  SVG group made the numbering lose N-1 logical measures. After an initial
+  MMRest(4) the first played measure was numbered "2" instead of "5"
+  (Danza delle Spade). Fixed: the system's first measure index now derives
+  from `_sys_to_global_idx` (build_system_layout, single source of truth),
+  and a per-system `_mm_extra` accumulator skips the logical measures
+  swallowed by an MMRest group in mixed systems (real measures + MMRest in
+  the same system). Verified against the canonical MuseScore logical
+  numbering via music21 (notes on measures 5-49, 58-87, 92).
+
 ## [1.2.4] - 2026-09-15
 
 ### Fixed
