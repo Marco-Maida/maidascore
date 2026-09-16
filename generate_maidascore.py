@@ -1355,11 +1355,20 @@ def extract_single_part_mscz(input_mscz, part_index=0, key_sig_changes=None, rhy
                             beam_val = 'end'
                         type_match = re.search(r'<type>(\w+)</type>', note_text)
                         if type_match:
-                            beam_tag = f'<beam number="1">{beam_val}</beam>'
-                            if dt == '16th' and beam_val in ('begin', 'continue'):
-                                beam_tag += f'<beam number="2">{beam_val}</beam>'
-                            elif dt == '16th' and beam_val == 'end':
-                                beam_tag += '<beam number="2">end</beam>'
+                            if bm == 'begin16':
+                                # .mscx "begin16" = la primaria CONTINUA e la
+                                # secondaria (beam 2) INIZIA su questa nota:
+                                # 3ª semicroma del gruppo 2+2.
+                                # 16 Set 2026 (bug travature 4 semicrome):
+                                # prima mappava 'end'/'end' → MuseScore chiudeva
+                                # la primaria a metà gruppo.
+                                beam_tag = f'<beam number="1">continue</beam><beam number="2">begin</beam>'
+                            else:
+                                beam_tag = f'<beam number="1">{beam_val}</beam>'
+                                if dt == '16th' and beam_val in ('begin', 'continue'):
+                                    beam_tag += f'<beam number="2">{beam_val}</beam>'
+                                elif dt == '16th' and beam_val == 'end':
+                                    beam_tag += '<beam number="2">end</beam>'
                             new_note = note_text[:type_match.end()] + beam_tag + note_text[type_match.end():]
                             insertions.append((nm.start(), nm.end(), new_note))
                     elif prev_had_beam and beam_start_ok:
@@ -6487,6 +6496,33 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         # poi trova stem in quel sistema per vicinanza X.
         left_stem = None  # (old_sx, new_sx, s_min_y, s_max_y)
         right_stem = None
+        # 16 Set 2026 (bug travature 4 semicrome spezzate): una travatura primaria
+        # CONTINUA su 4+ semicrome NON deve dipendere dal solo stem ±15px ai bordi
+        # (che può mancare se il layout equalizzato non ha stem esattamente al bordo
+        # → la beam si restringeva a un frammento). Raccogliamo TUTTI gli stems
+        # che passano attraverso il beam Y-range e stanno dentro il range X della beam:
+        # la beam riscritta copre min(new_sx)..max(new_sx) — esattamente i suoi gambi.
+        _inner_stems = []
+        if not rhythm_mode:
+            for _s_old, _s_new, _s_min_y, _s_max_y in stem_shifts_list:
+                if not (_s_min_y <= beam_bot + 50 and _s_max_y >= beam_top - 50):
+                    continue
+                if beam_left - 60 <= _s_old <= beam_right + 60:
+                    _inner_stems.append((_s_old, _s_new, _s_min_y, _s_max_y))
+        if not rhythm_mode and _inner_stems:
+            _all_new = sorted(s[1] for s in _inner_stems)
+            # Ci deve essere almeno uno stem vicino a CIASCUN bordo (±60px):
+            # altrimenti stiamo "rubando" stems di una beam vicina.
+            _first_old = min(s[0] for s in _inner_stems)
+            _last_old = max(s[0] for s in _inner_stems)
+            if abs(_first_old - beam_left) < 60 and abs(_last_old - beam_right) < 60:
+                # Sintetizza left/right stem virtuali estesi ai bordi reali
+                left_stem = (_first_old, _all_new[0],
+                              min(s[2] for s in _inner_stems),
+                              max(s[3] for s in _inner_stems))
+                right_stem = (_last_old, _all_new[-1],
+                             min(s[2] for s in _inner_stems),
+                             max(s[3] for s in _inner_stems))
         if rhythm_mode:
             # Trova il sistema più vicino al beam Y originale (coordinate pre-shift)
             beam_orig_y = (y1 + y2 + y3 + y4) / 4
@@ -6523,18 +6559,8 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         right_stem = (old_sx, new_sx, s_min_y, s_max_y)
         
         if left_stem is None and right_stem is None:
-            import os as _os_dbg
-            if _os_dbg.environ.get('MAIDA_DEBUG_BEAM'):
-                print(f"[BEAM-DBG] ORFANO left={beam_left:.0f} right={beam_right:.0f} y_top={beam_top:.0f} rhythm={rhythm_mode}")
             continue  # Can't identify stems, skip
-        
-        import os as _os_dbg2
-        if _os_dbg2.environ.get('MAIDA_DEBUG_BEAM') and (left_stem is None or right_stem is None):
-            near_l = sorted(stem_shifts_list, key=lambda s: abs(s[0] - beam_left))[:3]
-            near_r = sorted(stem_shifts_list, key=lambda s: abs(s[0] - beam_right))[:3]
-            print(f"[BEAM-DBG] PARZIALE left={'None' if left_stem is None else f'{left_stem[0]:.0f}->{left_stem[1]:.0f}'} right={'None' if right_stem is None else f'{right_stem[0]:.0f}->{right_stem[1]:.0f}'} orig=[{beam_left:.0f}..{beam_right:.0f}] y={beam_top:.0f}")
-            print(f"   stems più vicini a left({beam_left:.0f}): " + ", ".join(f"x={s[0]:.0f}->{s[1]:.0f} y=[{s[2]:.0f}..{s[3]:.0f}]" for s in near_l))
-            print(f"   stems più vicini a right({beam_right:.0f}): " + ", ".join(f"x={s[0]:.0f}->{s[1]:.0f} y=[{s[2]:.0f}..{s[3]:.0f}]" for s in near_r))
+
         # Compute new beam edges: preserve the ~4.7px overhang on each side
         BEAM_OVERHANG = 4.7
         if left_stem is not None:
@@ -7314,6 +7340,13 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             y_bot = max(vals[5], vals[7])
             x_left = min(vals[0], vals[6])
             x_right = max(vals[2], vals[4])
+            # 16 Set 2026 (beam verticali di raccordo): MuseScore esporta i
+            # ganci di raccordo pri↔sec come beam VERTICALI (x ordine invertito,
+            # w negativa, spessore Y alto). NON vanno trattate come beam
+            # orizzontali: il FIX #151 le riposizionava come se fossero
+            # secondarie (coppie fantasma gap 94/0 con le sec vere).
+            if (x_right - x_left) < 50 and (y_bot - y_top) > 100:
+                continue
             beam_infos.append({
                 'match': m,
                 'x_left': x_left, 'x_right': x_right,
@@ -7402,15 +7435,19 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             return [cy for cx, cy in _noteheads_by_x
                     if xl - 100 <= cx <= xr + 100 and abs(cy - ref_y) < 1200]
 
-        # Raggruppa le beam in coppie (X-overlap > 50, 0 < ΔY < 300)
-        _paired = set()
-        _pairs = []
-        for bi in beam_infos:
-            if id(bi) in _paired:
-                continue
-            for pri in beam_infos:
-                if pri is bi or id(pri) in _paired:
-                    continue
+        # Raggruppa le beam in coppie (X-overlap > 50, 0 < ΔY < 300).
+        # 16 Set 2026 (travature di 4 semicrome): matching GLOBALE ordinato per
+        # X-OVERLAP decrescente (tie-break dy crescente). Il greedy per ordine
+        # di apparizione accoppia la secondaria del gruppo A con la primaria
+        # del gruppo B (dy minore ma overlap parziale), lasciando la vera
+        # coppia (full overlap) non accoppiata → primarie nascoste e
+        # secondarie volanti. L'overlap è il discriminante giusto: una
+        # secondaria sta SOTTO la sua primaria con overlap completo.
+        _all_pairs = []
+        for _ia in range(len(beam_infos)):
+            bi = beam_infos[_ia]
+            for _ib in range(_ia + 1, len(beam_infos)):
+                pri = beam_infos[_ib]
                 if abs(bi['y_top'] - pri['y_top']) > 500:
                     continue
                 x_overlap = min(bi['x_right'], pri['x_right']) - max(bi['x_left'], pri['x_left'])
@@ -7419,10 +7456,61 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 dy = bi['y_top'] - pri['y_top']
                 if abs(dy) < 5 or abs(dy) > 300:
                     continue
-                _pairs.append((bi, pri))
-                _paired.add(id(bi))
-                _paired.add(id(pri))
-                break
+                _all_pairs.append((-x_overlap, abs(dy), _ia, _ib))
+        _all_pairs.sort()
+        _paired = set()
+        _pairs = []
+        for _neg_ov, _ad, _ia, _ib in _all_pairs:
+            if _ia in _paired or _ib in _paired:
+                continue
+            _pairs.append((beam_infos[_ia], beam_infos[_ib]))
+            _paired.add(_ia)
+            _paired.add(_ib)
+        # 16 Set 2026 (sec 2+2 orfane): matching one-to-one lascia orfane le
+        # seconde secondarie dei gruppi 2+2 (la prima già occupa la primaria).
+        # Una beam orfana il cui X-range è CONTENUTO in una primaria già
+        # accoppiata, con 0 < |dy| < 300, è una secondaria sorella della stessa
+        # primaria: accoppiala alla primaria più vicina (multi-sec per pri).
+        _pair_sec_of = {}  # id(beam) -> primary beam (info dict)
+        for bi, pri in _pairs:
+            # stabilisci chi è sec/pri usando la stessa logica notehead di sotto
+            _ref_y = (bi['y_top'] + pri['y_top']) / 2
+            _nhs = _group_noteheads(min(bi['x_left'], pri['x_left']),
+                                   max(bi['x_right'], pri['x_right']), _ref_y)
+            bi_mid = (bi['y_top'] + bi['y_bot']) / 2
+            pri_mid = (pri['y_top'] + pri['y_bot']) / 2
+            if not _nhs:
+                if bi['y_top'] < pri['y_top']:
+                    sec, prim = bi, pri
+                else:
+                    sec, prim = pri, bi
+            else:
+                _nh_mid = sum(_nhs) / len(_nhs)
+                if abs(bi_mid - _nh_mid) <= abs(pri_mid - _nh_mid):
+                    sec, prim = pri, bi
+                else:
+                    sec, prim = bi, pri
+            _pair_sec_of[id(sec)] = prim
+            _pair_sec_of[id(prim)] = None  # primarie non sec di nessuno
+        for _bi in beam_infos:
+            if id(_bi) in _pair_sec_of or id(_bi) in _paired:
+                continue
+            _best_pri, _best_dy = None, 99999
+            for _cand in beam_infos:
+                if _pair_sec_of.get(id(_cand), 'x') is None:  # è una primaria
+                    # sec CONTENUTA in cand: cand copre l'intero range della sec
+                    x_cont = (_cand['x_left'] <= _bi['x_left'] + 5 and
+                              _cand['x_right'] >= _bi['x_right'] - 5)
+                    if not x_cont:
+                        continue
+                    _dy = abs(_bi['y_top'] - _cand['y_top'])
+                    if _dy < _best_dy and 5 < _dy < 300:
+                        _best_dy = _dy
+                        _best_pri = _cand
+            if _best_pri is not None:
+                _pair_sec_of[id(_bi)] = _best_pri
+                beam_is_secondary.add(id(_bi))
+                primary_of[id(_bi)] = id(_best_pri)
         for bi, pri in _pairs:
             # quale delle due è la primaria? Quella più vicina ai notehead
             _ref_y = (bi['y_top'] + pri['y_top']) / 2
@@ -7448,7 +7536,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     sec, prim = bi, pri
             beam_is_secondary.add(id(sec))
             primary_of[id(sec)] = id(prim)
-        
+
         # Step 2: reposition each secondary to 47px above its primary
         for sec_id, pri_id in primary_of.items():
             sec = None
@@ -7529,14 +7617,12 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             if not pri:
                 continue
             if len(secs) >= 2:
-                # Multiple broken secondaries (e.g. 4 sixteenths = 2+2):
-                # merge them into one continuous secondary.
-                # Extend first secondary to span from first to last secondary.
-                secs.sort(key=lambda s: s['x_left'])
-                secs[0]['x_left'] = secs[0]['x_left']
-                secs[0]['x_right'] = secs[-1]['x_right']
-                for s in secs[1:]:
-                    s['x_left'] = s['x_right']  # zero-width = invisible
+                # 16 Set 2026 (direttiva Marco: fedeltà all'originale): NON
+                # mergere le secondarie spezzate 2+2. L'originale esporta le
+                # 4 semicrome con primaria continua + secondarie spezzate 2+2
+                # e così devono restare. Il merge continua produceva secondarie
+                # artificiali che non rispecchiano la partitura originale.
+                pass
             # If only 1 secondary, keep its original width — do NOT extend to
             # primary width (the primary may cover croma+2semicrome = 3 notes
             # while the secondary covers only the 2 semicrome).
@@ -7545,7 +7631,13 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         # exported as 2+2 by MuseScore: each pair has its own primary+secondary).
         # We detect adjacent primaries (X-adjacent, same Y) and merge their
         # secondaries into one continuous secondary.
-        primaries = [bi for bi in beam_infos if id(bi) not in beam_is_secondary]
+        # 16 Set 2026 (direttiva Marco: fedeltà all'originale): DISATTIVATO.
+        # Le primarie CONTINUE dell'originale non devono essere frammentate/ri-merse
+        # artificialmente, e le secondarie 2+2 devono restare spezzate come nell'originale.
+        if False:
+            primaries = [bi for bi in beam_infos if id(bi) not in beam_is_secondary]
+        else:
+            primaries = []
         # Group primaries by Y (same system, same beam level)
         pri_y_groups = []
         for pri in sorted(primaries, key=lambda p: (p['y_top'], p['x_left'])):
@@ -7567,7 +7659,9 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 pri_a = g[i]
                 pri_b = g[i + 1]
                 gap = pri_b['x_left'] - pri_a['x_right']
-                if gap < 150:  # adjacent primaries (2+2 sixteenths gap ~50-100px after shift)
+                if gap < 500:  # adjacent primaries (gap ~310-470px post-equalizzazione;
+                    # 16 Set 2026: 4 semicrome = primarie 2+2 distanti ~310-470px.
+                    # Gruppi indipendenti distano >1500px → 500 li separa bene)
                     # Find their secondaries
                     sec_a = None
                     sec_b = None
@@ -7764,6 +7858,25 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                             # note SOPRA la beam → stems-down → sec SOTTO primaria
                             _ytop_left += 2 * (31 + 5)
                             _ytop_right += 2 * (31 + 5)
+                        # 16 Set 2026 (sec creata sopra sec nativa): se in questo
+                        # range X esiste GIÀ una beam (sec nativa o altra beam
+                        # riposizionata) a distanza verticale < th+gap, la
+                        # secondaria manuale creerebbe una doppia travatura
+                        # sovrapposta (seen con 8 semicrome 2+2 mappate male
+                        # dall'indice onset). Skip: la sec nativa già c'è.
+                        _overlap_existing = False
+                        for bi2 in beam_infos:
+                            x_ov = (min(sec_x_right, bi2['x_right']) -
+                                    max(sec_x_left, bi2['x_left']))
+                            if x_ov <= 50:
+                                continue
+                            _b_mid = (bi2['y_top'] + bi2['y_bot']) / 2
+                            _s_mid = (_ytop_left + _ytop_right) / 2 + 15
+                            if abs(_b_mid - _s_mid) < 90:
+                                _overlap_existing = True
+                                break
+                        if _overlap_existing:
+                            continue
                         _new_secondary_beams.append((sec_x_left, _ytop_left, sec_x_right, _ytop_right, 31))
 
         # Create secondary beams for 8th+16th+16th figures (Step1, non-rhythm)
