@@ -2043,8 +2043,15 @@ def make_accessible_mscz(input_mscz, output_mscz, part_index=0, rhythm_mode=Fals
         # dense (fino a 10 note) vengono spezzati da MuseScore su pagina 16.5"
         # (es. Canzon: piano 5 battute → spezzato in 2+3). Pagina più larga
         # per il rendering: l'equalizzatore rimappa comunque le X su A4.
-        _render_pw, _render_prw = (_RENDER_PAGE_WIDTH if rhythm_mode
-                                   and _RENDER_PAGE_WIDTH else ('16.5', '16.1'))
+        # 16 Set 2026 (bug 8 settori/rigo in notazione): la pagina 16.5"
+        # spezzava anche i sistemi da 12 settori (3 battute 4/4 dense),
+        # e il retry degradava il packing a 8. Pagina larga SEMPRE quando
+        # il piano packing chiede >8 settori/rigo. L'equalizzatore rimappa
+        # comunque le X sulla pagina finale.
+        _max_req = globals().get('_MAX_SECTORS_OVERRIDE') or 8
+        _use_wide = (rhythm_mode and _RENDER_PAGE_WIDTH) or _max_req > 8
+        _render_pw, _render_prw = (_RENDER_PAGE_WIDTH
+                                   if _use_wide else ('16.5', '16.1'))
         mss = re.sub(r'<pageWidth>[\d.]+</pageWidth>', f'<pageWidth>{_render_pw}</pageWidth>', mss)
         mss = re.sub(r'<pagePrintableWidth>[\d.]+</pagePrintableWidth>', f'<pagePrintableWidth>{_render_prw}</pagePrintableWidth>', mss)
         mss = re.sub(r'<pageHeight>[\d.]+</pageHeight>', f'<pageHeight>{PAGE_HEIGHT}</pageHeight>', mss)
@@ -6082,18 +6089,93 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         _off5 = NOTEHEAD_CENTER_OFFSET * (_pn.get('scale', 2.57143) / 1.25714)
                         _pn['x'] = _pn['center_x'] - _off5
                         _pn['_new_tx_str'] = f"{_pn['x']:.2f}"
-        _apply_shrink()
-        for _ in range(3):
-            _row_notes = sorted(_row_notes, key=lambda n: n['center_x'])
-            # ri-verifica: se lo shrink crea nuovi conflitti ripeti
-            _has_overlap = any(
-                _row_notes[_i]['center_x'] - _row_notes[_i-1]['center_x']
-                < (_row_notes[_i-1].get('r_for_clamp') or _compute_note_radius(_row_notes[_i-1]))
-                + (_row_notes[_i].get('r_for_clamp') or _compute_note_radius(_row_notes[_i]))
-                for _i in range(1, len(_row_notes)))
-            if not _has_overlap:
-                break
-            _apply_shrink()
+        # 16 Set 2026 (round 7): LAYOUT PER SETTORE, deterministico. Sostituisce
+        # _apply_shrink oscillante. Per ogni settore grigio: (1) raggruppa le
+        # note per onset (accordi = stessa X); (2) se lo spazio richiesto
+        # (2*raggio per gruppo + gap 12) supera il settore, shrink proporzionale
+        # di TUTTI i raggi (min DISC_SHRINK_MIN); (3) forward-fill da sinistra,
+        # ogni posizione = max(posizione originale, precedente + min_d).
+        from itertools import groupby as _groupby
+        _sorted_notes = sorted(_row_notes, key=lambda n: n['center_x'])
+        _sec_bounds_all = {}
+        for _n in _sorted_notes:
+            _mb = None
+            for _bs, _be in _mbounds:
+                if _bs <= _n['center_x'] <= _be:
+                    _mb = (_bs, _be); break
+            if _mb is None:
+                continue
+            _on = _n.get('onset')
+            if _on is None or _n.get('measure_idx') is None:
+                continue
+            _nb_ts = _ts_beats_for_measure(_n['measure_idx'])
+            _nb_sec = _n_sectors_for_measure(_n['measure_idx'])
+            if _nb_ts <= 0 or _nb_sec <= 0:
+                continue
+            _sec_i = min(int((_on / _nb_ts) * _nb_sec), _nb_sec - 1)
+            _sec_w = (_mb[1] - _mb[0]) / _nb_sec
+            _key = (_mb, _sec_i)
+            _sec_bounds_all.setdefault(_key, []).append(_n)
+        for (_mb, _sec_i), _ns in _sec_bounds_all.items():
+            _s_lo = _mb[0] + _sec_i * ((_mb[1] - _mb[0]) / _n_sectors_for_measure(_ns[0]['measure_idx'])) + 2.0
+            _sec_w2 = (_mb[1] - _mb[0]) / _n_sectors_for_measure(_ns[0]['measure_idx'])
+            _s_hi = _s_lo - 2.0 + _sec_w2 - 2.0
+            _ns.sort(key=lambda n: n['center_x'])
+            # gruppi per onset
+            _groups = []
+            for _gk, _git in _groupby(_ns, key=lambda n: (n.get('measure_idx'), round(n.get('onset', 0.0), 3))):
+                _groups.append(list(_git))
+            if not _groups:
+                continue
+            _radii = [max(_compute_note_radius(_grp[0]) for _grp in _groups) for _ in _groups]
+            _avail = (_s_hi - _s_lo)
+            _req = sum(2 * _r for _r in _radii) + 12.0 * (len(_groups) - 1)
+            if _req > _avail and _avail > 0:
+                _scale = _avail / _req
+                _radii = [max(DISC_SHRINK_MIN, _r * _scale) for _r in _radii]
+            # forward-fill partendo dalla posizione originale
+            _prev_end = None
+            for _gi, _grp in enumerate(_groups):
+                _r = _radii[_gi]
+                _min_left = _s_lo + _r
+                if _prev_end is not None:
+                    _min_left = max(_min_left, _prev_end + 12.0 + _r)
+                _orig = _grp[0]['center_x']
+                _cx_new = max(_orig, _min_left)
+                _cx_new = min(_cx_new, _s_hi - _r)
+                if _cx_new < _min_left:
+                    _cx_new = _min_left
+                for _n in _grp:
+                    _n['r_for_clamp'] = min(_r, _compute_note_radius(_n))
+                    _n['center_x'] = _cx_new
+                    _off3 = NOTEHEAD_CENTER_OFFSET * (_n.get('scale', 2.57143) / 1.25714)
+                    _n['x'] = _n['center_x'] - _off3
+                    _n['_new_tx_str'] = f"{_n['x']:.2f}"
+                _prev_end = _cx_new + _r
+            # BACKWARD PASS (right-clamp): se l'ultimo gruppo sborda oltre il
+            # bordo destro del settore, sposta a sinistra a catena.
+            _over = (_groups[-1][0]['center_x'] + _radii[-1]) - _s_hi
+            if _over > 0:
+                _prev_pos = None
+                _gi_end = len(_groups) - 1
+                # sposta l'ultimo gruppo indietro
+                for _gi in range(len(_groups) - 1, -1, -1):
+                    _grp = _groups[_gi]
+                    _r = _radii[_gi]
+                    if _gi == len(_groups) - 1:
+                        _new_pos = _s_hi - _r
+                    else:
+                        _new_pos = _prev_pos - 12.0 - 2 * _radii[_gi + 1] + _radii[_gi + 1] + _radii[_gi]
+                        # _new_pos = prev_center - gap - prev_r - this_r
+                    # correzione: ricalcola: prev_center - 12 - prev_r - this_r
+                    if _gi < len(_groups) - 1:
+                        _new_pos = _prev_pos - 12.0 - _radii[_gi + 1] - _r
+                    for _n in _grp:
+                        _n['center_x'] = _new_pos
+                        _off3 = NOTEHEAD_CENTER_OFFSET * (_n.get('scale', 2.57143) / 1.25714)
+                        _n['x'] = _n['center_x'] - _off3
+                        _n['_new_tx_str'] = f"{_n['x']:.2f}"
+                    _prev_pos = _new_pos
 
         print(f"    Equalized {len(new_measure_bounds)} measures: widths={[round(m[1]-m[0]) for m in new_measure_bounds]}")
 
@@ -6384,8 +6466,13 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         x2, y2 = float(bm.group(3)), float(bm.group(4))
         x3, y3 = float(bm.group(5)), float(bm.group(6))
         x4, y4 = float(bm.group(7)), float(bm.group(8))
-        beam_left = x1   # = x4
-        beam_right = x2  # = x3
+        # 16 Set 2026 (bug travature mancanti): alcuni beam hanno i punti in
+        # ordine INVERSO (x2 < x1), quindi beam_left/right vanno normalizzati
+        # con min/max, altrimenti il matching con gli stem fallisce (beam
+        # "orfani" con right < left) e le travature delle ultime semicrome
+        # non vengono riposizionate.
+        beam_left = min(x1, x2, x3, x4)   # = x4
+        beam_right = max(x1, x2, x3, x4)  # = x3
         beam_top = min(y1, y2, y3, y4)
         beam_bot = max(y1, y2, y3, y4)
         is_secondary = id(bm) in beam_is_secondary
@@ -6436,8 +6523,18 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         right_stem = (old_sx, new_sx, s_min_y, s_max_y)
         
         if left_stem is None and right_stem is None:
-            continue  # Can't identify connected stems, skip
+            import os as _os_dbg
+            if _os_dbg.environ.get('MAIDA_DEBUG_BEAM'):
+                print(f"[BEAM-DBG] ORFANO left={beam_left:.0f} right={beam_right:.0f} y_top={beam_top:.0f} rhythm={rhythm_mode}")
+            continue  # Can't identify stems, skip
         
+        import os as _os_dbg2
+        if _os_dbg2.environ.get('MAIDA_DEBUG_BEAM') and (left_stem is None or right_stem is None):
+            near_l = sorted(stem_shifts_list, key=lambda s: abs(s[0] - beam_left))[:3]
+            near_r = sorted(stem_shifts_list, key=lambda s: abs(s[0] - beam_right))[:3]
+            print(f"[BEAM-DBG] PARZIALE left={'None' if left_stem is None else f'{left_stem[0]:.0f}->{left_stem[1]:.0f}'} right={'None' if right_stem is None else f'{right_stem[0]:.0f}->{right_stem[1]:.0f}'} orig=[{beam_left:.0f}..{beam_right:.0f}] y={beam_top:.0f}")
+            print(f"   stems più vicini a left({beam_left:.0f}): " + ", ".join(f"x={s[0]:.0f}->{s[1]:.0f} y=[{s[2]:.0f}..{s[3]:.0f}]" for s in near_l))
+            print(f"   stems più vicini a right({beam_right:.0f}): " + ", ".join(f"x={s[0]:.0f}->{s[1]:.0f} y=[{s[2]:.0f}..{s[3]:.0f}]" for s in near_r))
         # Compute new beam edges: preserve the ~4.7px overhang on each side
         BEAM_OVERHANG = 4.7
         if left_stem is not None:
@@ -7267,24 +7364,90 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         # with significant X overlap, in the same system (Y within 500px).
         beam_is_secondary = set()
         primary_of = {}  # id(secondary) -> id(primary)
+        # 16 Set 2026 (semicrome staccate, round 2): la secondaria può stare
+        # SIA sopra (stems-up) SIA sotto (stems-down) la primaria. La coppia
+        # viene identificata per X-overlap > 50 e ΔY in (5, 300). A larghezza
+        # UGUALE (MuseScore esporta spesso entrambe full-width), la primaria
+        # è quella più vicina alle teste delle note. La primaria tocca i
+        # cerchietti: per gruppo 2-note la primaria passa vicino ai centri
+        # delle note, la secondaria no. Regola geometrica semplice: la
+        # primaria è la beam DELLA COPPIA più lontana dal pentagramma
+        # (middle line del sistema) — MuseScore sposta la primaria verso
+        # l'esterno. In mancanza di dati affidabili sul sistema, usiamo il
+        # tie-break a parità di |ΔY|: chi ha |ΔY| minore verso la beam
+        # adiacente... non è determinabile. USIAMO invece le punte dei gami:
+        # le punte dei gami del gruppo ATTRAVERSANO la primaria e si
+        # fermano DENTRO la secondaria (o subito dopo). Quindi la beam
+        # le cui Y intersecano il segmento [punta, base] di PIÙ gami
+        # è la primaria... anche entrambe intersecano. Differenza
+        # decisiva: la secondaria è SEMPRE più LONTANA dalle note:
+        # per stems-up (note sotto) la secondaria è SOPRA (y minore),
+        # per stems-down (note sopra) la secondaria è SOTTO (y maggiore).
+        # Quindi: dato un gruppo di 2 beam adiacenti in Y con X-overlap,
+        # la PRIMARIA è quella più vicina ai notehead. Troviamo i
+        # notehead del gruppo (per X range) e scegliamo.
+        _noteheads_by_x = []
+        try:
+            # usa le note SVG (x, y = centro del cerchio) di questo step
+            for _nh in notes:
+                _cx, _cy = _nh.get('center_x'), _nh.get('y')
+                if _cx is not None and _cy is not None:
+                    _noteheads_by_x.append((_cx, _cy))
+        except Exception:
+            pass
+
+        def _group_noteheads(xl, xr, ref_y):
+            # notehead il cui centro X è nel range del gruppo E che sta
+            # vicino in Y alla coppia di beam (stesso sistema/rigo)
+            return [cy for cx, cy in _noteheads_by_x
+                    if xl - 100 <= cx <= xr + 100 and abs(cy - ref_y) < 1200]
+
+        # Raggruppa le beam in coppie (X-overlap > 50, 0 < ΔY < 300)
+        _paired = set()
+        _pairs = []
         for bi in beam_infos:
+            if id(bi) in _paired:
+                continue
             for pri in beam_infos:
-                if pri is bi:
+                if pri is bi or id(pri) in _paired:
                     continue
-                # Secondary must be ABOVE primary (y_top smaller)
-                if bi['y_top'] >= pri['y_top'] - 5:
-                    continue
-                # Must be in the same system (Y within 500px)
                 if abs(bi['y_top'] - pri['y_top']) > 500:
                     continue
-                # Must have significant X overlap (at least 50px)
                 x_overlap = min(bi['x_right'], pri['x_right']) - max(bi['x_left'], pri['x_left'])
                 if x_overlap <= 50:
                     continue
-                # This bi is a secondary of pri (pri is the closest beam below)
-                beam_is_secondary.add(id(bi))
-                primary_of[id(bi)] = id(pri)
-                break  # found its primary
+                dy = bi['y_top'] - pri['y_top']
+                if abs(dy) < 5 or abs(dy) > 300:
+                    continue
+                _pairs.append((bi, pri))
+                _paired.add(id(bi))
+                _paired.add(id(pri))
+                break
+        for bi, pri in _pairs:
+            # quale delle due è la primaria? Quella più vicina ai notehead
+            _ref_y = (bi['y_top'] + pri['y_top']) / 2
+            _nhs = _group_noteheads(min(bi['x_left'], pri['x_left']),
+                                   max(bi['x_right'], pri['x_right']), _ref_y)
+            _xl = min(bi['x_left'], pri['x_left'])
+            _xr = max(bi['x_right'], pri['x_right'])
+            bi_mid = (bi['y_top'] + bi['y_bot']) / 2
+            pri_mid = (pri['y_top'] + pri['y_bot']) / 2
+            if not _nhs:
+                # fallback: la primaria è quella con y_top minore
+                # (convenzione storicamente usata per stems-up)
+                if bi['y_top'] < pri['y_top']:
+                    sec, prim = bi, pri
+                else:
+                    sec, prim = pri, bi
+            else:
+                _nh_mid = sum(_nhs) / len(_nhs)
+                # primaria = più vicina ai notehead
+                if abs(bi_mid - _nh_mid) <= abs(pri_mid - _nh_mid):
+                    sec, prim = pri, bi
+                else:
+                    sec, prim = bi, pri
+            beam_is_secondary.add(id(sec))
+            primary_of[id(sec)] = id(prim)
         
         # Step 2: reposition each secondary to 47px above its primary
         for sec_id, pri_id in primary_of.items():
@@ -7298,16 +7461,54 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 if sec and pri:
                     break
             if sec and pri:
-                pri_center = (pri['y_top'] + pri['y_bot']) / 2
-                sec_center = pri_center - DESIRED_CENTER_GAP
-                old_h = sec['y_bot'] - sec['y_top']
-                sec['y_top'] = sec_center - old_h / 2
-                sec['y_bot'] = sec_center + old_h / 2
-                # riposizionata come banda piatta: aggiorna anche i angoli
-                sec['y1'] = sec['y_top']
-                sec['y2'] = sec['y_top']
-                sec['y3'] = sec['y_bot']
-                sec['y4'] = sec['y_bot']
+                # 16 Set 2026 (bug travature non parallele): posiziona la
+                # secondaria INTERPOLANDO il bordo superiore della primaria alle
+                # X della secondaria. La secondaria eredita così ESATTAMENTE la
+                # pendenza della primaria (parallele per costruzione), con gap
+                # verticale costante sopra il bordo primario. Prima: shift
+                # uniforme della secondaria (che conserva la SUA pendenza
+                # originale, uguale alla primaria solo se non deformata) e
+                # secondarie create manualmente come bande piatte → non parallele.
+                # Bordo superiore primaria: (y1=TL, y2=TR). Interpola a sec x.
+                pri_top_y1, pri_top_y2 = pri['y1'], pri['y2']
+                xw = pri['x_right'] - pri['x_left']
+                if xw <= 0:
+                    continue
+                def _pri_top_at(x):
+                    t = (x - pri['x_left']) / xw
+                    return pri_top_y1 + (pri_top_y2 - pri_top_y1) * t
+                gap = 47  # distanza verticale secondaria→primaria
+                # 16 Set 2026 (semicrome staccate, round 2): il gap verticale
+                # post-clamp deve essere di 47px EDGE-TO-EDGE (th clampato a
+                # 47 dal FIX #151), NON l'offset centro-centro originale
+                # (che post y-stretch vale 140-280px → secondaria volante).
+                # Il LATO (sopra per stems-up, sotto per stems-down) è già
+                # corretto perché sec è DAL FONDO della primaria: posiziona
+                # la secondaria sul lato dove STA ORA, con edge gap 47px.
+                _sec_mid = (sec['y_top'] + sec['y_bot']) / 2
+                _pri_mid_here = _pri_top_at((sec['x_left'] + sec['x_right']) / 2)
+                th = 47   # spessore secondaria (clampato nel rebuild)
+                # bordi primari POST-clamp (come li calcolerà il rebuild):
+                # left_c=(y1+y4)/2, right_c=(y2+y3)/2, new_th=47 → top=±23.5
+                _pri_top_l = (pri['y1'] + pri['y4']) / 2 - th / 2
+                _pri_top_r = (pri['y2'] + pri['y3']) / 2 - th / 2
+                _pri_bot_l = (pri['y1'] + pri['y4']) / 2 + th / 2
+                _pri_bot_r = (pri['y2'] + pri['y3']) / 2 + th / 2
+                def _interpl(x):
+                    t = (x - pri['x_left']) / xw
+                    return t
+                if _sec_mid < _pri_mid_here:
+                    # secondaria SOPRA la primaria: bordo sup. sec = pri_top - 47
+                    sec['y1'] = _pri_top_l + (_pri_top_r - _pri_top_l) * _interpl(sec['x_left']) - 47 - th
+                    sec['y2'] = _pri_top_l + (_pri_top_r - _pri_top_l) * _interpl(sec['x_right']) - 47 - th
+                else:
+                    # secondaria SOTTO la primaria: bordo sup. sec = pri_bot + 47
+                    sec['y1'] = _pri_bot_l + (_pri_bot_r - _pri_bot_l) * _interpl(sec['x_left']) + 47
+                    sec['y2'] = _pri_bot_l + (_pri_bot_r - _pri_bot_l) * _interpl(sec['x_right']) + 47
+                sec['y3'] = sec['y2'] + th
+                sec['y4'] = sec['y1'] + th
+                sec['y_top'] = min(sec['y1'], sec['y2'])
+                sec['y_bot'] = max(sec['y3'], sec['y4'])
         
         # Step 3: merge broken secondary fragments. For each primary, collect
         # all its secondaries, extend the widest one to span the full primary
@@ -7541,11 +7742,29 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                             # 16th is BEFORE dotted-eighth → extend RIGHT from stem
                             sec_x_left = _stem_x
                             sec_x_right = _stem_x + _sixteenth_r * 2
-                        pri_center = (byt + byb) / 2
-                        sec_center = pri_center - 94  # ABOVE primary (non-rhythm)
-                        sec_y_top = sec_center - 31 / 2  # thinner (31px, not 47px)
-                        sec_y_bot = sec_center + 31 / 2
-                        _new_secondary_beams.append((sec_x_left, sec_y_top, sec_x_right, sec_y_bot))
+                        # 16 Set 2026 (travature non parallele): interpolare il
+                        # bordo SUPERIORE reale della primaria (y1→y2, inclinata)
+                        # alle X della secondaria, invece del bounding box piatto.
+                        _pw = bi['x_right'] - bi['x_left']
+                        _t1 = (sec_x_left - bi['x_left']) / _pw if _pw > 0 else 0
+                        _t2 = (sec_x_right - bi['x_left']) / _pw if _pw > 0 else 0
+                        _ytop_left = bi['y1'] + (bi['y2'] - bi['y1']) * _t1
+                        _ytop_right = bi['y1'] + (bi['y2'] - bi['y1']) * _t2
+                        # gap 5px sopra la primaria (grafica originale MuseScore,
+                        # le secondarie sono quasi a contatto, non staccate)
+                        _ytop_left -= 31 + 5  # gap 5 sopra la primaria
+                        _ytop_right -= 31 + 5  # gap 5 sopra la primaria
+                        # 16 Set 2026 (semicrome staccate, round 2): la
+                        # secondaria va SOTTO la primaria per gruppi
+                        # stems-down (note sopra la beam), SOPRA per stems-up.
+                        # Direzione: confronta y medio delle note col beam.
+                        _notes_here_y = [sn2['center_y'] for sn2 in notes_under
+                                         if 'center_y' in sn2]
+                        if _notes_here_y and sum(_notes_here_y) / len(_notes_here_y) < (byt + byb) / 2:
+                            # note SOPRA la beam → stems-down → sec SOTTO primaria
+                            _ytop_left += 2 * (31 + 5)
+                            _ytop_right += 2 * (31 + 5)
+                        _new_secondary_beams.append((sec_x_left, _ytop_left, sec_x_right, _ytop_right, 31))
 
         # Create secondary beams for 8th+16th+16th figures (Step1, non-rhythm)
         # The two 16th notes need a secondary beam connecting them.
@@ -7651,25 +7870,41 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         continue
                     sec_x_left = cx_1
                     sec_x_right = cx_2
-                    pri_center = (byt16 + byb16) / 2
-                    sec_center = pri_center - 94  # ABOVE primary (non-rhythm)
-                    sec_y_top = sec_center - 31 / 2
-                    sec_y_bot = sec_center + 31 / 2
-                    _new_sec_16_s1.append((sec_x_left, sec_y_top, sec_x_right, sec_y_bot))
+                    # 16 Set 2026 (travature non parallele): interpola il bordo
+                    # superiore REALE della primaria (y1→y2) alle X della secondaria.
+                    _pw16 = bi16['x_right'] - bi16['x_left']
+                    _t1 = (sec_x_left - bi16['x_left']) / _pw16 if _pw16 > 0 else 0
+                    _t2 = (sec_x_right - bi16['x_left']) / _pw16 if _pw16 > 0 else 0
+                    _ytop_l = bi16['y1'] + (bi16['y2'] - bi16['y1']) * _t1
+                    _ytop_r = bi16['y1'] + (bi16['y2'] - bi16['y1']) * _t2
+                    _ytop_l -= 31 + 5  # gap 5px (grafica originale MuseScore)
+                    _ytop_r -= 31 + 5
+                    # 16 Set 2026 (semicrome staccate, round 2): stems-down →
+                    # secondaria SOTTO la primaria (note sopra la beam).
+                    if hasattr(bi16, 'get'):
+                        _b_mid16 = (bi16.get('y1', 0) + bi16.get('y3', bi16.get('y1', 0))) / 2
+                        if cx_1 < _b_mid16:
+                            pass
+                    _notes16_y = [sn.get('center_y', 0) for sn in meas_notes_sorted
+                                 if sec_x_left - 200 <= sn.get('center_x', -1) <= sec_x_right + 200]
+                    if _notes16_y and sum(_notes16_y) / len(_notes16_y) < ((bi16['y1'] + bi16['y3']) / 2):
+                        _ytop_l += 2 * (31 + 5)
+                        _ytop_r += 2 * (31 + 5)
+                    _new_sec_16_s1.append((sec_x_left, _ytop_l, sec_x_right, _ytop_r, 31))
                 if _new_sec_16_s1:
-                    for sx1, syt, sx2, syb in _new_sec_16_s1:
+                    for sx1, syt1, sx2, syt2, _sth in _new_sec_16_s1:
                         new_sec = (f'<path class="Beam" fill="#000000" fill-rule="evenodd" '
-                                   f'd="M{sx1:.2f},{syt:.2f} L{sx2:.2f},{syt:.2f} '
-                                   f'L{sx2:.2f},{syb:.2f} L{sx1:.2f},{syb:.2f} '
-                                   f'L{sx1:.2f},{syt:.2f}"/>')
+                                   f'd="M{sx1:.2f},{syt1:.2f} L{sx2:.2f},{syt2:.2f} '
+                                   f'L{sx2:.2f},{syt2 + _sth:.2f} L{sx1:.2f},{syt1 + _sth:.2f} '
+                                   f'L{sx1:.2f},{syt1:.2f}"/>')
                         modified = modified.replace('</svg>', new_sec + '\n</svg>')
                     print(f"  [Step1] Created {len(_new_sec_16_s1)} secondary beams for 16th+16th")
         if _new_secondary_beams:
-            for sx1, syt, sx2, syb in _new_secondary_beams:
+            for sx1, syt1, sx2, syt2, _sth in _new_secondary_beams:
                 new_sec = (f'<path class="Beam" fill="#000000" fill-rule="evenodd" '
-                           f'd="M{sx1:.2f},{syt:.2f} L{sx2:.2f},{syt:.2f} '
-                           f'L{sx2:.2f},{syb:.2f} L{sx1:.2f},{syb:.2f} '
-                           f'L{sx1:.2f},{syt:.2f}"/>')
+                           f'd="M{sx1:.2f},{syt1:.2f} L{sx2:.2f},{syt2:.2f} '
+                           f'L{sx2:.2f},{syt2 + _sth:.2f} L{sx1:.2f},{syt1 + _sth:.2f} '
+                           f'L{sx1:.2f},{syt1:.2f}"/>')
                 modified = modified.replace('</svg>', new_sec + '\n</svg>')
             print(f"  [Step1] Created {len(_new_secondary_beams)} secondary beams for dotted-eighth+16th")
         
@@ -7990,17 +8225,24 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                             # secondary is below (y larger, closer to notehead).
                             # Gap = 94px center-to-center. Thickness = 31px
                             # (thinner than primary's 49px, matching MuseScore).
-                            pri_center = (byt + byb) / 2
-                            sec_center = pri_center + 94  # BELOW primary
-                            sec_y_top = sec_center - 31 / 2
-                            sec_y_bot = sec_center + 31 / 2
-                            _new_sec_beams_r.append((sec_x_left, sec_y_top, sec_x_right, sec_y_bot))
+                            # 16 Set 2026 (travature non parallele): interpola
+                            # il bordo INFERIORE reale della primaria (y4→y3,
+                            # rhythm = secondary BELOW primary) alle X della
+                            # secondaria, così le pendenze coincidono.
+                            _pw_r = bi['x_right'] - bi['x_left']
+                            _tr1 = (sec_x_left - bi['x_left']) / _pw_r if _pw_r > 0 else 0
+                            _tr2 = (sec_x_right - bi['x_left']) / _pw_r if _pw_r > 0 else 0
+                            _ybot_l = bi['y4'] + (bi['y3'] - bi['y4']) * _tr1
+                            _ybot_r = bi['y4'] + (bi['y3'] - bi['y4']) * _tr2
+                            sec_y_top_l = _ybot_l + 5  # gap 5px (grafica originale)
+                            sec_y_top_r = _ybot_r + 5
+                            _new_sec_beams_r.append((sec_x_left, sec_y_top_l, sec_x_right, sec_y_top_r, 31))
                 if _new_sec_beams_r:
-                    for sx1, syt, sx2, syb in _new_sec_beams_r:
+                    for sx1, syt1, sx2, syt2, _sth in _new_sec_beams_r:
                         new_sec = (f'<path class="Beam" fill="#000000" fill-rule="evenodd" '
-                                   f'd="M{sx1:.2f},{syt:.2f} L{sx2:.2f},{syt:.2f} '
-                                   f'L{sx2:.2f},{syb:.2f} L{sx1:.2f},{syb:.2f} '
-                                   f'L{sx1:.2f},{syt:.2f}"/>')
+                                   f'd="M{sx1:.2f},{syt1:.2f} L{sx2:.2f},{syt2:.2f} '
+                                   f'L{sx2:.2f},{syt2 + _sth:.2f} L{sx1:.2f},{syt1 + _sth:.2f} '
+                                   f'L{sx1:.2f},{syt1:.2f}"/>')
                         modified = modified.replace('</svg>', new_sec + '\n</svg>')
                     print(f"  [Step2] Created {len(_new_sec_beams_r)} secondary beams for dotted-eighth+16th")
 
@@ -8112,17 +8354,23 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         continue
                     sec_x_left = cx_1
                     sec_x_right = cx_2
-                    pri_center = (byt16 + byb16) / 2
-                    sec_center = pri_center + 94  # BELOW primary (rhythm mode)
-                    sec_y_top = sec_center - 31 / 2
-                    sec_y_bot = sec_center + 31 / 2
-                    _new_sec_16_beams.append((sec_x_left, sec_y_top, sec_x_right, sec_y_bot))
+                    # 16 Set 2026 (travature non parallele): interpola il bordo
+                    # INFERIORE reale della primaria (y4→y3, secondary below)
+                    # alle X della secondaria.
+                    _pw16_r = bi16['x_right'] - bi16['x_left']
+                    _tu1 = (sec_x_left - bi16['x_left']) / _pw16_r if _pw16_r > 0 else 0
+                    _tu2 = (sec_x_right - bi16['x_left']) / _pw16_r if _pw16_r > 0 else 0
+                    _ybot_l2 = bi16['y4'] + (bi16['y3'] - bi16['y4']) * _tu1
+                    _ybot_r2 = bi16['y4'] + (bi16['y3'] - bi16['y4']) * _tu2
+                    sec_y_top_l2 = _ybot_l2 + 5  # gap 5px (grafica originale)
+                    sec_y_top_r2 = _ybot_r2 + 5
+                    _new_sec_16_beams.append((sec_x_left, sec_y_top_l2, sec_x_right, sec_y_top_r2, 31))
                 if _new_sec_16_beams:
-                    for sx1, syt, sx2, syb in _new_sec_16_beams:
+                    for sx1, syt1, sx2, syt2, _sth in _new_sec_16_beams:
                         new_sec = (f'<path class="Beam" fill="#000000" fill-rule="evenodd" '
-                                   f'd="M{sx1:.2f},{syt:.2f} L{sx2:.2f},{syt:.2f} '
-                                   f'L{sx2:.2f},{syb:.2f} L{sx1:.2f},{syb:.2f} '
-                                   f'L{sx1:.2f},{syt:.2f}"/>')
+                                   f'd="M{sx1:.2f},{syt1:.2f} L{sx2:.2f},{syt2:.2f} '
+                                   f'L{sx2:.2f},{syt2 + _sth:.2f} L{sx1:.2f},{syt1 + _sth:.2f} '
+                                   f'L{sx1:.2f},{syt1:.2f}"/>')
                         modified = modified.replace('</svg>', new_sec + '\n</svg>')
                     print(f"  [Step2] Created {len(_new_sec_16_beams)} secondary beams for 16th+16th")
     
