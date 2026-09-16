@@ -8104,6 +8104,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 'x_left': x_left, 'x_right': x_right,
                 'y_top': y_top, 'y_bot': y_bot,
                 'th': y_bot - y_top,
+                'y1': vals[1], 'y3': vals[5], 'y4': vals[7],
             })
         # Identify primary vs secondary (same logic as non-rhythm mode)
         # In rhythm mode, secondary beams may be at the SAME Y as primaries
