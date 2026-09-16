@@ -5998,6 +5998,23 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 if _bs <= cx <= _be:
                     return _be
             return None
+        # 16 Set 2026 (richiesta Marco: semicrome che fuoriescono dai settori e si
+        # accavallano): SHRINK ADATTIVO a 3 passaggi per riga. Quando i dischi non
+        # entrano nel settore, RIMPICCIOLISCI le semicrome (mai sotto DISC_SHRINK_MIN)
+        # invece di accavallarle. Ordine: (1) tenta spread senza spill oltre la
+        # battuta; (2) consenti spill controllato entro la battuta; (3) shrink.
+        DISC_SHRINK_MIN = 42.0  # raggio minimo leggibile per una semicroma
+        def _compute_note_radius(_nd):
+            _base = _nd.get('r_for_clamp')
+            if _base:
+                return _base
+            _dt = _nd.get('duration_type', 'quarter')
+            _b = max(DISC_R_OVERRIDE, 1) if DISC_R_OVERRIDE else 130
+            if _dt in ('16th', '16th_dotted'):
+                return _b * 0.65
+            if _dt in ('eighth', 'eighth_dotted'):
+                return _b * 0.80
+            return _b
         for _sweep in range(2):
           _row_notes = sorted(_row_notes, key=lambda n: n['center_x'])
           for _i in range(1, len(_row_notes)):
@@ -6007,13 +6024,76 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             _r_r = _pr.get('r_for_clamp') or max(DISC_R_OVERRIDE, 1)
             _min_d = _r_l + _r_r + 18.0
             if _pr['center_x'] - _pl['center_x'] < _min_d:
-                _new_x = _pl['center_x'] + _min_d
                 _m_end = _measure_end_for(_pr['center_x'])
-                if _m_end is not None and _new_x <= _m_end - _r_r + 72.0:
+                _new_x = _pl['center_x'] + _min_d
+                _fits = (_m_end is not None and _new_x <= _m_end - _r_r + 72.0)
+                if _fits:
                     _pr['center_x'] = _new_x
                     _off2 = NOTEHEAD_CENTER_OFFSET * (_pr.get('scale', 2.57143) / 1.25714)
                     _pr['x'] = _pr['center_x'] - _off2
                     _pr['_new_tx_str'] = f"{_pr['x']:.2f}"
+
+        # 16 Set 2026: SHRINK PASS. Dopo gli sweep, le coppie ancora accavallate
+        # vengono RIMPICCIOLITE (centrando la coppia a X e Media) finché non ci
+        # sta, con raggio minimo DISC_SHRINK_MIN. Le semicrome non possono
+        # fuoriuscire dal settore né accavallarsi.
+        def _apply_shrink():
+            _row = sorted(_row_notes, key=lambda n: n['center_x'])
+            for _i in range(1, len(_row)):
+                _pa, _pb = _row[_i-1], _row[_i]
+                _ra = _compute_note_radius(_pa)
+                _rb = _compute_note_radius(_pb)
+                _min_d = _ra + _rb + 12.0
+                _gap = _pb['center_x'] - _pa['center_x']
+                if _gap >= _min_d:
+                    continue
+                # tenta spostamento della nota destra dentro la battuta
+                _m_end = _measure_end_for(_pb['center_x'])
+                _try_x = _pa['center_x'] + _min_d
+                if _m_end is not None and _try_x <= _m_end - _rb + 40.0:
+                    _pb['center_x'] = _try_x
+                    _off3 = NOTEHEAD_CENTER_OFFSET * (_pb.get('scale', 2.57143) / 1.25714)
+                    _pb['x'] = _pb['center_x'] - _off3
+                    _pb['_new_tx_str'] = f"{_pb['x']:.2f}"
+                    continue
+                # non c'è spazio: SHRINK di entrambi (mantieni il centro comune)
+                _shrink_need = _min_d - _gap  # deficit totale
+                _shrink_a = min(_ra - DISC_SHRINK_MIN, _shrink_need / 2.0) if _ra > DISC_SHRINK_MIN else 0.0
+                if _shrink_a <= 0 and _shrink_need > 0:
+                    # entrambe già al minimo: separali comunque (split simmetrico)
+                    _mid = (_pa['center_x'] + _pb['center_x']) / 2.0
+                    _pa['center_x'] = _mid - _min_d / 2.0
+                    _pb['center_x'] = _mid + _min_d / 2.0
+                    for _pn in (_pa, _pb):
+                        _off4 = NOTEHEAD_CENTER_OFFSET * (_pn.get('scale', 2.57143) / 1.25714)
+                        _pn['x'] = _pn['center_x'] - _off4
+                        _pn['_new_tx_str'] = f"{_pn['x']:.2f}"
+                    continue
+                if _shrink_a > 0:
+                    _pa['r_for_clamp'] = max(DISC_SHRINK_MIN, _ra - _shrink_a)
+                    _pb['r_for_clamp'] = max(DISC_SHRINK_MIN, _rb - _shrink_a)
+                # dopo lo shrink, la distanza richiesta è minore: ricentra la destra
+                _new_min = _pa['r_for_clamp'] + _pb['r_for_clamp'] + 12.0
+                if _pb['center_x'] - _pa['center_x'] < _new_min:
+                    _mid = (_pa['center_x'] + _pb['center_x']) / 2.0
+                    _pa['center_x'] = _mid - _new_min / 2.0
+                    _pb['center_x'] = _mid + _new_min / 2.0
+                    for _pn in (_pa, _pb):
+                        _off5 = NOTEHEAD_CENTER_OFFSET * (_pn.get('scale', 2.57143) / 1.25714)
+                        _pn['x'] = _pn['center_x'] - _off5
+                        _pn['_new_tx_str'] = f"{_pn['x']:.2f}"
+        _apply_shrink()
+        for _ in range(3):
+            _row_notes = sorted(_row_notes, key=lambda n: n['center_x'])
+            # ri-verifica: se lo shrink crea nuovi conflitti ripeti
+            _has_overlap = any(
+                _row_notes[_i]['center_x'] - _row_notes[_i-1]['center_x']
+                < (_row_notes[_i-1].get('r_for_clamp') or _compute_note_radius(_row_notes[_i-1]))
+                + (_row_notes[_i].get('r_for_clamp') or _compute_note_radius(_row_notes[_i]))
+                for _i in range(1, len(_row_notes)))
+            if not _has_overlap:
+                break
+            _apply_shrink()
 
         print(f"    Equalized {len(new_measure_bounds)} measures: widths={[round(m[1]-m[0]) for m in new_measure_bounds]}")
 
@@ -6610,6 +6690,10 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             disc_r = base_disc_r * 0.80  # croma = 80% of quarter
         else:
             disc_r = base_disc_r  # quarter, half, whole = full size
+        # 16 Set 2026: shrink adattivo anti-accavallamento — se il resolver
+        # ha ridotto il raggio della nota (r_for_clamp < disc_r), usa il raggio
+        # ridotto per evitare sovrapposizioni nei settori stretti.
+        disc_r = min(disc_r, n.get('r_for_clamp') or disc_r)
         
         # Filled vs open notehead:
         # whole/half = OPEN (ring with colored stroke, white fill)
