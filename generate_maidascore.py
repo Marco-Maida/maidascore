@@ -8581,35 +8581,31 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
     # global measure counter — starts from measure_offset for
     # multi-page continuity. Counts ALL measures including rest-only measures.
     global_m_idx = measure_offset
-    # calcola il numero di battuta REALE tenendo conto che ogni
-    # MMRest(N) contribuisce N battute, non 1. Costruisci una mappa
-    # mscz_idx → real_measure_number.
-    real_measure_num = {}
-    _real_num = 1  # 1-based
-    _all_mmrest_indices = sorted(gs for gs, gc in (mmrest_groups or []))
+    # 16 Set 2026 (bug numerazione MMRest): il numero di battuta REALE si calcola
+    # dal _sys_to_global_idx (Single Source of Truth di _system_layout), NON
+    # dall'indice geometrico dei gruppi SVG. Ogni MMRest(N) compresso in un solo
+    # gruppo SVG copre N battute logiche: il conteggio geometrico (m_idx+1)
+    # sottovalutava il numero dopo ogni MMRest. _sys_to_global_idx dà la prima
+    # battuta LOGICA del sistema (0-based); il numero del gruppo grp_idx è
+    # start_logico + grp_idx + 1 (i gruppi SVG = 1 battuta logica ciascuno,
+    # salvo il gruppo MMRest stesso che viene skippato qui sotto).
     _mmrest_map = dict(mmrest_groups or [])
-    for _mi in range(200):  # safety limit
-        if _mi in _mmrest_map:
-            # MMRest: occupa N battute reali
-            real_measure_num[_mi] = _real_num  # numero della prima battuta
-            _real_num += _mmrest_map[_mi]
-        else:
-            real_measure_num[_mi] = _real_num
-            _real_num += 1
     for si_idx, si in enumerate(mn_sys_info):
         x_start = si['x_start']
         em_bounds = equalized_measures.get(x_start, [])
         if not em_bounds:
             continue
-        # Find the measure_idx of the first measure in this system from notes
-        sys_notes = [n for n in notes if abs(n['y'] - si['middle']) < 500]
-        sys_measure_indices = sorted(set(n.get('measure_idx', -1) for n in sys_notes if 'measure_idx' in n))
-        # Use global_m_idx for numbering (counts ALL measures including rests)
-        # Fall back to note-based index only if global counter is not available
-        if sys_measure_indices:
-            first_m_idx = global_m_idx
+        # 16 Set 2026: first_m_idx = prima battuta LOGICA del sistema da
+        # _sys_to_global_idx (build_system_layout, già MMRest-aware).
+        # Fallback al contatore geometrico se il sistema non è mappato.
+        _sys_x_start = si.get('x_start')
+        if _sys_x_start is not None and _sys_x_start in _sys_to_global_idx:
+            first_m_idx = _sys_to_global_idx[_sys_x_start]
         else:
             first_m_idx = global_m_idx
+        # sys_notes resta per compatibilità (non usato per la numerazione)
+        sys_notes = [n for n in notes if abs(n['y'] - si['middle']) < 500]
+        sys_measure_indices = sorted(set(n.get('measure_idx', -1) for n in sys_notes if 'measure_idx' in n))
         # Use REAL system top Y from SVG, fall back to theoretical if not available
         if si_idx < len(real_system_tops):
             sys_top_y = real_system_tops[si_idx]
@@ -8636,6 +8632,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             # Only stems whose vertical range intersects the number's Y band
             if stem_top < sys_top_y - 40 and stem_bot > sys_top_y - 240:
                 system_stems.append((stem_x, stem_top, stem_bot))
+        _mm_extra = 0  # battute logiche extra già consumate da MMRest in questo sistema
         for grp_idx, (m_start, m_end) in enumerate(em_bounds):
             m_idx = first_m_idx + grp_idx
             if m_idx < 0:
@@ -8643,8 +8640,12 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             # salta i numeri di battuta per le battute MMRest
             # (il numero è già mostrato nel box nero)
             if m_idx in _mmrest_map:
+                _mm_extra += _mmrest_map[m_idx] - 1
                 continue
-            mn_num = m_idx + 1  # 4 Ago 2026 (bug KS): global_m_idx è già in battute logiche
+            # 16 Set 2026 (bug numerazione sistema misto): un sistema può
+            # contenere battute reali SEGUIDE da un gruppo MMRest: i gruppi
+            # dopo l'MMRest devono saltare le battute logiche coperte.
+            mn_num = m_idx + 1 + _mm_extra
             mn_x = m_start + 20
             # Check if any high note circle overlaps with the measure number position
             # Number spans roughly mn_x to mn_x + 120 (font 160, 1-2 digits)
@@ -8680,8 +8681,11 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 f'text-anchor="start" dy="0.35em">{mn_num}</text>'
             )
             measure_number_count += 1
-        # Advance global measure counter by the number of LOGICAL measures in this system.
-        # 15 Set 2026: MMRest ESPANSI → 1 battuta fisica = 1 battuta logica.
+        # Advance global measure counter by the number of REAL measures in
+        # this system: each MMRest(N) group counts as N measures, not 1.
+        # 15 Set 2026: MMRest ESPANSI → 1 battuta fisica per gruppo.
+        # 16 Set 2026: usa il conteggio REALE (N per MMRest) invece del
+        # conteggio fisico len(em_bounds).
         global_m_idx += len(em_bounds)
     
     if measure_number_texts:
