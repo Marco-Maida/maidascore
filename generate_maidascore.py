@@ -2992,6 +2992,7 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
     #     measure_offset = all_notes[note_offset].get('measure_idx', 0)
     
     tavola_svg = ''
+    cell_rects_svg = ''
     
     # Sort systems by Y (top to bottom)
     sorted_systems = sorted(systems_post.items(), key=lambda x: x[1]['top'])
@@ -3314,7 +3315,10 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
                             label = NOTE_NAMES_IT_TAVOLA.get(pc_name_tav,
                                    NOTE_NAMES_IT_TAVOLA.get(n0.get('name') or '', n0.get('name_it', '?')))
                             acc_sym = ''
-                        tavola_svg += (f'<rect x="{cell_x_vis:.1f}" y="{tavola_top:.1f}" '
+                        # 16 Set 2026 (bug testi tavola coperti): emetti il rect in un
+                        # buffer separato che viene inserito PRIMA di tutti i testi,
+                        # così i rect delle celle successive non coprono il testo.
+                        cell_rects_svg += (f'<rect x="{cell_x_vis:.1f}" y="{tavola_top:.1f}" '
                                       f'width="{cell_w_adj:.1f}" height="{tavola_row_height}" '
                                       f'fill="{color}" rx="8" '
                                       f'stroke="{color}" stroke-width="2"/>')
@@ -3335,6 +3339,12 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
                         else:
                             text_x = cell_x_vis + cell_w_adj / 2
                             text_anchor = "middle"
+                        # 16 Set 2026: clamp orizzontale — il testo non deve uscire dalla cella
+                        text_half = font_size * 0.62 * len(label) / 2
+                        if text_x - text_half < cell_x_vis + 4:
+                            text_x = cell_x_vis + 4 + text_half
+                        if text_x + text_half > cell_x_vis + cell_w_adj - 4:
+                            text_x = cell_x_vis + cell_w_adj - 4 - text_half
                         text_y_tav = tavola_top + tavola_row_height/2 + font_size*0.35
                         tavola_svg += (f'<text x="{text_x:.1f}" '
                                       f'y="{text_y_tav:.1f}" '
@@ -3683,7 +3693,7 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
     
     # Insert tavola SVG before the closing </svg>
     if tavola_svg:
-        svg_content = svg_content.replace('</svg>', tavola_svg + '\n</svg>')
+        svg_content = svg_content.replace('</svg>', cell_rects_svg + tavola_svg + '\n</svg>')
     
     return svg_content
 
