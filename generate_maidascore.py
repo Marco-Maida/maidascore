@@ -1023,6 +1023,64 @@ def _add_mmrests_to_mscx(mscx_content, note_info):
     return new_mscx
 
 
+def _merge_16th_beams(score):
+    """Rende CONTINUA la travatura secondaria delle semicrome (beam number=2).
+
+    22 Set 2026 (bug semicrome staccate): MuseScore 4.7.4 importa un beam 2
+    spezzato (begin/end/begin/end, come lo produce makeBeams di music21 per
+    i gruppi di 4 semicrome) PERDENDO il BeamMode della 4ª nota, che esce
+    staccata (flag). Con beam 2 continuo (begin/continue/.../end)
+    MuseScore crea il gruppo di 4 semicrome con doppia travatura unica,
+    come l'auto-travatura dell'originale (gruppi di 4).
+    """
+    from music21 import stream as m21stream
+
+    def _beam_types(n):
+        """ritorna {level: type} per una nota (o {} se senza beams)"""
+        try:
+            if n.beams is None:
+                return {}
+            return {b.number: b.type for b in n.beams.beamsList if b.type is not None}
+        except (AttributeError, Exception):
+            return {}
+
+    for part in score.parts:
+        for meas in part.getElementsByClass(m21stream.Measure):
+            notes = list(meas.notes)
+            for i, n in enumerate(notes):
+                bt = _beam_types(n)
+                b2 = bt.get(2)
+                # beam2 'stop' mentre la nota successiva continua il gruppo beam1?
+                if b2 != 'stop':
+                    continue
+                if i + 1 >= len(notes):
+                    continue
+                nxt = notes[i + 1]
+                nbt = _beam_types(nxt)
+                if nbt.get(1) in ('continue', 'stop'):
+                    # il gruppo beam1 prosegue: rendi il beam2 continuo
+                    for b in n.beams.beamsList:
+                        if b.number == 2:
+                            b.type = 'continue'
+            # 2ª passata: beam2 'start' su nota INTERNA di un gruppo beam1
+            # attivo (la nota precedente ha beam1 continue): anche quella
+            # va resa 'continue' per un beam secondario unico (2 Set 2026:
+            # la 3ª di 4 semicrome con b2='start' produceva 'begin16' e
+            # MuseScore disegnava 2+2 invece del gruppo unico di 4).
+            for i, n in enumerate(notes):
+                bt = _beam_types(n)
+                if bt.get(2) != 'start':
+                    continue
+                if i == 0:
+                    continue
+                prev = notes[i - 1]
+                pbt = _beam_types(prev)
+                if pbt.get(1) in ('continue', 'stop') and bt.get(1) in ('continue', 'stop'):
+                    for b in n.beams.beamsList:
+                        if b.number == 2:
+                            b.type = 'continue'
+
+
 def extract_single_part_mscz(input_mscz, part_index=0, key_sig_changes=None, rhythm_mode=False):
     """Estrae una singola parte da un .mscz multi-strumento.
     
@@ -1268,7 +1326,29 @@ def extract_single_part_mscz(input_mscz, part_index=0, key_sig_changes=None, rhy
                 if bm and bm != 'none':
                     orig_beam_modes[(m_idx, c_idx)] = (bm, dt)
         
-        if orig_beam_modes:
+        # 22 Set 2026 (bug semicrome staccate): se i BeamMode espliciti
+        # dell'originale sono pochi (< 20% degli Chord), sono residui:
+        # l'originale usava l'auto-travatura di MuseScore. Applichiamo
+        # l'auto-beaming music21 (gruppi standard 2 crome / 4 semicrome)
+        # e SALTIAMO l'iniezione 1:1, che spezzerebbe i gruppi
+        # (le note senza BeamMode resterebbero staccate).
+        _auto_beamed = False
+        n_chords = sum(len(re.findall(r'<Chord[^>]*>', meas, re.DOTALL)) for meas in orig_measures)
+        if orig_beam_modes and n_chords > 0 and len(orig_beam_modes) < 0.2 * n_chords:
+            from music21 import converter as _conv
+            _rebuilt = _conv.parse(xml_path)
+            _rebuilt.parts[0].makeBeams(inPlace=True)
+            _merge_16th_beams(_rebuilt)
+            import tempfile as _tf, shutil as _shutil
+            _tmp_out = _tf.mktemp(suffix='.musicxml')
+            _rebuilt.write('musicxml', _tmp_out)
+            _shutil.move(_tmp_out, xml_path)
+            _n_bt = len(re.findall(r'<beam[^>]*>.*?</beam>', open(xml_path).read()))
+            print(f"  Original has only {len(orig_beam_modes)} explicit BeamMode "
+                  f"(< 20% of {n_chords} chords): applied music21 auto-beaming "
+                  f"({_n_bt} beam tags), skipping 1:1 injection")
+            _auto_beamed = True
+        if orig_beam_modes and not _auto_beamed:
             # Read the generated MusicXML and inject beam tags
             with open(xml_path, 'r') as f:
                 xml_content = f.read()
@@ -1483,6 +1563,28 @@ def extract_single_part_mscz(input_mscz, part_index=0, key_sig_changes=None, rhy
             with open(xml_path, 'w') as f:
                 f.write(xml_content)
             print(f"  Beam tags re-injected from MusicXML ({n_injected} beams, {n_skipped} battute sfasate saltate)")
+        else:
+            # 22 Set 2026 (bug semicrome staccate): l'originale NON specifica
+            # alcuna travatura (nessun BeamMode nell'.mscx, nessun <beam> nel
+            # MusicXML) → MuseScore auto-beama. Ma lo stream music21 ricostruito
+            # note-per-nota non ha beams, e senza <beam> tag nel MusicXML
+            # MuseScore importa TUTTO staccato (BeamMode=no). Fix: applica
+            # l'auto-beaming di music21 (makeBeams) sul file ricostruito,
+            # che produce i <beam> tag standard (gruppi di 2 crome / 4
+            # semicrome) come l'auto-travatura di MuseScore sull'originale.
+            from music21 import converter as _conv
+            _rebuilt = _conv.parse(xml_path)
+            _rebuilt.parts[0].makeBeams(inPlace=True)
+            _merge_16th_beams(_rebuilt)
+            import tempfile as _tf
+            _tmp_out = _tf.mktemp(suffix='.musicxml')
+            _rebuilt.write('musicxml', _tmp_out)
+            import shutil as _shutil
+            _shutil.move(_tmp_out, xml_path)
+            with open(xml_path, 'r') as f:
+                xml_content = f.read()
+            n_beam_tags = len(re.findall(r'<beam[^>]*>.*?</beam>', xml_content))
+            print(f"  No original beaming found: applied music21 auto-beaming ({n_beam_tags} beam tags)")
     except Exception as e:
         print(f"  Warning: beam injection failed: {e}")
     
@@ -6817,6 +6919,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         # ha ridotto il raggio della nota (r_for_clamp < disc_r), usa il raggio
         # ridotto per evitare sovrapposizioni nei settori stretti.
         disc_r = min(disc_r, n.get('r_for_clamp') or disc_r)
+        n['disc_r'] = disc_r
         
         # Filled vs open notehead:
         # whole/half = OPEN (ring with colored stroke, white fill)
@@ -8487,6 +8590,163 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                                    f'L{sx1:.2f},{syt1:.2f}"/>')
                         modified = modified.replace('</svg>', new_sec + '\n</svg>')
                     print(f"  [Step2] Created {len(_new_sec_16_beams)} secondary beams for 16th+16th")
+
+        # 22 Set 2026 (bug semicrome staccate): gruppi di 4 SEMICROME.
+        # MuseScore 4.7.4 nel layout denso perde il beam2 (renderizza solo la
+        # primaria spezzata 2+2, vedi pizzicato polka b5/b6). Il post-processore
+        # rhythm mode deve: (1) Fondere le 2 primarie 2+2 in un gruppo unico di 4,
+        # (2) Creare la secondaria continua sopra le 4 semicrome.
+        if note_info and rhythm_mode:
+            _ni_notes_q = note_info.get('notes', [])
+            _four_16th_groups = []  # (measure_idx, [4 onsets])
+            for i, n in enumerate(_ni_notes_q):
+                if n.get('dur_key') != '16th':
+                    continue
+                if i + 3 >= len(_ni_notes_q):
+                    continue
+                grp = _ni_notes_q[i:i+4]
+                if not all(g.get('dur_key') == '16th' for g in grp):
+                    continue
+                if not all(g['measure_idx'] == grp[0]['measure_idx'] for g in grp):
+                    continue
+                onsets = [g['onset'] for g in grp]
+                if all(b - a == 0.25 for a, b in zip(onsets, onsets[1:])):
+                    _four_16th_groups.append((grp[0]['measure_idx'], onsets))
+            if _four_16th_groups:
+                _svg_notes_by_meas_q = {}
+                for sn in notes:
+                    m_idx = sn.get('measure_idx')
+                    if m_idx is not None:
+                        _svg_notes_by_meas_q.setdefault(m_idx, []).append(sn)
+                _new_sec_q_beams = []
+                _new_prim_q_beams = []
+                _merged_prim_q = 0
+                # 22 Set 2026: approccio per-RIGO (visual): la mappa SVG
+                # measure_idx puo' essere ambigua per battute identiche in
+                # righi diversi (le pause collassate sfasano sys_start_measure).
+                # Trova i gruppi VISIVI di 4 semicrome (4 cerchi r~58
+                # consecutivi nello stesso rigo, gap regolare) e verifica
+                # che non abbiano gia' la doppia travatura.
+                _sys_mids_q = sorted(set(
+                    round(s.get('middle_line_y', -1)) for s in systems.values()
+                    if s.get('middle_line_y') is not None))
+                _note_rows_q = {}
+                for sn in notes:
+                    _y = sn.get('y', 0)
+                    _best_mid = None
+                    if _sys_mids_q:
+                        _best_mid = min(_sys_mids_q, key=lambda m: abs(m - _y))
+                    _note_rows_q.setdefault(_best_mid, []).append(sn)
+                _visual_groups = []
+                for _rk, _row_notes in _note_rows_q.items():
+                    _row_sorted = sorted(_row_notes, key=lambda n: n['center_x'])
+                    i = 0
+                    while i < len(_row_sorted) - 3:
+                        _quad = _row_sorted[i:i+4]
+                        # 22 Set 2026: criterio VISIVO: cerchio piccolo r~58 =
+                        # semicroma (dur_key puo' essere sfasato quando la
+                        # mappa measure_idx SVG e' ambigua).
+                        if all(n.get('dur_key') in ('16th', '16th_dotted')
+                                or n.get('disc_r', 99) < 66 for n in _quad):
+                            _gxs = [n['center_x'] for n in _quad]
+                            _gaps = [b - a for a, b in zip(_gxs, _gxs[1:])]
+                            if all(80 < g < 200 for g in _gaps):
+                                _visual_groups.append(_quad)
+                                i += 4
+                                continue
+                        i += 1
+                for _quad in _visual_groups:
+                    cxs = [n['center_x'] for n in _quad]
+                    _notes_y2 = [sn.get('y', 0) for sn in _quad]
+                    _ny_mid = (min(_notes_y2) + max(_notes_y2)) / 2
+                    # trova le primarie 2+2 che coprono le 4 semicrome
+                    _prim_q = []
+                    for bi in beam_infos_r:
+                        if id(bi) in beam_is_secondary_r:
+                            continue
+                        bl, br = bi['x_left'], bi['x_right']
+                        bi_y_mid = (bi['y_top'] + bi['y_bot']) / 2
+                        if abs(bi_y_mid - _ny_mid) > 2000:
+                            continue
+                        if all(bl - 120 <= cx <= br + 120 for cx in cxs):
+                            _prim_q.append(bi)
+                    _rebuilt_prim_q = False
+                    if not _prim_q:
+                        # primarie mancanti (beam larghe finite fuori pagina):
+                        # ricostruisci DAI CENTRI NOTA SVG
+                        sx1, sx2 = cxs[0], cxs[3]
+                        prim_y_top = _ny_mid - 350 - 10
+                        prim_y_bot = prim_y_top + 49
+                        _prim_q2 = {
+                            'x_left': sx1, 'x_right': sx2,
+                            'y_top': prim_y_top, 'y_bot': prim_y_bot,
+                            'y1': prim_y_top, 'y2': prim_y_top,
+                            'y3': prim_y_bot, 'y4': prim_y_bot,
+                        }
+                        _new_prim_q_beams.append((sx1, prim_y_top, sx2, prim_y_bot))
+                        _prim_q = [_prim_q2]
+                        _rebuilt_prim_q = True
+                    if not _rebuilt_prim_q:
+                        _prim_q.sort(key=lambda b: b['x_left'])
+                        if len(_prim_q) >= 2:
+                            pa, pb = _prim_q[0], _prim_q[1]
+                            gap_q = pb['x_left'] - pa['x_right']
+                            if gap_q < 1200:
+                                pa['x_right'] = max(pa['x_right'], pb['x_right'])
+                                pb['x_left'] = pb['x_right']
+                                _merged_prim_q += 1
+                    # crea la secondaria continua sopra le 4 semicrome
+                    sx1, sx2 = cxs[0], cxs[3]
+                    ref = None
+                    for bi in _prim_q:
+                        if bi['x_right'] - bi['x_left'] > 0:
+                            ref = bi
+                            break
+                    if ref is None:
+                        continue
+                    _pw_q = ref['x_right'] - ref['x_left']
+                    _tq1 = max(0, (sx1 - ref['x_left']) / _pw_q) if _pw_q > 0 else 0
+                    _tq2 = min(1, (sx2 - ref['x_left']) / _pw_q) if _pw_q > 0 else 1
+                    _ybot_l = ref['y4'] + (ref['y3'] - ref['y4']) * _tq1
+                    _ybot_r = ref['y4'] + (ref['y3'] - ref['y4']) * _tq2
+                    sec_y_top_l = _ybot_l + 5
+                    sec_y_top_r = _ybot_r + 5
+                    _new_sec_q_beams.append((min(sx1, sx2), sec_y_top_l, max(sx1, sx2), sec_y_top_r, 31))
+                if _new_sec_q_beams:
+                    # dedup: il blocco puo' girare piu' volte sullo stesso SVG
+                    # (process_svg richiamata 2x, es. da y_stretch retry) —
+                    # evita secondarie 4x16 duplicate identiche
+                    _seen_q = set()
+                    _dedup_q = []
+                    for tup in _new_sec_q_beams:
+                        key = (round(tup[0]), round(tup[2]), round(tup[1]))
+                        if key in _seen_q:
+                            continue
+                        _seen_q.add(key)
+                        _dedup_q.append(tup)
+                    _new_sec_q_beams = _dedup_q
+                    for sx1, syt1, sx2, syt2, _sth in _new_sec_q_beams:
+                        new_sec = (f'<path class="Beam" fill="#000000" fill-rule="evenodd" '
+                                   f'd="M{sx1:.2f},{syt1:.2f} L{sx2:.2f},{syt2:.2f} '
+                                   f'L{sx2:.2f},{syt2 + _sth:.2f} L{sx1:.2f},{syt1 + _sth:.2f} '
+                                   f'L{sx1:.2f},{syt1:.2f}"/>')
+                        modified = modified.replace('</svg>', new_sec + '\n</svg>')
+                    # primarie ricostruite (quando mancavano del tutto)
+                    _seen_pq = set()
+                    for sx1, syt1, sx2, syt2 in _new_prim_q_beams:
+                        key = (round(sx1), round(sx2), round(syt1))
+                        if key in _seen_pq:
+                            continue
+                        _seen_pq.add(key)
+                        new_prim = (f'<path class="Beam" fill="#000000" fill-rule="evenodd" '
+                                    f'd="M{sx1:.2f},{syt1:.2f} L{sx2:.2f},{syt1:.2f} '
+                                    f'L{sx2:.2f},{syt2:.2f} L{sx1:.2f},{syt2:.2f} '
+                                    f'L{sx1:.2f},{syt1:.2f}"/>')
+                        modified = modified.replace('</svg>', new_prim + '\n</svg>')
+                    if _new_prim_q_beams:
+                        print(f"  [Step2] Rebuilt {len(_seen_pq)} primary beams for 4x16th groups")
+                    print(f"  [Step2] Created {len(_new_sec_q_beams)} secondary beams for 4x16th groups (merged {_merged_prim_q} primary pairs)")
+
     
     # Re-parse systems AFTER Y-stretch (coordinates have changed!)
     # This is needed for enlarge_clef, rests, and accidentals which use system Y ranges
