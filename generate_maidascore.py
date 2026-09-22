@@ -6133,13 +6133,18 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             if _dt in ('eighth', 'eighth_dotted'):
                 return _b * 0.80
             return _b
+        # 22 Set 2026 (bug semicrome invertite Fa-Si): usa il raggio REALE della
+        # nota (_compute_note_radius: semicrome 0.65x, crome 0.80x) invece del
+        # full-size 110: con _min_d da dischi pieni le semicrome di un gruppo
+        # 4x16 venivano spinte UNA OLTRE L'ALTRA (push-past), invertendo
+        # l'ordine visivo (Fa-Si-Si-Fa invece di Fa-Si-Fa-Si).
         for _sweep in range(2):
-          _row_notes = sorted(_row_notes, key=lambda n: n['center_x'])
+          _row_notes = sorted(_row_notes, key=lambda n: (n['center_x'], n.get('onset', 0.0), n.get('measure_idx', -1)))
           for _i in range(1, len(_row_notes)):
             _pl = _row_notes[_i - 1]
             _pr = _row_notes[_i]
-            _r_l = _pl.get('r_for_clamp') or max(DISC_R_OVERRIDE, 1)
-            _r_r = _pr.get('r_for_clamp') or max(DISC_R_OVERRIDE, 1)
+            _r_l = _compute_note_radius(_pl)
+            _r_r = _compute_note_radius(_pr)
             _min_d = _r_l + _r_r + 18.0
             if _pr['center_x'] - _pl['center_x'] < _min_d:
                 _m_end = _measure_end_for(_pr['center_x'])
@@ -6231,7 +6236,11 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             _s_lo = _mb[0] + _sec_i * ((_mb[1] - _mb[0]) / _n_sectors_for_measure(_ns[0]['measure_idx'])) + 2.0
             _sec_w2 = (_mb[1] - _mb[0]) / _n_sectors_for_measure(_ns[0]['measure_idx'])
             _s_hi = _s_lo - 2.0 + _sec_w2 - 2.0
-            _ns.sort(key=lambda n: n['center_x'])
+            # 22 Set 2026 (bug semicrome invertite): ordina per ONSET
+            # (battuta, onset), non per center_x — dopo i push dei passi
+            # precedenti due note possono avere X collassate o invertite,
+            # e il sort per X rompe l'ordine temporale (Fa-Si-Si-Fa).
+            _ns.sort(key=lambda n: (n.get('measure_idx', -1), n.get('onset', 0.0)))
             # gruppi per onset
             _groups = []
             for _gk, _git in _groupby(_ns, key=lambda n: (n.get('measure_idx'), round(n.get('onset', 0.0), 3))):
