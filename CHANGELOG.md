@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.6] - 2026-09-22
+
+### Fixed
+- **Inverted 4x16th note groups in notation mode**: the anti-overlap
+  resolver computed the minimum disc distance using the full-size radius
+  (110px) even for 16th notes (real radius 0.65x). With four 16th notes
+  in one sector, the third note was pushed past the fourth ("push-past"),
+  inverting the visual order (e.g. Fa-Si-Si-Fa instead of Fa-Si-Fa-Si on
+  the Pizzicato Polka score). Fixed: (1) the sweep pass now uses
+  `_compute_note_radius()` (real per-duration radius) instead of the
+  full-size override; (2) deterministic sort with onset tie-break;
+  (3) the per-sector layout orders groups by `(measure_idx, onset)`
+  instead of `center_x`. Regression-tested on Canzon, Amen and Danza
+  delle Spade, both notation and rhythm modes.
+
 ## [1.2.5] - 2026-09-16
 
 ### Fixed
