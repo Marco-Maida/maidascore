@@ -8597,155 +8597,112 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         # rhythm mode deve: (1) Fondere le 2 primarie 2+2 in un gruppo unico di 4,
         # (2) Creare la secondaria continua sopra le 4 semicrome.
         if note_info and rhythm_mode:
-            _ni_notes_q = note_info.get('notes', [])
-            _four_16th_groups = []  # (measure_idx, [4 onsets])
-            for i, n in enumerate(_ni_notes_q):
-                if n.get('dur_key') != '16th':
-                    continue
-                if i + 3 >= len(_ni_notes_q):
-                    continue
-                grp = _ni_notes_q[i:i+4]
-                if not all(g.get('dur_key') == '16th' for g in grp):
-                    continue
-                if not all(g['measure_idx'] == grp[0]['measure_idx'] for g in grp):
-                    continue
-                onsets = [g['onset'] for g in grp]
-                if all(b - a == 0.25 for a, b in zip(onsets, onsets[1:])):
-                    _four_16th_groups.append((grp[0]['measure_idx'], onsets))
-            if _four_16th_groups:
-                _svg_notes_by_meas_q = {}
-                for sn in notes:
-                    m_idx = sn.get('measure_idx')
-                    if m_idx is not None:
-                        _svg_notes_by_meas_q.setdefault(m_idx, []).append(sn)
-                _new_sec_q_beams = []
-                _new_prim_q_beams = []
-                _merged_prim_q = 0
-                # 22 Set 2026: approccio per-RIGO (visual): la mappa SVG
-                # measure_idx puo' essere ambigua per battute identiche in
-                # righi diversi (le pause collassate sfasano sys_start_measure).
-                # Trova i gruppi VISIVI di 4 semicrome (4 cerchi r~58
-                # consecutivi nello stesso rigo, gap regolare) e verifica
-                # che non abbiano gia' la doppia travatura.
-                _sys_mids_q = sorted(set(
-                    round(s.get('middle_line_y', -1)) for s in systems.values()
-                    if s.get('middle_line_y') is not None))
-                _note_rows_q = {}
-                for sn in notes:
-                    _y = sn.get('y', 0)
-                    _best_mid = None
-                    if _sys_mids_q:
-                        _best_mid = min(_sys_mids_q, key=lambda m: abs(m - _y))
-                    _note_rows_q.setdefault(_best_mid, []).append(sn)
-                _visual_groups = []
-                for _rk, _row_notes in _note_rows_q.items():
-                    _row_sorted = sorted(_row_notes, key=lambda n: n['center_x'])
-                    i = 0
-                    while i < len(_row_sorted) - 3:
-                        _quad = _row_sorted[i:i+4]
-                        # 22 Set 2026: criterio VISIVO: cerchio piccolo r~58 =
-                        # semicroma (dur_key puo' essere sfasato quando la
-                        # mappa measure_idx SVG e' ambigua).
-                        if all(n.get('dur_key') in ('16th', '16th_dotted')
-                                or n.get('disc_r', 99) < 66 for n in _quad):
-                            _gxs = [n['center_x'] for n in _quad]
-                            _gaps = [b - a for a, b in zip(_gxs, _gxs[1:])]
-                            if all(80 < g < 200 for g in _gaps):
-                                _visual_groups.append(_quad)
-                                i += 4
-                                continue
-                        i += 1
-                for _quad in _visual_groups:
-                    cxs = [n['center_x'] for n in _quad]
-                    _notes_y2 = [sn.get('y', 0) for sn in _quad]
-                    _ny_mid = (min(_notes_y2) + max(_notes_y2)) / 2
-                    # trova le primarie 2+2 che coprono le 4 semicrome
-                    _prim_q = []
-                    for bi in beam_infos_r:
-                        if id(bi) in beam_is_secondary_r:
-                            continue
-                        bl, br = bi['x_left'], bi['x_right']
-                        bi_y_mid = (bi['y_top'] + bi['y_bot']) / 2
-                        if abs(bi_y_mid - _ny_mid) > 2000:
-                            continue
-                        if all(bl - 120 <= cx <= br + 120 for cx in cxs):
-                            _prim_q.append(bi)
-                    _rebuilt_prim_q = False
-                    if not _prim_q:
-                        # primarie mancanti (beam larghe finite fuori pagina):
-                        # ricostruisci DAI CENTRI NOTA SVG
-                        sx1, sx2 = cxs[0], cxs[3]
-                        prim_y_top = _ny_mid - 350 - 10
-                        prim_y_bot = prim_y_top + 49
-                        _prim_q2 = {
-                            'x_left': sx1, 'x_right': sx2,
-                            'y_top': prim_y_top, 'y_bot': prim_y_bot,
-                            'y1': prim_y_top, 'y2': prim_y_top,
-                            'y3': prim_y_bot, 'y4': prim_y_bot,
-                        }
-                        _new_prim_q_beams.append((sx1, prim_y_top, sx2, prim_y_bot))
-                        _prim_q = [_prim_q2]
-                        _rebuilt_prim_q = True
-                    if not _rebuilt_prim_q:
-                        _prim_q.sort(key=lambda b: b['x_left'])
-                        if len(_prim_q) >= 2:
-                            pa, pb = _prim_q[0], _prim_q[1]
-                            gap_q = pb['x_left'] - pa['x_right']
-                            if gap_q < 1200:
-                                pa['x_right'] = max(pa['x_right'], pb['x_right'])
-                                pb['x_left'] = pb['x_right']
-                                _merged_prim_q += 1
-                    # crea la secondaria continua sopra le 4 semicrome
-                    sx1, sx2 = cxs[0], cxs[3]
-                    ref = None
-                    for bi in _prim_q:
-                        if bi['x_right'] - bi['x_left'] > 0:
-                            ref = bi
+            # Gate: procedi se ci sono cerchi piccoli (semicrome) nell'SVG
+            if True:
+                # 22 Set 2026: ricostruzione TOTALE delle travature dei gruppi
+                # di 4 semicrome, operando in coordinate POST-Y-stretch (il
+                # blocco gira dopo y_stretch_systems). Parse dell'SVG corrente:
+                # cerchi piccoli (r~58 = semicrome) e beams esistenti.
+                _circ_q = []
+                for cm in re.finditer(r'<circle cx="([\d.]+)" cy="([\d.]+)" r="([\d.]+)"', modified):
+                    _ccx, _ccy, _ccr = float(cm.group(1)), float(cm.group(2)), float(cm.group(3))
+                    if _ccr < 66:
+                        _circ_q.append((_ccx, _ccy, _ccr, cm.group(0)))
+                # righe = cluster per y-similitudine (differenza < 200px)
+                _rows_q = []
+                for c in sorted(_circ_q, key=lambda c: c[1]):
+                    for r in _rows_q:
+                        if abs(r[0][1] - c[1]) < 200:
+                            r.append(c)
                             break
-                    if ref is None:
-                        continue
-                    _pw_q = ref['x_right'] - ref['x_left']
-                    _tq1 = max(0, (sx1 - ref['x_left']) / _pw_q) if _pw_q > 0 else 0
-                    _tq2 = min(1, (sx2 - ref['x_left']) / _pw_q) if _pw_q > 0 else 1
-                    _ybot_l = ref['y4'] + (ref['y3'] - ref['y4']) * _tq1
-                    _ybot_r = ref['y4'] + (ref['y3'] - ref['y4']) * _tq2
-                    sec_y_top_l = _ybot_l + 5
-                    sec_y_top_r = _ybot_r + 5
-                    _new_sec_q_beams.append((min(sx1, sx2), sec_y_top_l, max(sx1, sx2), sec_y_top_r, 31))
-                if _new_sec_q_beams:
-                    # dedup: il blocco puo' girare piu' volte sullo stesso SVG
-                    # (process_svg richiamata 2x, es. da y_stretch retry) —
-                    # evita secondarie 4x16 duplicate identiche
-                    _seen_q = set()
-                    _dedup_q = []
-                    for tup in _new_sec_q_beams:
-                        key = (round(tup[0]), round(tup[2]), round(tup[1]))
-                        if key in _seen_q:
+                    else:
+                        _rows_q.append([c])
+                # gruppi visivi: 4 cerchi consecutivi con gap 80..250
+                _visual_groups = []
+                for row in _rows_q:
+                    row_s = sorted(row, key=lambda c: c[0])
+                    i = 0
+                    while i < len(row_s) - 3:
+                        quad = row_s[i:i+4]
+                        gaps = [quad[j+1][0] - quad[j][0] for j in range(3)]
+                        if all(80 < g < 250 for g in gaps):
+                            _visual_groups.append(quad)
+                            i += 4
                             continue
-                        _seen_q.add(key)
-                        _dedup_q.append(tup)
-                    _new_sec_q_beams = _dedup_q
-                    for sx1, syt1, sx2, syt2, _sth in _new_sec_q_beams:
-                        new_sec = (f'<path class="Beam" fill="#000000" fill-rule="evenodd" '
-                                   f'd="M{sx1:.2f},{syt1:.2f} L{sx2:.2f},{syt2:.2f} '
-                                   f'L{sx2:.2f},{syt2 + _sth:.2f} L{sx1:.2f},{syt1 + _sth:.2f} '
-                                   f'L{sx1:.2f},{syt1:.2f}"/>')
-                        modified = modified.replace('</svg>', new_sec + '\n</svg>')
-                    # primarie ricostruite (quando mancavano del tutto)
-                    _seen_pq = set()
-                    for sx1, syt1, sx2, syt2 in _new_prim_q_beams:
-                        key = (round(sx1), round(sx2), round(syt1))
-                        if key in _seen_pq:
-                            continue
-                        _seen_pq.add(key)
+                        i += 1
+                # beams esistenti (parse dell'SVG corrente)
+                _beam_re_q = re.compile(
+                    r'<path class="Beam"[^>]*d="M([\d.\-]+),([\d.\-]+) L([\d.\-]+),([\d.\-]+) L([\d.\-]+),([\d.\-]+) L([\d.\-]+),([\d.\-]+)[^"]*"\s*/>'
+                )
+                _beams_q = []
+                for m in _beam_re_q.finditer(modified):
+                    vals = [float(m.group(k+1)) for k in range(8)]
+                    _beams_q.append({
+                        'match': m,
+                        'x_left': min(vals[0], vals[6]),
+                        'x_right': max(vals[2], vals[4]),
+                        'y_top': min(vals[1], vals[3]),
+                        'y_bot': max(vals[5], vals[7]),
+                    })
+                _new_prim_q = []
+                _new_sec_q = []
+                _n_stale_q = 0
+                # stems per allineare le travature (i cerchi sono sfasati
+                # di ~64px rispetto agli stems MuseScore)
+                _stem_re_q = re.compile(r'<polyline class="Stem"[^>]*points="([\d.\-]+),([\d.\-]+) ([\d.\-]+),([\d.\-]+)"')
+                _stems_q = []
+                for m in _stem_re_q.finditer(modified):
+                    _sx1, _sy1, _sx2, _sy2 = (float(m.group(k)) for k in range(1, 5))
+                    _stems_q.append((_sx1, _sy1, _sx2, _sy2))
+                for quad in _visual_groups:
+                    sx1, sx2 = quad[0][0], quad[3][0]
+                    ny_mid = quad[0][1]  # y dei cerchi (tutti ~uguali)
+                    # rimuovi TUTTE le travature esistenti nella zona del gruppo
+                    # (primarie parziali 2+2 + secondarie stantie di MuseScore)
+                    _lo, _hi = sx1 - 200, sx2 + 200
+                    _y_lo, _y_hi = ny_mid - 1300, ny_mid + 300
+                    for bi in _beams_q:
+                        if (bi['x_left'] >= _lo - 200 and bi['x_right'] <= _hi + 200
+                                and _y_lo <= bi['y_top'] <= _y_hi):
+                            tok = bi['match'].group(0)
+                            if tok in modified:
+                                modified = modified.replace(tok, '', 1)
+                                _n_stale_q += 1
+                    # 23 Set 2026: allinea le travature agli STEMS (i cerchi
+                    # sono sfasati di ~64px; le travature devono coprire gli
+                    # stems, altrimenti "fuoriescono" dai gambi)
+                    _grp_stems = [s for s in _stems_q
+                                  if sx1 - 100 <= s[0] <= sx2 + 100
+                                  and abs(min(s[1], s[3]) - (ny_mid - 360)) < 600]
+                    if _grp_stems:
+                        _gxs = [s[0] for s in _grp_stems]
+                        _stem_x1, _stem_x2 = min(_gxs), max(_gxs)
+                        # y top dello stem = estremita' piu' alta (y1 o y3)
+                        _stem_y_top = min(min(s[1], s[3]) for s in _grp_stems)
+                    else:
+                        _stem_x1, _stem_x2 = sx1, sx2
+                        _stem_y_top = ny_mid - 360
+                    # ridisegna: primaria unica sopra le 4 semicrome
+                    prim_y_top = _stem_y_top
+                    prim_y_bot = prim_y_top + 49
+                    sx1, sx2 = _stem_x1, _stem_x2
+                    _new_prim_q.append((sx1, prim_y_top, sx2, prim_y_bot))
+                    # secondaria continua attaccata sotto la primaria
+                    _new_sec_q.append((sx1, prim_y_bot + 5, sx2, prim_y_bot + 5, 31))
+                if _new_sec_q:
+                    for sx1, syt1, sx2, syt2 in _new_prim_q:
                         new_prim = (f'<path class="Beam" fill="#000000" fill-rule="evenodd" '
                                     f'd="M{sx1:.2f},{syt1:.2f} L{sx2:.2f},{syt1:.2f} '
                                     f'L{sx2:.2f},{syt2:.2f} L{sx1:.2f},{syt2:.2f} '
                                     f'L{sx1:.2f},{syt1:.2f}"/>')
                         modified = modified.replace('</svg>', new_prim + '\n</svg>')
-                    if _new_prim_q_beams:
-                        print(f"  [Step2] Rebuilt {len(_seen_pq)} primary beams for 4x16th groups")
-                    print(f"  [Step2] Created {len(_new_sec_q_beams)} secondary beams for 4x16th groups (merged {_merged_prim_q} primary pairs)")
+                    for sx1, syt1, sx2, syt2, sth in _new_sec_q:
+                        new_sec = (f'<path class="Beam" fill="#000000" fill-rule="evenodd" '
+                                   f'd="M{sx1:.2f},{syt1:.2f} L{sx2:.2f},{syt2:.2f} '
+                                   f'L{sx2:.2f},{syt2 + sth:.2f} L{sx1:.2f},{syt1 + sth:.2f} '
+                                   f'L{sx1:.2f},{syt1:.2f}"/>')
+                        modified = modified.replace('</svg>', new_sec + '\n</svg>')
+                    print(f"  [Step2] 4x16th groups: {len(_new_sec_q)} rebuilt, {_n_stale_q} stale beams removed")
 
     
     # Re-parse systems AFTER Y-stretch (coordinates have changed!)
