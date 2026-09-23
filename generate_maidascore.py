@@ -3302,13 +3302,21 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
         # gruppo MMRest collassato che copre gc battute, i gruppi successivi
         # avanzano di gc-1 extra. Moltiplicatore dedotto da mmrest_groups
         # del sistema (usando il layout: sistema espanso = battute logiche).
+        # 23 Set 2026 (bug Gnomus tavola, round 2): la condizione `_tmi == 0`
+        # impediva l'avanzamento logico quando il MMRest collassato NON è la
+        # prima battuta del sistema (es. b35 + MMRest b36-38 + b39: il gruppo
+        # MMRest sta a m_idx=1). Senza extra, b39 veniva mappata all'indice
+        # logico 36 = battuta interna del MMRest → finita in _mmrest_skip_measures
+        # → celle tavola di b39 mai disegnate. Il collasso va applicato qualunque
+        # sia la posizione del gruppo nel sistema (il guard `len(measures) > 1`
+        # resta: in un sistema MMRest puro non serve).
         _tav_log_map = {}
         _extra_tav = 0
         for _tmi, (_tm_start, _tm_end) in enumerate(measures):
             _tav_log_map[_tmi] = _tmi + _extra_tav
             _g_here = system_start_measure + _tmi + _extra_tav
             for _gs, _gc in _mmrest_group_map_local.items():
-                if _gs == _g_here and _tmi == 0 and len(measures) > 1:
+                if _gs == _g_here and len(measures) > 1:
                     # gruppo MMRest collassato che copre _gc battute logiche
                     _extra_tav += _gc - 1
         for m_idx, (m_start, m_end) in enumerate(measures):
