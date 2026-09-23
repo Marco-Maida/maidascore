@@ -502,10 +502,18 @@ def extract_notes_via_music21(mscz_path, part_index=0):
             for n in m.notesAndRests:
                 ql = n.quarterLength
                 offset = n.offset
+                # 23 Set 2026 (bug battute 30/39 Gnomus): le GRACE NOTES
+                # (acciaccature, ql=0) non sono note a tutti gli effetti —
+                # MuseScore le disegna come piccolo glyph ornamentale, non
+                # come notehead SVG separato. Includendole, il conteggio note
+                # per battuta (mscz_notes_by_measure) era +1 rispetto alle
+                # teste disegnate: il matching SVG↔music21 shiftava di 1
+                # e l'ULTIMA nota delle battute successive restava orfana
+                # (C#6 di b30 non disegnata; E6/Eb6 di b39 nel settore
+                # sbagliato). Saltale.
+                if getattr(n, 'isGrace', False) or ql == 0.0:
+                    continue
                 # 10 Set 2026 (Nachtmusik): i Chord non hanno .pitch.
-                # Per una parte solistica riduciamo l'accordo alla nota
-                # più grave (principale), preservando la durata.
-                if n.isChord:
                     n = n.sortAscending().notes[0]
                 
                 # Determina duration_type e dots dalla ql
@@ -4819,7 +4827,44 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 if _mm_pair_here is not None:
                     _gs0, _gc0 = _mm_pair_here
                     _mm_pos = _gs0 - _gm_here  # posizione del gruppo collassato
-                    if 0 <= _mm_pos < len(system_measure_indices):
+                    # 23 Set 2026 (bug note b39 Gnomus): MMRest in MEZZO al sistema
+                    # (es. b35 + MMRest b36-38 + b39): le note-derived smi contengono
+                    # SOLO le battute con note ([38]), meno dei gruppi reali (3).
+                    # Il guard `_mm_pos < len(smi)` saltava la rimappatura e il loop
+                    # ONSET-BASED assegnava smi[0]=38 al gruppo 0 (b35): le note di
+                    # b39 venivano disegnate nel settore di b35. Ricostruisci smi
+                    # completa: gruppi prima del collasso = indici contigui da _gm_here,
+                    # gruppo collassato = _gs0, gruppi dopo = measure_idx delle note
+                    # (con offset logico) o fallback contiguo.
+                    _smi_rebuilt_here = (_mm_pos >= len(system_measure_indices)
+                                         and len(system_measure_indices) < n_groups)
+                    if _smi_rebuilt_here:
+                        _rebuilt = []
+                        for _gi in range(n_groups):
+                            if _gi < _mm_pos:
+                                _rebuilt.append(_gm_here + _gi)
+                            elif _gi == _mm_pos:
+                                _rebuilt.append(_gs0)
+                            else:
+                                # dopo il collasso: usa le note note-derived rimaste
+                                # (la prima battuta post-MMRest con note), altrimenti
+                                # fallback contiguo logico post-collasso.
+                                _after = [m for m in system_measure_indices if m not in _rebuilt]
+                                if _after:
+                                    _rebuilt.append(_after[0])
+                                    system_measure_indices = [m for m in system_measure_indices if m != _after[0]]
+                                else:
+                                    _rebuilt.append(_gs0 + 1 + (_gi - _mm_pos - 1))
+                        system_measure_indices = _rebuilt
+                    # 23 Set 2026 (bug note b39 Gnomus): quando smi è NOTE-DERIVED
+                    # e il collasso MMRest è in MEZZO al sistema, il rebuild qui sopra
+                    # produce già la lista completa (una per gruppo): NON applicare
+                    # anche l'inserimento storico qui sotto (duplicherebbe _gs0,
+                    # es. [34,35,35,38] per b35+MMRest+b39 → 4 indici per 3 gruppi
+                    # → le note di b39 matchavano il gruppo 1 = MMRest).
+                    # NB: il flag si calcola PRIMA che il rebuild sostituisca smi.
+
+                    elif 0 <= _mm_pos < len(system_measure_indices):
                         # 15 Set 2026 (bug pause battute 5-6): distinguere due casi.
                         # (a) lista REBUILDATA contigua (una per battuta fisica):
                         #     inserisci _gs0 e salta le _gc0-1 battute fisiche del
