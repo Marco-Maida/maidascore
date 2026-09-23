@@ -568,6 +568,17 @@ def extract_notes_via_music21(mscz_path, part_index=0):
                         # un'alterazione (# o b) → di passaggio.
                         if acc_str in ('#', 'b'):
                             passing_acc = acc_str
+                    # 23 Set 2026 (bug bequadro, Marco): il bequadro dopo un
+                    # alterazione di passaggio nella stessa battuta (es. Fa#
+                    # poi Fa naturale) va SEMPRE disegnato, altrimenti il diesis
+                    # precedente vale per tutta la battuta. MuseScore marca il
+                    # bequadro visivamente necessario con accidental.displayStatus=True
+                    # (usato solo per la nota che NECESSITA il bequadro, non per
+                    # tutte le note naturali). Contiamo SOLO i natural con
+                    # displayStatus=True.
+                    if not passing_acc and acc is not None and acc.name == 'natural':
+                        if acc.displayStatus:
+                            passing_acc = 'natural'
 
                     # 9 Ago 2026 (bug diesis pentagramma, Marco): le note
                     # alterate nell'armatura (es. F#, C# in Re maggiore) devono
