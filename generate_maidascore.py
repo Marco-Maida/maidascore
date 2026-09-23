@@ -6425,8 +6425,22 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 continue
             _match_tx = n.get('_raw_tx', n['_orig_tx'])
             w = 123.453 * n['scale']  # glyph width
+            # 23 Set 2026 (bug gambi mancanti m23-26 Gnomus): il matching Y usava
+            # n['y'] (che in rhythm mode può essere la Y post-correzione/enarmonica
+            # o comunque distante ≥100px dalle Y originali dello stem di MuseScore)
+            # con soglia 100px. Le note con |Δy| 126-190px non trovavano il gambo
+            # → gambi neri non riposizionati (restavano al posto sbagliato o
+            # nascosti). Confrontiamo ora lo stem con la Y del SISTEMA della nota:
+            # lo stem appartiene alla nota se la sua Y cade nel raggio del sistema
+            # (middle ± 5 half_step è la fascia del pentagramma + tagli).
+            _stem_sys_ref = n['system']['middle_line_y']
+            _half_step = n['system']['half_step']
+            _y_dist = min(abs(_stem_sys_ref - sy1), abs(_stem_sys_ref - sy2))
+            _y_in_range = (
+                min(sy1, sy2) - 400 <= _stem_sys_ref <= max(sy1, sy2) + 400
+            ) or _y_dist < 100 or min(abs(n['y'] - sy1), abs(n['y'] - sy2)) < 100
             if (_match_tx - 40 <= sx <= _match_tx + w + 40
-                    and min(abs(n['y'] - sy1), abs(n['y'] - sy2)) < 100):
+                    and _y_in_range):
                 _owner_candidates.append((abs(_match_tx - sx), n))
         if _owner_candidates:
             owner = min(_owner_candidates, key=lambda t: t[0])[1]
