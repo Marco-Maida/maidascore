@@ -1172,8 +1172,17 @@ def extract_single_part_mscz(input_mscz, part_index=0, key_sig_changes=None, rhy
     
     events_by_measure = defaultdict(list)
     for n in note_info['notes']:
+        # 23 Set 2026 (bug Gnomus): salta le grace notes (ql=0.0). Il rebuild
+        # con "if ql == 0: ql = 1.0" le trasformava in note da 1.0 quarto,
+        # rendendo la battuta OVERFULL e facendo crashare MuseScore 4
+        # all'export SVG (exit 40). Le grace notes non sono didatticamente
+        # rilevanti e music21 non le esporta correttamente senza durata.
+        if (n.get('ql') or 0) == 0.0:
+            continue
         events_by_measure[n['measure_idx']].append(('N', n['onset'], n['duration_type'], n['pitch'], n.get('dots', 0), n.get('is_measure_rest', False), n.get('ql')))
     for r in note_info['rests']:
+        if (r.get('ql') or 1) == 0.0:
+            continue
         events_by_measure[r['measure_idx']].append(('R', r['onset'], r['duration_type'], 0, 0, r.get('is_measure_rest', False), r.get('ql')))
     
     max_measure = max(events_by_measure.keys()) if events_by_measure else 0
