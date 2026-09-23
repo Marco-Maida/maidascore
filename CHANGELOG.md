@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.7] - 2026-09-23
+
+### Fixed
+- **Missing tavola sonora cells when a collapsed MMRest is not the first
+  measure of the system**: the logical remapping (physical m_idx → logical
+  measure index) in `draw_tavola_sonora` only applied the MMRest extra
+  advance (gc-1) when the collapsed group was at m_idx 0. With the group in
+  the middle (e.g. b35 + MMRest b36-38 + b39 in Gnomus), the following
+  measure was mapped to a logical index inside the MMRest group and landed
+  in `_mmrest_skip_measures`, so its tavola cells were never drawn. The
+  collapse is now applied regardless of the group position (the
+  `len(measures) > 1` guard for pure-MMRest systems is retained).
+
 ## [1.2.6] - 2026-09-22
 
 ### Fixed
