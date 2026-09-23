@@ -9537,7 +9537,12 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             ts_text_elements = []
             seen_ys = set()
             no_ks_sys_idx = 0
-            for ty in ts_ys:
+            # 23 Set 2026 (bug Gnomus): NON iterare sui glyph TimeSig di MuseScore
+            # (presenti solo dove MuseScore li disegna: spesso solo il 1° sistema
+            # della pagina). Itera su TUTTI i sistemi: disegna il tempo sul 1°
+            # sistema della 1ª pagina e, sui sistemi successivi, SOLO quando cambia.
+            _ts_sys_iter = list(system_tops) if system_tops else list(ts_ys)
+            for ty in _ts_sys_iter:
                 sys_top = min(system_tops, key=lambda st: abs(st - ty)) if system_tops else None
                 sys_key = round(sys_top) if sys_top is not None else round(ty)
                 if sys_key in seen_ys:
@@ -9546,8 +9551,24 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 no_ks_sys_idx += 1
                 # tempo solo sul primo pentagramma ASSOLUTO
                 # (prima pagina, primo sistema). Pagine successive: niente.
-                if no_ks_sys_idx > 1 or not is_first_page:
-                    continue  # sistemi successivi o pagine successive: nessun testo
+                if no_ks_sys_idx > 1:
+                    # 23 Set 2026 (bug Gnomus): sistema successivo — mostra il tempo
+                    # SOLO se è CAMBIATO rispetto al sistema precedente. Prima non
+                    # veniva mai disegnato: i cambi di tempo a inizio sistema dopo il
+                    # primo restavano invisibili nei brani senza armatura (no KeySig).
+                    if no_ks_sys_idx - 2 < len(sorted_system_tops):
+                        _prev_sys_top = sorted_system_tops[no_ks_sys_idx - 2]
+                        _gm_here = sys_top_to_global.get(round(sys_top)) if sys_top is not None else None
+                        _gm_prev = sys_top_to_global.get(round(_prev_sys_top))
+                        _ts_here = time_sigs_pm_r.get(_gm_here, ts_info_r) if _gm_here is not None else ts_info_r
+                        _ts_prev = time_sigs_pm_r.get(_gm_prev) if _gm_prev is not None else None
+                        if _ts_prev is not None and _ts_here != _ts_prev:
+                            _ts_ty = system_centers.get(round(sys_top), sys_top + TS_LINE_Y_offset) if sys_top is not None else ty
+                            ts_text_elements.append(
+                                _rhythm_ts_fraction_svg(KS_TEXT_X + 40, _ts_ty, _ts_here[0], _ts_here[1]))
+                    continue
+                if not is_first_page:
+                    continue  # pagine successive: nessun tempo iniziale
                 # 12 Ago 2026: tempo a frazione (senza alterazioni, Do maggiore)
                 # Centra nel pentagramma usando system_centers
                 ts_ty = system_centers.get(round(sys_top), sys_top + TS_LINE_Y_offset) if sys_top is not None else ty
