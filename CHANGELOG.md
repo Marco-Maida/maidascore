@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.9] - 2026-09-23
+
+### Fixed
+- **Naturals now appear in the sound-table cells too**: a note requiring a
+  natural sign (e.g. F natural after F# in the same measure) now shows the
+  natural glyph under the note name in the tavola sonora cells, in both
+  notation and rhythm mode, in both the timeline and fallback rendering
+  paths. Previously only the staff circles got the natural sign.
+
 ## [1.2.8] - 2026-09-23
 
 ### Fixed

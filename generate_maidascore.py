@@ -3479,6 +3479,10 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
                         # Tavola usa nome completo (Sol, non So)
                         # alterazione come testo '#' o 'b' in NERO, SOTTO il nome.
                         # Usa note_name (con alterazione: 'C#', 'Bb') invece di name (naturale).
+                        # 23 Set 2026 (bug bequadro tavola, Marco): se la nota
+                        # richiede il bequadro (staff_acc=='natural'), mostra ♮
+                        # sotto il nome anche nella tavola.
+                        tav_natural = (n0.get('staff_acc', '') == 'natural')
                         pc_name_tav = n0.get('note_name') or n0.get('name') or ''
                         split = NOTE_NAMES_IT_TAVOLA_SPLIT.get(pc_name_tav, None)
                         if split:
@@ -3488,6 +3492,8 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
                             label = NOTE_NAMES_IT_TAVOLA.get(pc_name_tav,
                                    NOTE_NAMES_IT_TAVOLA.get(n0.get('name') or '', n0.get('name_it', '?')))
                             acc_sym = ''
+                        if tav_natural and not acc_sym:
+                            acc_sym = '\u266e'
                         # 16 Set 2026 (bug testi tavola coperti): emetti il rect in un
                         # buffer separato che viene inserito PRIMA di tutti i testi,
                         # così i rect delle celle successive non coprono il testo.
@@ -3652,6 +3658,7 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
                     'text_color': NOTE_TEXT_COLOR_TAVOLA.get(pc_name, 'white'),
                     'label': NOTE_NAMES_IT_TAVOLA.get(pc_name, '?'),
                     'pc_name': pc_name,  # per split alterazione
+                    'staff_acc': n.get('staff_acc', ''),  # 23 Set 2026: bequadro tavola
                     'pitch': n['pitch'],
                 })
             for r in measure_rests:
@@ -3780,6 +3787,9 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
                         else:
                             label_evt = evt["label"]
                             acc_sym_evt = ''
+                        # 23 Set 2026 (bug bequadro tavola): mostra ♮ anche nel fallback
+                        if evt.get('staff_acc', '') == 'natural' and not acc_sym_evt:
+                            acc_sym_evt = '\u266e'
                         # Nome allineato al center_x (sotto la figura)
                         text_x_evt = center_x
                         text_anchor_evt = "middle"
