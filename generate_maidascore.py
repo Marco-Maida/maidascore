@@ -3286,8 +3286,27 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
         _mmrest_skip_measures = set()
         for _gs, _gc in _mmrest_group_map_local.items():
             _mmrest_skip_measures.update(range(_gs + 1, _gs + _gc))
+        # 23 Set 2026 (bug Gnomus tavola): il sistema con MMRest collassato ha
+        # MENOS gruppi fisici delle battute logiche (es. MMRest(2)+b3+b4 = 3
+        # gruppi per 4 battute logiche). L'indice contiguo m_idx sfasa la
+        # tavola di 1: le celle mostravano le note della battuta precedente.
+        # Rimappa m_idx (fisico) → indice logico: se il sistema contiene un
+        # gruppo MMRest collassato che copre gc battute, i gruppi successivi
+        # avanzano di gc-1 extra. Moltiplicatore dedotto da mmrest_groups
+        # del sistema (usando il layout: sistema espanso = battute logiche).
+        _tav_log_map = {}
+        _extra_tav = 0
+        for _tmi, (_tm_start, _tm_end) in enumerate(measures):
+            _tav_log_map[_tmi] = _tmi + _extra_tav
+            _g_here = system_start_measure + _tmi + _extra_tav
+            for _gs, _gc in _mmrest_group_map_local.items():
+                if _gs == _g_here and _tmi == 0 and len(measures) > 1:
+                    # gruppo MMRest collassato che copre _gc battute logiche
+                    _extra_tav += _gc - 1
         for m_idx, (m_start, m_end) in enumerate(measures):
             global_measure_idx = system_start_measure + m_idx
+            if system_start_measure + _extra_tav > 0:
+                global_measure_idx = system_start_measure + _tav_log_map.get(m_idx, m_idx)
             if global_measure_idx in _mmrest_skip_measures:
                 # battuta interna di un MMRest già disegnato: salta
                 continue
@@ -6079,13 +6098,23 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             # 13 Set 2026: raccogli le note PER BATTUTA (measure_idx autorevole),
             # NON per prossimità X: la finestra ±550px raccoglieva note della battuta
             # successiva e le clampava al settore sbagliato, collassandole in x uguali.
+            # 23 Set 2026 (bug Gnomus b3-b5): nel sistema con MMRest collassato
+            # (es. MMRest b1-2 + b3 + b4) il mapping contiguo
+            # measure_idx - _sys_global_idx == grp_idx2 è SBAGLIATO: le note
+            # della prima battuta reale (m=2) finivano clampate nel gruppo
+            # successivo e le note del gruppo finale non venivano clampate
+            # affatto → note sfasate/vuote nel rigo. Usa system_measure_indices
+            # (già rimappata col gruppo collassato), come il blocco onset-based.
+            _smi_grp_idx2 = grp_idx2
+            if grp_idx2 < len(system_measure_indices):
+                _smi_grp_idx2 = system_measure_indices[grp_idx2]
             mb_notes = [n for n in notes_in_sys
                         if n.get('center_x') is not None
                         and n.get('measure_idx') is not None
-                        and n.get('measure_idx') - _sys_global_idx == grp_idx2]
+                        and n.get('measure_idx') == _smi_grp_idx2]
             for n in mb_notes:
                 cx = n['center_x']
-                n_sect = _n_sectors_for_measure(_sys_global_idx + grp_idx2)
+                n_sect = _n_sectors_for_measure(_smi_grp_idx2)
                 if n_sect <= 0:
                     continue
                 sect_w = (mb_end - mb_start) / n_sect
@@ -6097,10 +6126,10 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 # quando lo spazio non basta: margine = (sect_w - 134) / 2.
                 _same_sect = [m2 for m2 in mb_notes
                               if min(max(int((m2['center_x'] - mb_start) / sect_w), 0), n_sect - 1) == sect_i]
-                n_groups_here = len(set(round((m2.get('onset', -1) - sect_i * (_ts_beats_for_measure(_sys_global_idx + grp_idx2) / n_sect)) * 1000) for m2 in _same_sect))
+                n_groups_here = len(set(round((m2.get('onset', -1) - sect_i * (_ts_beats_for_measure(_smi_grp_idx2) / n_sect)) * 1000) for m2 in _same_sect))
                 _margin = n['r_for_clamp'] + 5 if n.get('r_for_clamp') else max(DISC_R_OVERRIDE, 1) + 5
                 if n_groups_here >= 2:
-                    _ts_here = _ts_beats_for_measure(_sys_global_idx + grp_idx2)
+                    _ts_here = _ts_beats_for_measure(_smi_grp_idx2)
                     _sec_sz_here = _ts_here / n_sect
                     _ad_margin = (sect_w - 134.0) / 2.0
                     if _ad_margin < _margin:
