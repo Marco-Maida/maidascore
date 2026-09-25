@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-09-25
+
+### Fixed
+- **Sound-table note name eaten by MMRest cleanup**: the text of the first
+  table cell right after a multi-measure-rest group (e.g. the "Sol" label)
+  fell inside the removal window's +200px right slack and was deleted,
+  leaving a colored cell with no name. The right edge of the removal
+  window is now flush with the group border, consistent with the earlier
+  fixes for measure numbers and gray sectors.
+- **Title and author now taken from the score text elements**: when a
+  .mscz has an empty or OMR-artifact `workTitle`/`composer` metaTag
+  (e.g. title falling back to the file name, composer showing "Music21"),
+  the title/author are now read from the score's own
+  `<Text><style>title/composer</style>` elements, which reflect what the
+  score actually displays.
+
 ## [1.2.9] - 2026-09-23
 
 ### Fixed

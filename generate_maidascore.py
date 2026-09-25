@@ -11014,12 +11014,15 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 modified = re.sub(r'<polyline class="BarLine"[^>]*/?>', remove_barlines_sys, modified)
                 
                 # Rimuovi tavola sonora in questo sistema
+                # 25 Set 2026: bordo destro ristretto (msel, no slack +200):
+                # il testo della prima cella DOPO l'MMRest (es. "Sol") cadeva
+                # nella finestra slack e veniva cancellato per errore.
                 def remove_tavola_sys(match, msl=sys_start_x, msel=sys_end_x, sb=sb):
                     x_m = re.search(r'x="([\d.]+)"', match.group(0))
                     y_m = re.search(r'y="([\d.]+)"', match.group(0))
                     if x_m and y_m:
                         x, y = float(x_m.group(1)), float(y_m.group(1))
-                        if msl - 200 < x < msel + 200 and sb - 50 < y < sb + 500:
+                        if msl - 200 < x < msel and sb - 50 < y < sb + 500:
                             return ''
                     return match.group(0)
                 modified = re.sub(
@@ -11239,10 +11242,21 @@ def extract_score_title(input_path):
     """Estrae il titolo del brano dal file di input (.mscz/.mxl).
 
     Priorità: i <credit-words> (il testo che MuseScore mostra in cima
-    alla parte, es. "Esercizio 9"), poi <movement-title>/<work-title>.
+    alla parte, es. "Esercizio 9"), poi <Text><style>title</style> dal
+    .mscx di MuseScore (il vero titolo mostrato sulla partitura),
+    poi <movement-title>/<work-title>.
     Fallback: nome del file (senza estensione, underscore → spazio).
     """
     xml_content = _read_input_xml(input_path)
+    if xml_content:
+        # 1b) .mscz di MuseScore: il <Text><style>title</style> è il titolo
+        # che appare REALLY sulla partitura (il workTitle metaTag può essere
+        # vuoto o errato, es. dopo import OMR). 25 Set 2026.
+        _m_title = re.search(
+            r'<Text>\s*<eid>[^<]*</eid>\s*<style>title</style>\s*<text>([^<]+)</text>',
+            xml_content)
+        if _m_title and _m_title.group(1).strip():
+            return _m_title.group(1).strip()
     if xml_content:
         # 1) credit-words: quello che appare realmente sulla parte
         credits = [m.group(1).strip() for m in
@@ -11270,6 +11284,14 @@ def extract_score_author(input_path):
     xml_content = _read_input_xml(input_path)
     if not xml_content:
         return None
+    # 1b) .mscz di MuseScore: il <Text><style>composer</style> è l'autore
+    # che appare REALLY sulla partitura (il metaTag composer può contenere
+    # artefatti dell'import, es. "Music21"). 25 Set 2026.
+    _m_comp = re.search(
+        r'<Text>\s*<eid>[^<]*</eid>\s*<style>composer</style>\s*<text>([^<]+)</text>',
+        xml_content)
+    if _m_comp and _m_comp.group(1).strip():
+        return _m_comp.group(1).strip()
     # 1) secondo credit-words non-parte (es. "Marco Maida")
     #    (prioritario: <creator> spesso contiene artefatti tipo "Music21")
     credits = [c.group(1).strip() for c in
