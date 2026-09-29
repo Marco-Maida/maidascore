@@ -63,7 +63,7 @@ NOTE_COLORS = {
 }
 # Also check with # prefix
 NOTE_COLORS_HEX = {
-    '#E53935': 'Do', '#FB8C00': 'Re', '#FDD835': 'Mi', '#64DD17': 'Fa',
+    '#E53935': 'Do', '#FB8C00': 'Re', '#FDD835': 'Mi', '#A8DB78': 'Fa',
     '#00695C': 'Sol', '#1E88E5': 'La', '#8E24AA': 'Si',
 }
 # Dark variants for open notes (whole/half) — see NOTE_COLORS_DARK in generator

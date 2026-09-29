@@ -129,7 +129,7 @@ python3 generate_maidascore.py input.mscz output_prefix 0 --rhythm --lang en
 | Do | 🔴 `#E53935` red | white |
 | Re | 🟠 `#FB8C00` orange | black |
 | Mi | 🟡 `#FDD835` yellow | black |
-| Fa | 🟢 `#64DD17` lime | black |
+| Fa | 🟢 `#A8DB78` lime | black |
 | Sol | 🩵 `#00695C` teal | white |
 | La | 🔵 `#1E88E5` blue | white |
 | Si | 🟣 `#8E24AA` purple | white |

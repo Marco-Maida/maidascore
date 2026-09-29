@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.11] - 2026-09-29
+
+### Changed
+- **F (Fa) palette color lightened**: the green used for the F note is now
+  `#A8DB78` (was `#64DD17`), more comfortable on the eyes while keeping an
+  excellent 13.1:1 contrast ratio against the black note-name text
+  (WCAG AAA). The open-note variant (white head + dark green border
+  `#558B2F`, 4.10:1) is unchanged. Updated in the generator, the
+  standalone validator, the README palette table and the conversion guide.
+
 ## [1.2.10] - 2026-09-25
 
 ### Fixed

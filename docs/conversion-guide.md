@@ -71,7 +71,7 @@ adding a new entry to the three `NOTE_NAMES_*` dictionaries near the top of
 | Do | Red | `#E53935` | white |
 | Re | Orange | `#FB8C00` | black |
 | Mi | Yellow | `#FDD835` | black |
-| Fa | Lime | `#64DD17` | black |
+| Fa | Lime | `#A8DB78` | black |
 | Sol | Teal | `#00695C` | white |
 | La | Blue | `#1E88E5` | white |
 | Si | Purple | `#8E24AA` | white |

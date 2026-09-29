@@ -2341,7 +2341,7 @@ def export_svg(mscz_path, output_prefix):
 
 # Color scheme
 NOTE_COLORS = {
-    'C': '#E53935', 'D': '#FB8C00', 'E': '#FDD835', 'F': '#64DD17',
+    'C': '#E53935', 'D': '#FB8C00', 'E': '#FDD835', 'F': '#A8DB78',
     'G': '#00695C', 'A': '#1E88E5', 'B': '#8E24AA',
 }
 NOTE_TEXT_COLOR = {
@@ -3031,7 +3031,7 @@ NOTE_COLORS_TAVOLA = {
     'C': '#E53935', 'C#': '#E53935', 'Db': '#E53935',
     'D': '#FB8C00', 'D#': '#FB8C00', 'Eb': '#FB8C00',
     'E': '#FDD835',
-    'F': '#64DD17', 'F#': '#64DD17', 'Gb': '#64DD17',
+    'F': '#A8DB78', 'F#': '#A8DB78', 'Gb': '#A8DB78',
     'G': '#00695C', 'G#': '#00695C', 'Ab': '#00695C',
     'A': '#1E88E5', 'A#': '#1E88E5', 'Bb': '#1E88E5',
     'B': '#8E24AA',
@@ -11026,7 +11026,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                             return ''
                     return match.group(0)
                 modified = re.sub(
-                    r'<rect[^>]*(?:#E53935|#FB8C00|#FDD835|#64DD17|#00695C|#1E88E5|#8E24AA)[^>]*(?:opacity="0\.2")[^>]*/?>',
+                    r'<rect[^>]*(?:#E53935|#FB8C00|#FDD835|#A8DB78|#00695C|#1E88E5|#8E24AA)[^>]*(?:opacity="0\.2")[^>]*/?>',
                     remove_tavola_sys, modified)
                 # Rimuovi testo tavola (font 90-149px) ma NON "battute di pausa"
                 def remove_tavola_text_sys(match, fn=remove_tavola_sys):
