@@ -11197,6 +11197,183 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             modified = modified.replace(vb_match_t.group(0), new_vb)
             modified = modified.replace('</svg>', texts_svg + '</svg>')
 
+    # 29 Set 2026 (travature sempre dritte): le beams PRIMARIE di MuseScore
+    # sono oblique (seguono la direzione melodica) e i gambi spesso fuoriescono
+    # dal bordo. Pass FINALE in coda a process_svg, coordinate definitive:
+    # (1) ogni quadrilatero Beam (esattamente 5 vertici con chiusura sul punto
+    #     iniziale) viene APPATTATO: bordo superiore y = min(y1,y2) se la beam
+    #     sta SOTTO i gambi (stems-down, si allontana dalle note), max(y1,y2)
+    #     se sta SOPRA (stems-up); offset spessore COSTANTE 47px (misurato:
+    #     MuseScore 4 beam thickness per linea).
+    # (2) i gambi vengono RICALCOLATI: endpoint = bordo esterno della beam
+    #     appiattita (per down: il bordo inferiore della beam più bassa del
+    #     gruppo; per up: il bordo superiore della beam più alta). Il gambo
+    #     parte dal notehead e arriva sempre al filo esterno → zero fessure.
+    _flat_beam_pat = re.compile(
+        r'<path class="Beam"[^/]*d="M([\d.\-]+),([\d.\-]+) L([\d.\-]+),([\d.\-]+) '
+        r'L([\d.\-]+),([\d.\-]+) L([\d.\-]+),([\d.\-]+) L([\d.\-]+),([\d.\-]+)"'
+    )
+    _BEAM_TH = 47.0   # spessore beam MuseScore 4 (costante, post y-stretch)
+
+    def _parse_pts(m):
+        return [float(m.group(i)) for i in range(1, 11)]
+
+    # raccolgo tutti i beams con geometria
+    _all_beams = []
+    for _m in _flat_beam_pat.finditer(modified):
+        _p = _parse_pts(_m)
+        # struttura: M(x1,y1) L(x2,y2) L(x2,y2+th) L(x1,y1+th) L(x1,y1)
+        _all_beams.append({
+            'x1': _p[0], 'y1': _p[1], 'x2': _p[2], 'y2': _p[3],
+        })
+
+    # i gambi: endpoint attuale + posizione notehead approssimata (il cap del
+    # gambo vicino alla nota è il cap orientato VERSO la nota)
+    _stem_pat_f = re.compile(
+        r'(<polyline[^>]*points=")([\d.\-]+),([\d.\-]+) ([\d.\-]+),([\d.\-]+)"([^>]*>)'
+    )
+    _stems_f = []
+    for _m in _stem_pat_f.finditer(modified):
+        _sx1, _sy1, _sx2, _sy2 = (float(_m.group(i)) for i in (2, 3, 4, 5))
+        if abs(_sx1 - _sx2) < 1:   # solo gambi verticali
+            _stems_f.append((_m.start(), _sx1, _sy1, _sy2))
+
+    def _stem_note_y(sy1, sy2):
+        # il cap NOTA è quello più vicino al centro del rigo? No: affidabile solo
+        # la direzione della BEAM. Ritorna entrambi.
+        return min(sy1, sy2), max(sy1, sy2)
+
+    # 1) APPATTAMENTO beams: direzione dal gruppo di gambi nella stessa finestra
+    #    di sistema (la stessa X si ripete in ogni sistema → serve finestra Y).
+    _flat_new = {}
+    for _b in _all_beams:
+        _xl, _xr = min(_b['x1'], _b['x2']), max(_b['x1'], _b['x2'])
+        _yt, _yb = min(_b['y1'], _b['y2']), max(_b['y1'], _b['y2']) + _BEAM_TH
+        # gambi nel range X, finestra Y per sistema (±1400px copre 1 sistema)
+        _near = [s for s in _stems_f
+                 if _xl - 30 <= s[1] <= _xr + 30 and abs((s[2] + s[3]) / 2 - (_yt + _yb) / 2) < 1400]
+        if _near:
+            _smid = sum((s[2] + s[3]) / 2 for s in _near) / len(_near)
+            _bmid = (_yt + _yb) / 2
+            # y cresce verso il basso in SVG: beam SOTTO i gambi (y maggiore)
+            # = bmid > smid = stems-down
+            _down = _bmid > _smid
+        else:
+            _down = _yt < 0 or _b['y1'] > _b['y2'] and _yb > 4000  # fallback raro
+            _down = _b['y1'] > _b['y2']
+        # appiattimento: bordo sup = min se down (si allontana dalle note), max se up
+        _flat_top = min(_b['y1'], _b['y2']) if _down else max(_b['y1'], _b['y2'])
+        _flat_new[(_b['x1'], _b['y1'], _b['x2'], _b['y2'])] = _flat_top
+
+    def _flat_beam_sub(m):
+        _p = _parse_pts(m)
+        _x1, _y1, _x2, _y2 = _p[0], _p[1], _p[2], _p[3]
+        _key = (_x1, _y1, _x2, _y2)
+        if _key not in _flat_new or abs(_y2 - _y1) < 1e-6:
+            return m.group(0)   # già dritta o ignota
+        _ft = _flat_new[_key]
+        # nuovo quadrilatero: bordo sup orizzontale a _ft, offset _BEAM_TH
+        return (f'<path class="Beam" fill="#000000" fill-rule="evenodd" '
+                f'd="M{_x1:.2f},{_ft:.2f} L{_x2:.2f},{_ft:.2f} '
+                f'L{_x2:.2f},{_ft + _BEAM_TH:.2f} L{_x1:.2f},{_ft + _BEAM_TH:.2f} '
+                f'L{_x1:.2f},{_ft:.2f}"')
+
+    modified = _flat_beam_pat.sub(_flat_beam_sub, modified)
+
+    # 2) RICALCOLO gambi: endpoint = bordo esterno della beam appiattita.
+    #    Ricavo le beams appiattite dal SVG aggiornato.
+    _flat_beams_after = []
+    for _m in _flat_beam_pat.finditer(modified):
+        _p = _parse_pts(_m)
+        _flat_beams_after.append((min(_p[0], _p[2]), _p[1], max(_p[0], _p[2]), _p[1] + _BEAM_TH))
+
+    def _flat_stem_sub(m):
+        _prefix = m.group(1)
+        _x1, _y1, _x2, _y2 = (float(m.group(i)) for i in (2, 3, 4, 5))
+        _suffix = m.group(6)
+        if abs(_x1 - _x2) > 1:
+            return m.group(0)
+        _stem_x = _x1
+        _st_top, _st_bot = min(_y1, _y2), max(_y1, _y2)
+        _best = None
+        for _bx1, _bft, _bx2, _bft2 in _flat_beams_after:
+            if _bx1 - 30 <= _stem_x <= _bx2 + 30:
+                if _best is None or abs((_bft + _bft2) / 2 - (_st_top + _st_bot) / 2) < abs((_best[1] + _best[3]) / 2 - (_st_top + _st_bot) / 2):
+                    _best = (_bx1, _bft, _bx2, _bft2)
+        if _best is None:
+            return m.group(0)
+        # direzione: beam sopra il gambo (bmid < smid) = stems-up
+        _bmid = (_best[1] + _best[3]) / 2
+        _smid = (_st_top + _st_bot) / 2
+        if _bmid < _smid:
+            # stems-up: il gambo sale dalla nota → l'endpoint top deve ARRIVARE
+            # al bordo esterno (sopra) della beam. Se non lo raggiunge, ESTENDI.
+            _target = _best[1] - 10   # 10px per stroke-linecap round
+            if _st_top > _target:
+                if _y1 < _y2:
+                    _y1 = _target
+                else:
+                    _y2 = _target
+        else:
+            # stems-down: il gambo scende dalla nota → l'endpoint bottom deve
+            # ARRIVARE al bordo esterno (sotto). Se non lo raggiunge, ESTENDI.
+            _target = _best[3] + 10
+            if _st_bot < _target:
+                if _y1 > _y2:
+                    _y1 = _target
+                else:
+                    _y2 = _target
+        return f'{_prefix}{_x1:.2f},{_y1:.2f} {_x2:.2f},{_y2:.2f}"{_suffix}'
+
+    modified = _stem_pat_f.sub(_flat_stem_sub, modified)
+
+    # 3) AUDIT oggettivo: pendenza beams + reach gambi (solo polyline Stem;
+    #    le BarLine sono verticali ma NON sono gambi). Il gambo deve
+    #    ATTRAVERSARE la beam (endpoint oltre il bordo interno) o raggiungerla.
+    _audit_slope = 0
+    _n_beams_a = 0
+    for _m in _flat_beam_pat.finditer(modified):
+        _p = _parse_pts(_m)
+        _n_beams_a += 1
+        _w = abs(_p[2] - _p[0])
+        if _w < 30:
+            continue
+        if abs(_p[3] - _p[1]) / max(_w, 1) > 1e-6:
+            _audit_slope += 1
+    if _audit_slope:
+        print(f"    [WARN] Beams ancora oblique dopo appiattimento: {_audit_slope}/{_n_beams_a}")
+
+    _audit_gap = 0
+    _n_stems_a = 0
+    _stem_pat_a = re.compile(r'<polyline class="Stem"[^>]*points="([\d.\-]+),([\d.\-]+) ([\d.\-]+),([\d.\-]+)"')
+    _beams_a = []
+    for _m in _flat_beam_pat.finditer(modified):
+        _p = _parse_pts(_m)
+        _beams_a.append((min(_p[0], _p[2]), _p[1], max(_p[0], _p[2]), _p[1] + _BEAM_TH))
+    for _m in _stem_pat_a.finditer(modified):
+        _g = [float(_m.group(i)) for i in (1, 2, 3, 4)]
+        _st_top, _st_bot = min(_g[1], _g[3]), max(_g[1], _g[3])
+        _sx = _g[0]
+        _best = None
+        for _b in _beams_a:
+            if _b[0] - 30 <= _sx <= _b[2] + 30:
+                _d = abs((_b[1] + _b[3]) / 2 - (_st_top + _st_bot) / 2)
+                if _d > 600:
+                    continue
+                if _best is None or _d < _best[0]:
+                    _best = (_d, _b)
+        if _best is None:
+            continue
+        _n_stems_a += 1
+        _b = _best[1]
+        _bmid = (_b[1] + _b[3]) / 2
+        _smid = (_st_top + _st_bot) / 2
+        _ok = (_st_top <= _b[3] + 15) if _bmid < _smid else (_st_bot >= _b[1] - 15)
+        if not _ok:
+            _audit_gap += 1
+    if _audit_gap:
+        print(f"    [WARN] Gambi che non raggiungono la beam: {_audit_gap}/{_n_stems_a}")
+
     # FOOTER COPYRIGHT su ogni pagina.
     # Testo in basso al CENTRO: "generated by MaidaScore — © 2026 Marco Maida"
     # Legge la viewBox corrente (post-shift rhythm) per posizionarsi al centro del margine inferiore.
