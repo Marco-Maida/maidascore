@@ -8823,7 +8823,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     sx1, sx2 = _stem_x1, _stem_x2
                     _new_prim_q.append((sx1, prim_y_top, sx2, prim_y_bot))
                     # secondaria continua attaccata sotto la primaria
-                    _new_sec_q.append((sx1, prim_y_bot + 5, sx2, prim_y_bot + 5, 31))
+                    _new_sec_q.append((sx1, prim_y_bot + 50, sx2, prim_y_bot + 50, 31))
                 if _new_sec_q:
                     for sx1, syt1, sx2, syt2 in _new_prim_q:
                         new_prim = (f'<path class="Beam" fill="#000000" fill-rule="evenodd" '
@@ -11211,7 +11211,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
     #     parte dal notehead e arriva sempre al filo esterno → zero fessure.
     _flat_beam_pat = re.compile(
         r'<path class="Beam"[^/]*d="M([\d.\-]+),([\d.\-]+) L([\d.\-]+),([\d.\-]+) '
-        r'L([\d.\-]+),([\d.\-]+) L([\d.\-]+),([\d.\-]+) L([\d.\-]+),([\d.\-]+)"'
+        r'L([\d.\-]+),([\d.\-]+) L([\d.\-]+),([\d.\-]+) L([\d.\-]+),([\d.\-]+)\s*"'
     )
     _BEAM_TH = 47.0   # spessore beam MuseScore 4 (costante, post y-stretch)
 
@@ -11288,6 +11288,11 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         _flat_beams_after.append((min(_p[0], _p[2]), _p[1], max(_p[0], _p[2]), _p[1] + _BEAM_TH))
 
     def _flat_stem_sub(m):
+        import os as _os_dbg7
+        if _os_dbg7.environ.get('MAIDA_DEBUG_FLAT'):
+            _g7 = [float(m.group(i)) for i in (2,3,4,5)]
+            if 3320 < _g7[0] < 3328 and 9000 < max(_g7[1], _g7[3]) < 11500:
+                print(f'  [DBG7] sub match gambo 3324: {_g7}')
         _prefix = m.group(1)
         _x1, _y1, _x2, _y2 = (float(m.group(i)) for i in (2, 3, 4, 5))
         _suffix = m.group(6)
@@ -11295,30 +11300,54 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             return m.group(0)
         _stem_x = _x1
         _st_top, _st_bot = min(_y1, _y2), max(_y1, _y2)
-        _best = None
+        # Candidati nello stesso sistema (soglia 600px sul midpoint) e
+        # selezione per beam ESTERNA del gruppo (impilate): per down la beam
+        # più lontana dalle note (y_top più alto), per up la più vicina.
+        _cands = []
         for _bx1, _bft, _bx2, _bft2 in _flat_beams_after:
             if _bx1 - 30 <= _stem_x <= _bx2 + 30:
-                if _best is None or abs((_bft + _bft2) / 2 - (_st_top + _st_bot) / 2) < abs((_best[1] + _best[3]) / 2 - (_st_top + _st_bot) / 2):
-                    _best = (_bx1, _bft, _bx2, _bft2)
-        if _best is None:
+                _d = abs((_bft + _bft2) / 2 - (_st_top + _st_bot) / 2)
+                if _d <= 1300:
+                    _cands.append((_bx1, _bft, _bx2, _bft2))
+        if not _cands:
             return m.group(0)
+        _bmid0 = min(c[1] for c in _cands) + (_BEAM_TH / 2)
+        _smid = (_st_top + _st_bot) / 2
+        if _bmid0 < _smid:
+            # stems-up: beam sopra il gambo → esterna = la beam più in ALTO
+            _best = min(_cands, key=lambda c: c[1])
+        else:
+            # stems-down: beam sotto il gambo → esterna = la beam più in BASSO
+            _best = max(_cands, key=lambda c: c[1])
         # direzione: beam sopra il gambo (bmid < smid) = stems-up
         _bmid = (_best[1] + _best[3]) / 2
         _smid = (_st_top + _st_bot) / 2
         if _bmid < _smid:
             # stems-up: il gambo sale dalla nota → l'endpoint top deve ARRIVARE
-            # al bordo esterno (sopra) della beam. Se non lo raggiunge, ESTENDI.
+            # al bordo esterno (sopra) della beam: ESTENDI se corto, ACCORCIA
+            # se va oltre il bordo esterno con eccesso >15px.
             _target = _best[1] - 10   # 10px per stroke-linecap round
             if _st_top > _target:
                 if _y1 < _y2:
                     _y1 = _target
                 else:
                     _y2 = _target
+            elif _st_top < _target - 15:
+                if _y1 < _y2:
+                    _y1 = _target
+                else:
+                    _y2 = _target
         else:
             # stems-down: il gambo scende dalla nota → l'endpoint bottom deve
-            # ARRIVARE al bordo esterno (sotto). Se non lo raggiunge, ESTENDI.
+            # ARRIVARE al bordo esterno (sotto): ESTENDI se corto, ACCORCIA
+            # se va oltre con eccesso >15px.
             _target = _best[3] + 10
             if _st_bot < _target:
+                if _y1 > _y2:
+                    _y1 = _target
+                else:
+                    _y2 = _target
+            elif _st_bot > _target + 15:
                 if _y1 > _y2:
                     _y1 = _target
                 else:
@@ -11358,7 +11387,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         for _b in _beams_a:
             if _b[0] - 30 <= _sx <= _b[2] + 30:
                 _d = abs((_b[1] + _b[3]) / 2 - (_st_top + _st_bot) / 2)
-                if _d > 600:
+                if _d > 700:
                     continue
                 if _best is None or _d < _best[0]:
                     _best = (_d, _b)
@@ -11373,6 +11402,230 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             _audit_gap += 1
     if _audit_gap:
         print(f"    [WARN] Gambi che non raggiungono la beam: {_audit_gap}/{_n_stems_a}")
+
+    # 4) NORMALIZZAZIONE barline verticali: ogni barline copre il pentagramma
+    #    COMPLETO del proprio sistema (top = prima linea - 15, bot = quinta
+    #    linea + 15). Barline troppo corte/non uniformi producono stanghette
+    #    staccate dal pentagramma o linee continue spurie.
+    _staff_pat_n = re.compile(r'<polyline class="StaffLines"[^>]*points="([\d.\-]+),([\d.\-]+) ([\d.\-]+),([\d.\-]+)"')
+    _staff_ys_n = []
+    for _m in _staff_pat_n.finditer(modified):
+        _g = [float(_m.group(i)) for i in (1, 2, 3, 4)]
+        if abs(_g[0] - _g[2]) > 1 and abs(_g[1] - _g[3]) < 1:
+            _staff_ys_n.append(_g[1])
+    _y_sorted_n = sorted(set(round(_y) for _y in _staff_ys_n))
+    _systems_n = []
+    _grp_n = []
+    for _y in _y_sorted_n:
+        if _grp_n and _y - _grp_n[-1] > 300:
+            _systems_n.append((_grp_n[0], _grp_n[-1]))
+            _grp_n = []
+        _grp_n.append(_y)
+    if _grp_n:
+        _systems_n.append((_grp_n[0], _grp_n[-1]))
+
+    _bar_pat_n = re.compile(r'(<polyline class="BarLine"[^>]*points=")([\d.\-]+),([\d.\-]+) ([\d.\-]+),([\d.\-]+)"([^>]*>)')
+
+    def _barline_sub(m):
+        _prefix = m.group(1)
+        _x1, _y1, _x2, _y2 = (float(m.group(i)) for i in (2, 3, 4, 5))
+        _suffix = m.group(6)
+        if abs(_x1 - _x2) > 1:
+            return m.group(0)
+        _b_top, _b_bot = min(_y1, _y2), max(_y1, _y2)
+        _bmid = (_b_top + _b_bot) / 2
+        _sys = None
+        _best_d = None
+        for _s_top, _s_bot in _systems_n:
+            _d = abs(_bmid - (_s_top + _s_bot) / 2)
+            if _best_d is None or _d < _best_d:
+                _best_d = _d
+                _sys = (_s_top, _s_bot)
+        if _sys is None:
+            return m.group(0)
+        _new_top = _sys[0] - 15
+        _new_bot = _sys[1] + 15
+        if abs(_b_top - _new_top) > 2 or abs(_b_bot - _new_bot) > 2:
+            if _y1 < _y2:
+                _y1, _y2 = _new_top, _new_bot
+            else:
+                _y1, _y2 = _new_bot, _new_top
+        return f'{_prefix}{_x1:.2f},{_y1:.2f} {_x2:.2f},{_y2:.2f}"{_suffix}'
+
+    _bar_pat_n = re.compile(r'(<polyline class="BarLine"[^>]*points=")([\d.\-]+),([\d.\-]+) ([\d.\-]+),([\d.\-]+)"([^>]*>)')
+    modified = _bar_pat_n.sub(_barline_sub, modified)
+
+    # 5) AUDIT barline: ogni barline copre il pentagramma completo
+    _n_bar_tot = 0
+    _n_bar_bad = 0
+    for _m in _bar_pat_n.finditer(modified):
+        _g = [float(_m.group(i)) for i in (2, 3, 4, 5)]
+        _b_top, _b_bot = min(_g[1], _g[3]), max(_g[1], _g[3])
+        _bmid = (_b_top + _b_bot) / 2
+        _sys = None
+        _best_d = None
+        for _s in _systems_n:
+            _d = abs(_bmid - (_s[0] + _s[1]) / 2)
+            if _best_d is None or _d < _best_d:
+                _best_d = _d
+                _sys = _s
+        if _sys is None:
+            continue
+        _n_bar_tot += 1
+        if abs(_b_top - (_sys[0] - 15)) > 3 or abs(_b_bot - (_sys[1] + 15)) > 3:
+            _n_bar_bad += 1
+    if _n_bar_bad:
+        print(f"    [WARN] Barline fuori range pentagramma: {_n_bar_bad}/{_n_bar_tot}")
+
+    # 6) AUDIT gap travature secondarie: primaria e secondaria devono essere
+    #    distanziate (gap >= 0.9 × spessore) per distinguersi.
+    _audit_sec = 0
+    _beams_sec = []
+    for _m in _flat_beam_pat.finditer(modified):
+        _p = _parse_pts(_m)
+        _beams_sec.append((min(_p[0], _p[2]), _p[1], max(_p[0], _p[2]), _p[1] + _BEAM_TH))
+    for _i in range(len(_beams_sec)):
+        for _j in range(_i + 1, len(_beams_sec)):
+            _b1, _b2 = _beams_sec[_i], _beams_sec[_j]
+            if not (_b1[0] <= _b2[2] and _b2[0] <= _b1[2]):
+                continue
+            _d_sec = abs(_b1[1] - _b2[1])
+            if 0 < _d_sec < _BEAM_TH * 0.9:
+                _audit_sec += 1
+    if _audit_sec:
+        print(f"    [WARN] Coppie travature secondarie troppo vicine: {_audit_sec}")
+
+    # 7) CORREZIONE FINALE gambi: endpoint = bordo esterno della beam
+    #    (coordinate ASSOLUTE, dopo normalize barline). Gira DOPO tutti i pass.
+    _beams_fin2 = []
+    for _m in _flat_beam_pat.finditer(modified):
+        _p = _parse_pts(_m)
+        _beams_fin2.append((min(_p[0], _p[2]), _p[1], max(_p[0], _p[2]), _p[1] + _BEAM_TH))
+
+    def _stem_fin_sub(m):
+        _prefix = m.group(1)
+        _x1, _y1, _x2, _y2 = (float(m.group(i)) for i in (2, 3, 4, 5))
+        _suffix = m.group(6)
+        if abs(_x1 - _x2) > 1:
+            return m.group(0)
+        _st_top, _st_bot = min(_y1, _y2), max(_y1, _y2)
+        _cands = []
+        for _bx1, _bft, _bx2, _bfb in _beams_fin2:
+            if _bx1 - 30 <= _x1 <= _bx2 + 30:
+                _d = abs((_bft + _bfb) / 2 - (_st_top + _st_bot) / 2)
+                if _d <= 1500:
+                    _cands.append((_bx1, _bft, _bx2, _bfb))
+        if not _cands:
+            return m.group(0)
+        _bmid0 = min(c[1] for c in _cands) + (_BEAM_TH / 2)
+        _smid = (_st_top + _st_bot) / 2
+        if _bmid0 < _smid:
+            _best = min(_cands, key=lambda c: c[1])
+        else:
+            _best = max(_cands, key=lambda c: c[1])
+        _bmid = (_best[1] + _best[3]) / 2
+        if _bmid < _smid:
+            _target = _best[1] - 10
+            if _st_top > _target or _st_top < _target - 15:
+                if _y1 < _y2: _y1 = _target
+                else: _y2 = _target
+        else:
+            _target = _best[3] + 10
+            if _st_bot < _target or _st_bot > _target + 15:
+                if _y1 > _y2: _y1 = _target
+                else: _y2 = _target
+        return f'{_prefix}{_x1:.2f},{_y1:.2f} {_x2:.2f},{_y2:.2f}"{_suffix}'
+
+    # 7b) DECOLLIDE beams impilate: primaria e secondaria devono mantenere
+    #     un gap >= 50px (le linee si distinguono). La secondaria viene
+    #     riposizionata rispettando la direzione (si allontana dalle note).
+    _changed_beams = {}
+    for _i in range(len(_beams_fin2)):
+        for _j in range(_i + 1, len(_beams_fin2)):
+            _b1, _b2 = _beams_fin2[_i], _beams_fin2[_j]
+            if not (_b1[0] <= _b2[2] and _b2[0] <= _b1[2]):
+                continue
+            _d = _b2[1] - _b1[1]
+            if abs(_d) < 50:
+                # sovrapposte o troppo vicine: la beam più lontana dalle
+                # note (determinata dai gambi del gruppo) va spostata.
+                _grp_stems = [(float(_sm.group(1)), min(float(_sm.group(2)), float(_sm.group(4))), max(float(_sm.group(2)), float(_sm.group(4))))
+                              for _sm in re.finditer(r'<polyline class="Stem"[^>]*points="([\d.\-]+),([\d.\-]+) ([\d.\-]+),([\d.\-]+)"', modified)
+                              if _b1[0] - 30 <= float(_sm.group(1)) <= _b1[2] + 30]
+                if not _grp_stems:
+                    continue
+                _s_mid = sum((s[1] + s[2]) / 2 for s in _grp_stems) / len(_grp_stems)
+                _b1_mid = (_b1[1] + _b1[3]) / 2
+                _b2_mid = (_b2[1] + _b2[3]) / 2
+                # primaria = più vicina alle note; secondaria = più lontana
+                _prim = _b1 if abs(_b1_mid - _s_mid) < abs(_b2_mid - _s_mid) else _b2
+                _sec = _b2 if _prim is _b1 else _b1
+                _sec_mid = (_sec[1] + _sec[3]) / 2
+                _prim_mid = (_prim[1] + _prim[3]) / 2
+                if _sec_mid > _prim_mid:
+                    _new_y = _prim[3] + 50   # secondaria sotto la primaria
+                else:
+                    _new_y = _prim[1] - 50   # secondaria sopra la primaria
+                _key = (_sec[0], _sec[1], _sec[2], _sec[3])
+                _tok = None
+                for _m2 in _flat_beam_pat.finditer(modified):
+                    _p2 = _parse_pts(_m2)
+                    if (min(_p2[0], _p2[2]), _p2[1], max(_p2[0], _p2[2])) == (_key[0], _key[1], _key[2]):
+                        _tok = _m2
+                        break
+                if _tok is not None:
+                    _old = _tok.group(0)
+                    _new_y2 = _new_y + 47 if _new_y < _sec[1] else _new_y
+                    _new = (f'<path class="Beam" fill="#000000" fill-rule="evenodd" '
+                            f'd="M{_key[0]:.2f},{_new_y:.2f} L{_key[2]:.2f},{_new_y:.2f} '
+                            f'L{_key[2]:.2f},{_new_y + 47:.2f} L{_key[0]:.2f},{_new_y + 47:.2f} '
+                            f'L{_key[0]:.2f},{_new_y:.2f}"')
+                    if _old in modified:
+                        modified = modified.replace(_old, _new, 1)
+                    _beams_fin2 = []
+                    for _m3 in _flat_beam_pat.finditer(modified):
+                        _p3 = _parse_pts(_m3)
+                        _beams_fin2.append((min(_p3[0], _p3[2]), _p3[1], max(_p3[0], _p3[2]), _p3[1] + _BEAM_TH))
+                    break
+
+    # 7c) FIX barline stretched (rhythm mode): una barline molto più alta
+    #     delle micro-celle del proprio sistema (residuo y-stretch) viene
+    #     ridimensionata a coprire SOLO la riga di celle più vicina al top.
+    _cells_fin = []
+    for _cm in re.finditer(r'<rect[^>]*x="([\d.\-]+)"[^>]*y="([\d.\-]+)"[^>]*width="([\d.\-]+)"[^>]*height="(39[0-9]\.[0-9]+|38[0-9]\.[0-9]+)"', modified):
+        _cells_fin.append((float(_cm.group(1)), float(_cm.group(2)), float(_cm.group(3)), float(_cm.group(4))))
+    if _cells_fin:
+        _cell_hs = [c[3] for c in _cells_fin]
+        _cell_h_med = sorted(_cell_hs)[len(_cell_hs)//2]
+
+        def _barline_fin_sub(m):
+            _prefix = m.group(1)
+            _x1, _y1, _x2, _y2 = (float(m.group(i)) for i in (2, 3, 4, 5))
+            _suffix = m.group(6)
+            if abs(_x1 - _x2) > 1:
+                return m.group(0)
+            _b_top, _b_bot = min(_y1, _y2), max(_y1, _y2)
+            if _b_bot - _b_top <= _cell_h_med * 1.2:
+                return m.group(0)
+            # cerco le celle con x overlap
+            _cands = [c for c in _cells_fin if c[0] - 20 <= _x1 <= c[0] + c[2] + 20]
+            if not _cands:
+                return m.group(0)
+            _best = min(_cands, key=lambda c: abs(c[1] - _b_top))
+            _new_top = _best[1] - 2
+            _new_bot = _best[1] + _best[3] + 2
+            if abs(_b_top - _new_top) > 2 or abs(_b_bot - _new_bot) > 2:
+                if _y1 < _y2:
+                    _y1, _y2 = _new_top, _new_bot
+                else:
+                    _y1, _y2 = _new_bot, _new_top
+            return f'{_prefix}{_x1:.2f},{_y1:.2f} {_x2:.2f},{_y2:.2f}"{_suffix}'
+
+        _bar_pat_fin2 = re.compile(r'(<polyline class="BarLine"[^>]*points=")([\d.\-]+),([\d.\-]+) ([\d.\-]+),([\d.\-]+)"([^>]*>)')
+        modified = _bar_pat_fin2.sub(_barline_fin_sub, modified)
+
+    _stem_pat_fin2 = re.compile(r'(<polyline class="Stem"[^>]*points=")([\d.\-]+),([\d.\-]+) ([\d.\-]+),([\d.\-]+)"([^>]*>)')
+    modified = _stem_pat_fin2.sub(_stem_fin_sub, modified)
 
     # FOOTER COPYRIGHT su ogni pagina.
     # Testo in basso al CENTRO: "generated by MaidaScore — © 2026 Marco Maida"
