@@ -11311,14 +11311,33 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     _cands.append((_bx1, _bft, _bx2, _bft2))
         if not _cands:
             return m.group(0)
-        _bmid0 = min(c[1] for c in _cands) + (_BEAM_TH / 2)
-        _smid = (_st_top + _st_bot) / 2
-        if _bmid0 < _smid:
-            # stems-up: beam sopra il gambo → esterna = la beam più in ALTO
-            _best = min(_cands, key=lambda c: c[1])
+        # FIX (29 Set 2026): il candidato deve stare dal lato GIUSTO:
+        # per stems-up la beam deve stare SOPRA il top del gambo (y
+        # minore), per stems-down SOTTO il bottom (y maggiore). Beams
+        # oltre la nota (lato opposto) apparterrebbero a un altro
+        # sistema e producono prolungamenti che attraversano il
+        # pentagramma.
+        _smid0 = (_st_top + _st_bot) / 2
+        # Nel rhythm mode i gambi sono SEMPRE verso l'alto → solo beams
+        # SOPRA il gambo (y minore del top). Nella notazione valgo
+        # entrambi i lati (scelgo quello con candidati).
+        if rhythm_mode:
+            _cands = [c for c in _cands if c[3] <= _st_top + 60]
         else:
-            # stems-down: beam sotto il gambo → esterna = la beam più in BASSO
-            _best = max(_cands, key=lambda c: c[1])
+            _lato_up = any(c[3] <= _st_top + 60 for c in _cands)
+            _lato_down = any(c[1] >= _st_bot - 60 for c in _cands)
+            if _lato_up and not _lato_down:
+                _cands = [c for c in _cands if c[3] <= _st_top + 60]
+            elif _lato_down and not _lato_up:
+                _cands = [c for c in _cands if c[1] >= _st_bot - 60]
+        if not _cands:
+            return m.group(0)
+        _smid = (_st_top + _st_bot) / 2
+        # FIX (29 Set 2026): la beam di aggancio = la più vicina al
+        # midpoint del gambo (min by d), NON min/max by c[1] — min/max
+        # sceglie la beam del SISTEMA SBAGLIATO per gambi il cui range
+        # copre più sistemi. Direzione dal confronto della beam scelta.
+        _best = min(_cands, key=lambda c: abs((c[1] + c[3]) / 2 - _smid))
         # direzione: beam sopra il gambo (bmid < smid) = stems-up
         _bmid = (_best[1] + _best[3]) / 2
         _smid = (_st_top + _st_bot) / 2
@@ -11509,6 +11528,11 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         if abs(_x1 - _x2) > 1:
             return m.group(0)
         _st_top, _st_bot = min(_y1, _y2), max(_y1, _y2)
+        # FIX (29 Set 2026): il sistema del gambo = la riga di celle
+        # (micro-celle rhythm) più vicina al midpoint del gambo. Le
+        # candidate beams devono stare DENTRO il proprio sistema del
+        # gambo, altrimenti beams di altri sistemi (nel gap) estendono
+        # il gambo attraverso il pentagramma.
         _cands = []
         for _bx1, _bft, _bx2, _bfb in _beams_fin2:
             if _bx1 - 30 <= _x1 <= _bx2 + 30:
@@ -11517,12 +11541,21 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     _cands.append((_bx1, _bft, _bx2, _bfb))
         if not _cands:
             return m.group(0)
-        _bmid0 = min(c[1] for c in _cands) + (_BEAM_TH / 2)
+        if _cells_fin:
+            _bmid_c = (_st_top + _st_bot) / 2
+            _c_sys = min(_cells_fin, key=lambda c: abs(c[1] + c[3] / 2 - _bmid_c))
+            _c_top, _c_bot = _c_sys[1] - 15, _c_sys[1] + _c_sys[3] + 15
+            _cands = [c for c in _cands if c[1] >= _c_top - 200 and c[3] <= _c_bot + 200]
+            if not _cands:
+                return m.group(0)
         _smid = (_st_top + _st_bot) / 2
-        if _bmid0 < _smid:
-            _best = min(_cands, key=lambda c: c[1])
-        else:
-            _best = max(_cands, key=lambda c: c[1])
+        # FIX (29 Set 2026): la beam di aggancio = la più vicina al
+        # midpoint del gambo (min by d), NON min/max by c[1] — min/max
+        # sceglie la beam del SISTEMA SBAGLIATO per gambi il cui range
+        # copre più sistemi (prolungamenti che attraversano il
+        # pentagramma). La direzione (up/down) resta dal confronto
+        # beam_mid vs stem_mid della beam scelta.
+        _best = min(_cands, key=lambda c: abs((c[1] + c[3]) / 2 - _smid))
         _bmid = (_best[1] + _best[3]) / 2
         if _bmid < _smid:
             _target = _best[1] - 10
