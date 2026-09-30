@@ -8317,41 +8317,29 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             stem_x = x1  # stems are vertical, x1 == x2
             stem_top = min(y1, y2)
             stem_bot = max(y1, y2)
-            for bx1, by_top, bx2, by_bot in _final_beams:
-                if bx1 - 30 <= stem_x <= bx2 + 30:
-                    # FIX: Only clip if beam is in the same system as the stem
-                    # (Y within 500px). Otherwise beams from other systems with
-                    # the same X cause false matches.
-                    if abs(by_top - stem_top) > 1000:
-                        continue
-                    # This stem is near this beam.
-                    # If beam is below stem midpoint (down-stem, beam at bottom):
-                    #   stem_bot should not exceed by_bot + 5 (allow small overlap)
-                    # If beam is above stem midpoint (up-stem, beam at top):
-                    #   stem_top should not go below by_top - 5
-                    beam_mid = (by_top + by_bot) / 2
-                    stem_mid = (stem_top + stem_bot) / 2
-                    if beam_mid > stem_mid:
-                        # Down-stem: beam at bottom. Clip stem_bot to by_bot.
-                        # Account for stroke-linecap=round (adds stroke_width/2
-                        # beyond the endpoint). stroke-width is typically 20,
-                        # so subtract 10px extra.
-                        if stem_bot > by_bot + 5:
-                            clip_y = by_bot - 10  # 10px for round linecap
-                            if y1 > y2:  # y1 is bottom
-                                y1 = clip_y
-                            else:
-                                y2 = clip_y
-                    else:
-                        # Up-stem: beam at top. Clip stem_top to by_top.
-                        # Account for stroke-linecap=round (adds stroke_width/2).
-                        if stem_top < by_top - 5:
-                            clip_y = by_top + 10  # 10px for round linecap
-                            if y1 < y2:  # y1 is top
-                                y1 = clip_y
-                            else:
-                                y2 = clip_y
-                    break
+            # FIX (30 Set 2026): raccogli TUTTE le candidate nel range X
+            # (stesso sistema Y) e scegli quella con il bordo più vicino
+            # all'endpoint del gambo: per stems-up (gambo in su) = la beam
+            # con y_top più PICCOLO (topmost); per stems-down = la beam
+            # con y_bot più GRANDE (bottommost). Il break dopo il primo
+            # match attaccava il gambo alla PRIMA beam nel range X (la
+            # beam croma lunga) invece della beam delle semicrome.
+            _cands = [(bx1, by_top, bx2, by_bot) for (bx1, by_top, bx2, by_bot) in _final_beams
+                      if bx1 - 30 <= stem_x <= bx2 + 30 and abs(by_top - stem_top) <= 1000]
+            if not _cands:
+                return f'{prefix}{x1:.2f},{y1:.2f} {x2:.2f},{y2:.2f}"{suffix}'
+            up_stem = y1 > y2
+            if up_stem:
+                bx1, by_top, bx2, by_bot = min(_cands, key=lambda c: c[1])
+                if stem_top < by_top - 5:
+                    clip_y = by_top + 10
+                    y1 = clip_y  # y1 is bottom per stems-up
+            else:
+                bx1, by_top, bx2, by_bot = max(_cands, key=lambda c: c[3])
+                if stem_bot > by_bot + 5:
+                    clip_y = by_bot - 10
+                    y2 = clip_y  # y2 is bottom per stems-down
+
             return f'{prefix}{x1:.2f},{y1:.2f} {x2:.2f},{y2:.2f}"{suffix}'
         
         modified = re.sub(
