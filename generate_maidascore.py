@@ -11285,7 +11285,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
     _flat_beams_after = []
     for _m in _flat_beam_pat.finditer(modified):
         _p = _parse_pts(_m)
-        _flat_beams_after.append((min(_p[0], _p[2]), _p[1], max(_p[0], _p[2]), _p[1] + _BEAM_TH))
+        _flat_beams_after.append((min(_p[0], _p[2]), _p[1], max(_p[0], _p[2]), max(_p[1::2])))
 
     def _flat_stem_sub(m):
         import os as _os_dbg7
@@ -11322,51 +11322,98 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         # SOPRA il gambo (y minore del top). Nella notazione valgo
         # entrambi i lati (scelgo quello con candidati).
         if rhythm_mode:
-            _cands = [c for c in _cands if c[3] <= _st_top + 60]
+            _cands = [c for c in _cands if c[1] <= _st_top + 120]
         else:
-            _lato_up = any(c[3] <= _st_top + 60 for c in _cands)
+            _lato_up = any(c[1] <= _st_top + 120 for c in _cands)
             _lato_down = any(c[1] >= _st_bot - 60 for c in _cands)
             if _lato_up and not _lato_down:
-                _cands = [c for c in _cands if c[3] <= _st_top + 60]
+                _cands = [c for c in _cands if c[1] <= _st_top + 120]
             elif _lato_down and not _lato_up:
                 _cands = [c for c in _cands if c[1] >= _st_bot - 60]
         if not _cands:
             return m.group(0)
+        # filtro sistema via le StaffLines (le beams di altri sistemi
+        # non devono agganciare il gambo): le beams con Y nel raggio
+        # del sistema più vicino al midpoint del gambo (finestra
+        # ±600px = le beams sollevate nel gap incluse).
+        _bmid_f = (_st_top + _st_bot) / 2
+        _sys_fin = []
+        for _slm in re.finditer(r'<polyline[^>]*class="StaffLines"[^>]*points="([\d.\-]+),([\d.\-]+) ([\d.\-]+),([\d.\-]+)"', modified):
+            _sys_fin.append(float(_slm.group(2)))
+        if _sys_fin:
+            _sys_ys = sorted(set(_sys_fin))
+            _sys_groups = []
+            _cur_g = [_sys_ys[0]]
+            for _yy in _sys_ys[1:]:
+                if _yy - _cur_g[-1] < 400:
+                    _cur_g.append(_yy)
+                else:
+                    _sys_groups.append((_cur_g[0], _cur_g[-1]))
+                    _cur_g = [_yy]
+            _sys_groups.append((_cur_g[0], _cur_g[-1]))
+            _best_sys = min(_sys_groups, key=lambda g: abs((g[0] + g[1]) / 2 - _bmid_f))
+            _g_top, _g_bot = _best_sys[0] - 600, _best_sys[1] + 600
+            _cands = [c for c in _cands if c[1] >= _g_top and c[3] <= _g_bot]
+            if not _cands:
+                return m.group(0)
         _smid = (_st_top + _st_bot) / 2
         # FIX (29 Set 2026): la beam di aggancio = la più vicina al
         # midpoint del gambo (min by d), NON min/max by c[1] — min/max
         # sceglie la beam del SISTEMA SBAGLIATO per gambi il cui range
         # copre più sistemi. Direzione dal confronto della beam scelta.
-        _best = min(_cands, key=lambda c: abs((c[1] + c[3]) / 2 - _smid))
+        _ext = None
+        _up_cands = sorted([c for c in _cands if c[1] <= _st_top + 120], key=lambda c: c[1])
+        _down_cands = sorted([c for c in _cands if c[1] >= _st_bot - 60], key=lambda c: c[1])
+        # soglia gruppo impilato: gap >= 40 tra prim_bot e sec_top
+        # (il gap reale delle beams impilate = 50)
+        if len(_up_cands) >= 2 and (_up_cands[-1][1] - _up_cands[0][3]) >= 40:
+            # gruppo impilato stems-up: esterna = la più in ALTO
+            _ext = _up_cands[0]
+        elif len(_down_cands) >= 2 and (_down_cands[-1][3] - _down_cands[0][1]) >= 40:
+            # gruppo impilato stems-down: esterna = la più in BASSO
+            _ext = _down_cands[-1]
+        if _ext is not None:
+            _best = _ext
+        else:
+            # FIX (30 Set 2026): per un gambo lungo che ATTRAVERSA beams
+            # impilate, il midpoint sceglie la beam INTERNA (sbagliato).
+            # Uso la beam ESTERNA del gruppo impilato: per down la beam
+            # con y_top più ALTO (più lontana dalle note), per up la
+            # con y_bot più BASSO — lo stesso criterio del round 14 nel
+            # flatten (_pre-selection block).
+            _bmid_s = (_st_top + _st_bot) / 2
+            _ups = sorted([c for c in _cands if (c[1] + c[3]) / 2 <= _bmid_s], key=lambda c: c[1])
+            _downs = sorted([c for c in _cands if (c[1] + c[3]) / 2 > _bmid_s], key=lambda c: c[1])
+            if len(_downs) >= 2 and (_downs[-1][1] - _downs[0][3]) >= 40:
+                _best = _downs[-1]
+            elif len(_ups) >= 2 and (_ups[-1][1] - _ups[0][3]) >= 40:
+                _best = _ups[0]
+            else:
+                _best = min(_cands, key=lambda c: abs((c[1] + c[3]) / 2 - _smid))
+        if _os_dbg7.environ.get('MAIDA_DEBUG_FLAT') and (abs(_x1 - 2311.62) < 3 or abs(_x1 - 5567.5) < 3):
+            print(f'  [DBGP2] gambo {_x1:.0f}: _st_top={_st_top:.0f} _st_bot={_st_bot:.0f} up={[(round(c[1]), round(c[3])) for c in _up_cands]} down={[(round(c[1]), round(c[3])) for c in _down_cands]} _ext={round(_ext[1]) if _ext else None}')
         # direzione: beam sopra il gambo (bmid < smid) = stems-up
         _bmid = (_best[1] + _best[3]) / 2
         _smid = (_st_top + _st_bot) / 2
         if _bmid < _smid:
-            # stems-up: il gambo sale dalla nota → l'endpoint top deve ARRIVARE
-            # al bordo esterno (sopra) della beam: ESTENDI se corto, ACCORCIA
-            # se va oltre il bordo esterno con eccesso >15px.
-            _target = _best[1] - 10   # 10px per stroke-linecap round
-            if _st_top > _target:
-                if _y1 < _y2:
-                    _y1 = _target
-                else:
-                    _y2 = _target
-            elif _st_top < _target - 15:
+            # FIX3 (29 Set 2026): il gambo si ferma al bordo INFERIORE
+            # della beam (beam bottom), NON al bordo superiore — il
+            # gambo che sporge sopra la beam esterna è l'errore segnalato
+            # (aste che attraversano la travatura). Il cap rotondo entra
+            # 10px nella beam e resta nascosto.
+            _target = _best[3]
+            if _st_top > _target + 15 or _st_top < _target - 15:
                 if _y1 < _y2:
                     _y1 = _target
                 else:
                     _y2 = _target
         else:
-            # stems-down: il gambo scende dalla nota → l'endpoint bottom deve
-            # ARRIVARE al bordo esterno (sotto): ESTENDI se corto, ACCORCIA
-            # se va oltre con eccesso >15px.
-            _target = _best[3] + 10
-            if _st_bot < _target:
-                if _y1 > _y2:
-                    _y1 = _target
-                else:
-                    _y2 = _target
-            elif _st_bot > _target + 15:
+            # FIX3 (29 Set 2026): stems-down — il gambo scende dalla nota
+            # e si ferma al bordo SUPERIORE della beam (beam top), NON
+            # oltre: il cap rotondo entra 10px nella beam e resta
+            # nascosto.
+            _target = _best[1]
+            if _st_bot < _target - 15 or _st_bot > _target + 15:
                 if _y1 > _y2:
                     _y1 = _target
                 else:
@@ -11519,9 +11566,10 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
     _beams_fin2 = []
     for _m in _flat_beam_pat.finditer(modified):
         _p = _parse_pts(_m)
-        _beams_fin2.append((min(_p[0], _p[2]), _p[1], max(_p[0], _p[2]), _p[1] + _BEAM_TH))
+        _beams_fin2.append((min(_p[0], _p[2]), _p[1], max(_p[0], _p[2]), max(_p[1::2])))
 
     def _stem_fin_sub(m):
+        import os as _os_dbg
         _prefix = m.group(1)
         _x1, _y1, _x2, _y2 = (float(m.group(i)) for i in (2, 3, 4, 5))
         _suffix = m.group(6)
@@ -11548,6 +11596,31 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             _cands = [c for c in _cands if c[1] >= _c_top - 200 and c[3] <= _c_bot + 200]
             if not _cands:
                 return m.group(0)
+        else:
+            # notazione: filtro sistema via le StaffLines (le micro-celle
+            # non esistono). Le beams del proprio sistema = le beams con
+            # Y nel raggio del sistema più vicino al midpoint del gambo
+            # (finestra ±600px = le beams sollevate nel gap incluse).
+            _bmid_c = (_st_top + _st_bot) / 2
+            _sys_fin = []
+            for _slm in re.finditer(r'<polyline[^>]*class="StaffLines"[^>]*points="([\d.\-]+),([\d.\-]+) ([\d.\-]+),([\d.\-]+)"', modified):
+                _sys_fin.append(float(_slm.group(2)))
+            if _sys_fin:
+                _sys_ys = sorted(set(_sys_fin))
+                _sys_groups = []
+                _cur_g = [_sys_ys[0]]
+                for _yy in _sys_ys[1:]:
+                    if _yy - _cur_g[-1] < 400:
+                        _cur_g.append(_yy)
+                    else:
+                        _sys_groups.append((_cur_g[0], _cur_g[-1]))
+                        _cur_g = [_yy]
+                _sys_groups.append((_cur_g[0], _cur_g[-1]))
+                _best_sys = min(_sys_groups, key=lambda g: abs((g[0] + g[1]) / 2 - _bmid_c))
+                _g_top, _g_bot = _best_sys[0] - 600, _best_sys[1] + 600
+                _cands = [c for c in _cands if c[1] >= _g_top and c[3] <= _g_bot]
+                if not _cands:
+                    return m.group(0)
         _smid = (_st_top + _st_bot) / 2
         # FIX (29 Set 2026): la beam di aggancio = la più vicina al
         # midpoint del gambo (min by d), NON min/max by c[1] — min/max
@@ -11555,16 +11628,62 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         # copre più sistemi (prolungamenti che attraversano il
         # pentagramma). La direzione (up/down) resta dal confronto
         # beam_mid vs stem_mid della beam scelta.
-        _best = min(_cands, key=lambda c: abs((c[1] + c[3]) / 2 - _smid))
+        # FIX2 (29 Set 2026): nel gruppo impilato (primaria+secondaria,
+        # gap Y >= 50 tra beams con X-overlap) il gambo deve agganciarsi
+        # alla beam ESTERNA = la più LONTANA dalle note (per stems-up
+        # la più in ALTO, per stems-down la più in BASSO). La scelta
+        # nearest-by-midpoint aggancia il gambo alla beam SECONDARIA
+        # (la più vicina alle note) e la primaria resta staccata.
+        _ext = None
+        _up_cands = sorted([c for c in _cands if c[1] <= _st_top + 120], key=lambda c: c[1])
+        _down_cands = sorted([c for c in _cands if c[1] >= _st_bot - 60], key=lambda c: c[1])
+        # soglia gruppo impilato: gap >= 40 tra prim_bot e sec_top
+        # (il gap reale delle beams impilate = 50px; la soglia 100 sul
+        # range totale mancava il caso primaria h49 + secondaria h31 con
+        # gap 50 = range totale 81)
+        if len(_up_cands) >= 2 and (_up_cands[-1][1] - _up_cands[0][3]) >= 40:
+            # gruppo impilato stems-up: esterna = la più in ALTO
+            _ext = _up_cands[0]
+        elif len(_down_cands) >= 2 and (_down_cands[-1][3] - _down_cands[0][1]) >= 40:
+            _ext = _down_cands[-1]
+        if _ext is not None:
+            _best = _ext
+        else:
+            # FIX (30 Set 2026): per un gambo lungo che ATTRAVERSA beams
+            # impilate, il midpoint sceglie la beam INTERNA (sbagliato).
+            # Uso la beam ESTERNA del gruppo impilato: per down la beam
+            # con y_top più ALTO (più lontana dalle note), per up la
+            # con y_bot più BASSO — lo stesso criterio del round 14 nel
+            # flatten (_pre-selection block).
+            _bmid_s = (_st_top + _st_bot) / 2
+            _ups = sorted([c for c in _cands if (c[1] + c[3]) / 2 <= _bmid_s], key=lambda c: c[1])
+            _downs = sorted([c for c in _cands if (c[1] + c[3]) / 2 > _bmid_s], key=lambda c: c[1])
+            if len(_downs) >= 2 and (_downs[-1][1] - _downs[0][3]) >= 40:
+                _best = _downs[-1]
+            elif len(_ups) >= 2 and (_ups[-1][1] - _ups[0][3]) >= 40:
+                _best = _ups[0]
+            else:
+                _best = min(_cands, key=lambda c: abs((c[1] + c[3]) / 2 - _smid))
+        if _os_dbg.environ.get('MAIDA_DEBUG_FLAT') and (abs(_x1 - 2311.62) < 3 or abs(_x1 - 5567.5) < 3):
+            print(f'  [DBGP7] gambo {_x1:.0f}: _st_top={_st_top:.0f} _st_bot={_st_bot:.0f} up={[(round(c[1]), round(c[3])) for c in _up_cands]} down={[(round(c[1]), round(c[3])) for c in _down_cands]} _ext={round(_ext[1]) if _ext else None}')
         _bmid = (_best[1] + _best[3]) / 2
         if _bmid < _smid:
-            _target = _best[1] - 10
-            if _st_top > _target or _st_top < _target - 15:
+            # FIX3 (29 Set 2026): il gambo si ferma al bordo INFERIORE
+            # della beam (beam bottom), NON al bordo superiore — il
+            # gambo che sporge sopra la beam esterna è l'errore segnalato
+            # (aste che attraversano la travatura). Il cap rotondo
+            # (linecap=round) sporge 10px oltre il punto: con il punto
+            # a beam bottom il cap entra 10px nella beam e resta
+            # nascosto da essa.
+            _target = _best[3]
+            if _st_top > _target + 15 or _st_top < _target - 15:
                 if _y1 < _y2: _y1 = _target
                 else: _y2 = _target
         else:
-            _target = _best[3] + 10
-            if _st_bot < _target or _st_bot > _target + 15:
+            # stems-down: il gambo scende e si ferma al bordo SUPERIORE
+            # della beam (beam top), il cap entra 10px nella beam.
+            _target = _best[1]
+            if _st_bot < _target - 15 or _st_bot > _target + 15:
                 if _y1 > _y2: _y1 = _target
                 else: _y2 = _target
         return f'{_prefix}{_x1:.2f},{_y1:.2f} {_x2:.2f},{_y2:.2f}"{_suffix}'
@@ -11618,7 +11737,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     _beams_fin2 = []
                     for _m3 in _flat_beam_pat.finditer(modified):
                         _p3 = _parse_pts(_m3)
-                        _beams_fin2.append((min(_p3[0], _p3[2]), _p3[1], max(_p3[0], _p3[2]), _p3[1] + _BEAM_TH))
+                        _beams_fin2.append((min(_p3[0], _p3[2]), _p3[1], max(_p3[0], _p3[2]), max(_p3[1::2])))
                     break
 
     # 7c) FIX barline stretched (rhythm mode): una barline molto più alta
@@ -11659,6 +11778,11 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
 
     _stem_pat_fin2 = re.compile(r'(<polyline class="Stem"[^>]*points=")([\d.\-]+),([\d.\-]+) ([\d.\-]+),([\d.\-]+)"([^>]*>)')
     modified = _stem_pat_fin2.sub(_stem_fin_sub, modified)
+    if os.environ.get('MAIDA_DUMP7'):
+        import itertools as _it7
+        _dump7_n = _it7.count(1)
+        with open(f'/tmp/dump_pass7_{next(_dump7_n)}_{len(modified)}.svg', 'w') as _fd7:
+            _fd7.write(modified)
 
     # FOOTER COPYRIGHT su ogni pagina.
     # Testo in basso al CENTRO: "generated by MaidaScore — © 2026 Marco Maida"
