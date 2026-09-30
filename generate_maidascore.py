@@ -11859,9 +11859,32 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 # La selezione prim/sec per attaccatura + il replace.
                 else:
                     _prim = _b2 if _sec is _b1 else _b1  # il prim = l'altra beam
+                    # FIX (30 Set 2026, round 6, direttiva Marco): la posizione
+                    # sopra/sotto va decisa dalla DIREZIONE dei gambi, non
+                    # dalla posizione RELATIVA attuale delle beams. Battuta 1
+                    # Radetsky: le beams stavano prim=SOPRA/sec=SOTTO e il
+                    # relativo lasciava sec SOTTO (Marco: "la croma deve
+                    # avere la linea più alta della doppia delle semicrome").
+                    # Con gambi UP (attaccati al bordo INFERIORE della
+                    # primaria, beam sopra i gambi) la secondaria va SOTTO
+                    # la primaria; con gambi DOWN SOPRA.
+                    _stems_pair = []
+                    _stem_pat2 = re.compile(r'<polyline class="Stem"([^>]*)points="([\d.]+),([\d.]+) ([\d.]+),([\d.]+)"\s*/>')
+                    for _sm in _stem_pat2.finditer(modified):
+                        _sx, _st1, _st2 = (float(_sm.group(i)) for i in (2, 3, 4))
+                        if min(_sec[0], _prim[0]) - 30 <= _sx <= max(_sec[2], _prim[2]) + 30 and abs(((_st1 + _st2) / 2) - (_prim_mid if False else (_sec[1] + _sec[3]) / 2)) < 900:
+                            _stems_pair.append((_sx, _st1, _st2))
                     _sec_mid = (_sec[1] + _sec[3]) / 2
                     _prim_mid = (_prim[1] + _prim[3]) / 2
-                    if _sec_mid > _prim_mid:
+                    if _stems_pair:
+                        # gambi UP = raggiungono il bordo inferiore della
+                        # primaria → secondaria SOTTO; DOWN → SOPRA
+                        _up = sum(1 for _sp in _stems_pair if abs(_sp[2] - _prim[3]) < 25)
+                        _down = sum(1 for _sp in _stems_pair if abs(_sp[1] - _prim[1]) < 25)
+                        _sec_below = _up >= _down
+                    else:
+                        _sec_below = _sec_mid > _prim_mid
+                    if _sec_below:
                         _new_y = _prim[3] + 50   # secondaria sotto la primaria
                     else:
                         # FIX (30 Set 2026): _new_y = _prim[1] - 50 metteva il
