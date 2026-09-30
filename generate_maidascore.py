@@ -11785,34 +11785,56 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     # selezione per mid non distingue: prim = la beam con
                     # X range più LARGO (a cui i gambi si attaccano), sec
                     # = la beam con X range più stretto (più interna).
+                    # FIX (30 Set 2026, round 8, direttiva Marco: stessa
+                    # regola anche in NOTAZIONE): quando NESSUN gambo è
+                    # agganciato alle beams (i gambi non le raggiungono,
+                    # gap 51/97px in notazione), la selezione per distanza
+                    # dai gambi è INVERTITA (_sec = la beam LUNGA = croma):
+                    # il flusso spostava la croma SOTTO = croma sulla linea
+                    # più BASSA (gruppi x 5358-5760/5563-5760 Radetsky
+                    # notazione). FIX: quando nessun gambo è agganciato, la
+                    # beam LUNGA (raggiunge il gambo della croma) = la beam
+                    # della CROMA = deve stare sulla linea più ALTA → sposta
+                    # la beam CORTA (sec = la più stretta).
                     _w1 = _b1[2] - _b1[0]
                     _w2 = _b2[2] - _b2[0]
-                    # FIX (30 Set 2026, round 4, beams duplicate): quando la
-                    # beam più STRETTA è TOTAMENTE CONTENUTA nella più larga
-                    # (stesso Y, th uguali), è un FRAMMENTO DUPLICATO della
-                    # stessa beam (MuseScore renderizza la primaria 2+2 come
-                    # 2 path sovrapposti) — NON va spostata (produce beams
-                    # triple), va RIMOSSA.
-                    if _b1_mid == _b2_mid and min(_b1[2], _b2[2]) - max(_b1[0], _b2[0]) >= min(_w1, _w2) - 5:
-                        _dup = _b2 if _w2 < _w1 else _b1
-                        _dup_tok = None
-                        for _m2 in _flat_beam_pat.finditer(modified):
-                            _p2 = _parse_pts(_m2)
-                            if (min(_p2[0], _p2[2]), _p2[1], max(_p2[0], _p2[2])) == (_dup[0], _dup[1], _dup[2]):
-                                _dup_tok = _m2
-                        if _dup_tok is not None and _dup_tok.group(0) in modified:
-                            modified = modified.replace(_dup_tok.group(0), '', 1)
-                            _moved.add((_dup[0], _dup[1], _dup[2], _dup[3]))
-                            _beams_fin2 = []
-                            for _m3 in _flat_beam_pat.finditer(modified):
-                                _p3 = _parse_pts(_m3)
-                                _beams_fin2.append((min(_p3[0], _p3[2]), _p3[1], max(_p3[0], _p3[2]), max(_p3[1::2])))
-                            continue
-                    if _b1_mid == _b2_mid:
-                        _p_tmp = _b1 if _w1 > _w2 else _b2
+                    # FIX (30 Set 2026, round 8bis, direttiva Marco): gruppo
+                    # CROMA + semicrome (X ranges DIVERSI > 40, beams non
+                    # totalmente sovrapposte): la beam LUNGA (raggiunge il
+                    # gambo della croma) = la beam della CROMA = deve stare
+                    # sulla linea più ALTA della coppia → prim = la LUNGA,
+                    # sec = la CORTA, indipendentemente dall'attaccatura (i
+                    # gambi già clippati rendono ENTRAMBE "agganciate" e il
+                    # fallback per distanza dai gambi è INVERTITO: spostava
+                    # la croma SOTTO = croma sulla linea più BASSA, gruppi
+                    # x 5358-5760/5563-5760 Radetsky notazione).
+                    _croma_group = abs(_w1 - _w2) > 40 and _b1_mid != _b2_mid
+                    if _croma_group:
+                        _sec = _b2 if _w1 > _w2 else _b1
                     else:
-                        _p_tmp = _b1 if abs(_b1_mid - _s_mid) < abs(_b2_mid - _s_mid) else _b2
-                    _sec = _b2 if _p_tmp is _b1 else _b1
+                        # round 4 (beams duplicate) / mid selection: SOLO per
+                        # coppie sovrapposte o con X ranges simili.
+                        if _b1_mid == _b2_mid and min(_b1[2], _b2[2]) - max(_b1[0], _b2[0]) >= min(_w1, _w2) - 5:
+                            _dup = _b2 if _w2 < _w1 else _b1
+                            _dup_tok = None
+                            for _m2 in _flat_beam_pat.finditer(modified):
+                                _p2 = _parse_pts(_m2)
+                                if (min(_p2[0], _p2[2]), _p2[1], max(_p2[0], _p2[2])) == (_dup[0], _dup[1], _dup[2]):
+                                    _dup_tok = _m2
+                            if _dup_tok is not None and _dup_tok.group(0) in modified:
+                                modified = modified.replace(_dup_tok.group(0), '', 1)
+                                _moved.add((_dup[0], _dup[1], _dup[2], _dup[3]))
+                                _beams_fin2 = []
+                                for _m3 in _flat_beam_pat.finditer(modified):
+                                    _p3 = _parse_pts(_m3)
+                                    _beams_fin2.append((min(_p3[0], _p3[2]), _p3[1], max(_p3[0], _p3[2]), max(_p3[1::2])))
+                                continue
+                        if _b1_mid == _b2_mid:
+                            _p_tmp = _b1 if _w1 > _w2 else _b2
+                        else:
+                            _p_tmp = _b1 if abs(_b1_mid - _s_mid) < abs(_b2_mid - _s_mid) else _b2
+                        _sec = _b2 if _p_tmp is _b1 else _b1
+                    _prim = _b2 if _sec is _b1 else _b1
                 # FIX (30 Set 2026, round 2, direttiva Marco): beam della
                 # CROMA (gruppo 2 semicrome + croma): la croma = 1 beam
                 # con th ~31 vs le primarie th 47-49. MuseScore la
@@ -11879,11 +11901,54 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     if _stems_pair:
                         # gambi UP = raggiungono il bordo inferiore della
                         # primaria → secondaria SOTTO; DOWN → SOPRA
+                        # FIX (30 Set 2026, round 7, direttiva Marco: stessa
+                        # regola anche in NOTAZIONE): con gambi DOWN il gambo
+                        # si attacca al bordo SUPERIORE della primaria con la
+                        # sua FINE (y2/bottom del gambo, il gambo scende dalle
+                        # note verso la beam), NON con il suo inizio (_sp[1]):
+                        # il check _down originale usava _sp[1] e non matchava
+                        # mai per stems-down → fallback relativo → sec SOPRA =
+                        # croma sulla linea più BASSA = invertito in notazione
+                        # (gruppi y 9426/9329 Radetsky). Fix: _down usa _sp[2].
                         _up = sum(1 for _sp in _stems_pair if abs(_sp[2] - _prim[3]) < 25)
-                        _down = sum(1 for _sp in _stems_pair if abs(_sp[1] - _prim[1]) < 25)
+                        _down = sum(1 for _sp in _stems_pair if abs(_sp[2] - _prim[1]) < 25)
                         _sec_below = _up >= _down
+                        # FIX (30 Set 2026, round 7b, direttiva Marco: stessa
+                        # regola anche in NOTAZIONE): gruppo con CROMA — la
+                        # prim (beam lunga che raggiunge il gambo della croma)
+                        # deve stare SEMPRE sulla linea più ALTA della coppia
+                        # (sec sotto), indipendentemente dai gambi: con gambi
+                        # DOWN il check inverso mandava sec SOPRA = croma sulla
+                        # linea più BASSA (gruppi y 9426/9329 Radetsky
+                        # notazione). Rileva il gruppo croma: un gambo nel
+                        # range X della prim che sta FUORI dal range X della
+                        # sec (il gambo della croma, X proprio della nota).
+                        # FIX (30 Set 2026, round 8ter): nel gruppo CROMA
+                        # (_croma_group: X ranges diversi tra prim/sec, prim
+                        # = beam LUNGA = croma), la regola Marco vale in
+                        # ENTRAMBE le modalità: la croma deve stare sulla
+                        # linea più ALTA → sec sotto SEMPRE (_sec_below =
+                        # True), non solo quando un gambo è fuori dal range
+                        # X della sec (in notazione _stems_pair può essere
+                        # vuoto e il fallback relativo mandava sec SOPRA =
+                        # croma sulla linea più BASSA).
+                        _croma_stem = any(_sx < _sec[0] - 5 or _sx > _sec[2] + 5
+                                          for _sx, _st1, _st2 in _stems_pair)
+                        if _croma_stem:
+                            _sec_below = True
                     else:
                         _sec_below = _sec_mid > _prim_mid
+                    # FIX (30 Set 2026, round 8quater): gruppo CROMA
+                    # rilevato DALLE beams della coppia (X ranges diversi
+                    # > 40 tra prim e sec: la prim = beam LUNGA = croma):
+                    # la sec va SOPRA la prim (croma sulla linea più alta)
+                    # in ENTRAMBE le modalità, indipendentemente dai gambi
+                    # (in notazione _stems_pair può essere vuoto e il
+                    # fallback relativo mandava sec SOPRA... no: la croma
+                    # sulla linea più BASSA).
+                    _croma_group = abs(_prim[2] - _prim[0] - (_sec[2] - _sec[0])) > 40
+                    if _croma_group:
+                        _sec_below = True
                     if _sec_below:
                         _new_y = _prim[3] + 50   # secondaria sotto la primaria
                     else:
@@ -11956,6 +12021,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     continue
                 if abs((_b1[1] + _b1[3]) / 2 - (_b2[1] + _b2[3]) / 2) > 600:
                     continue
+                _croma_group = False
                 _d_real = max(_b1[1], _b2[1]) - min(_b1[3], _b2[3])
                 if _d_real >= 15 or _d_real < -200:
                     continue
