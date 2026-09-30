@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.13] - 2026-09-30
+
+### Fixed
+- **Duplicated/triple beams removed**: stale-beam filter margin widened to
+  300px (beams spanning adjacent beat groups were excluded by the narrow
+  window and left in place as stacked triples/quadruples); beat-adjacent
+  beam fragments of a split beam no longer overlap after repositioning;
+  fully-contained duplicate fragments are removed instead of moved.
+- **Croma beam attached and on top**: in a 2 semicromas + croma group the
+  croma beam line must be the HIGHER line of the stacked pair, attached
+  to it (gap 0) — the croma beam bottom touches the top line of the
+  preceding semicroma beam. Above/below is decided from the stem
+  direction, not from the beams' current relative position.
+- **Uniform beam thickness 47px** in all modes (resized in both flatten
+  branches), decollide loop repeats until no pair has a real gap < 15px.
+
 ## [1.2.11] - 2026-09-29
 
 ### Changed
