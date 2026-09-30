@@ -11827,10 +11827,12 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     _thick, _thin = (_b1, _b2) if _th1 > _th2 else (_b2, _b1)
                     if _thin[1] > _thick[1]:
                         # la sottile sta sotto la spessa: spostarla SOPRA
-                        # FIX (30 Set 2026, gap 15): il gap 5px era
-                        # troppo piccolo (beams quasi toccanti, Marco).
-                        # Il gap deve essere 15px (visibile e uniforme).
-                        _new_y = _thick[1] - (_thin[3] - _thin[1]) - 15
+                        # FIX (30 Set 2026, direttiva Marco): la beam della
+                        # croma deve essere ATTACCATA alla linea superiore
+                        # della travatura delle due semicrome (gap 0 =
+                        # bottom della croma tocca il top della travatura),
+                        # NON staccata: il gap 5/15px la lasciava volante.
+                        _new_y = _thick[1] - (_thin[3] - _thin[1])
                         _key = (_thin[0], _thin[1], _thin[2], _thin[3])
                         _tok = None
                         for _m2 in _flat_beam_pat.finditer(modified):
