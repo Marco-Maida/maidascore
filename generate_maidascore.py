@@ -11692,13 +11692,26 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
     #     un gap >= 50px (le linee si distinguono). La secondaria viene
     #     riposizionata rispettando la direzione (si allontana dalle note).
     _changed_beams = {}
+    _decollide_done = False
+    if os.environ.get('MAIDA_DEBUG_FLAT'):
+        with open(f'/tmp/dump_beamsfin2_{len(_beams_fin2)}.svg', 'w') as _fd2b:
+            _fd2b.write(modified)
+        print(f'  [DBGDEC] _beams_fin2: {len(_beams_fin2)} beams')
     for _i in range(len(_beams_fin2)):
         for _j in range(_i + 1, len(_beams_fin2)):
+            if os.environ.get('MAIDA_DEBUG_FLAT') and (abs(_beams_fin2[_i][0] - 2690.27) < 3):
+                print(f'  [DBGDEC] coppia {_i},{_j}: {_beams_fin2[_i]} vs {_beams_fin2[_j]}')
             _b1, _b2 = _beams_fin2[_i], _beams_fin2[_j]
             if not (_b1[0] <= _b2[2] and _b2[0] <= _b1[2]):
                 continue
-            _d = _b2[1] - _b1[1]
-            if abs(_d) < 50:
+            # FIX (30 Set 2026): il criterio precedente usava la differenza
+            # dei TOPS (abs(_b2[1] - _b1[1]) < 50): quando la differenza
+            # tops = 50 (spessore 47 + gap 3px) non triggerava e le beams
+            # restavano TOCCANTI con gap 3px (fuse in un blocco unico).
+            # Il criterio corretto = il gap REALE tra le beams: bottom
+            # della beam superiore vs top della beam inferiore.
+            _d_real = max(_b1[1], _b2[1]) - min(_b1[3], _b2[3])
+            if -200 < _d_real < 50:
                 # sovrapposte o troppo vicine: la beam più lontana dalle
                 # note (determinata dai gambi del gruppo) va spostata.
                 _grp_stems = [(float(_sm.group(1)), min(float(_sm.group(2)), float(_sm.group(4))), max(float(_sm.group(2)), float(_sm.group(4))))
@@ -11709,15 +11722,41 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 _s_mid = sum((s[1] + s[2]) / 2 for s in _grp_stems) / len(_grp_stems)
                 _b1_mid = (_b1[1] + _b1[3]) / 2
                 _b2_mid = (_b2[1] + _b2[3]) / 2
-                # primaria = più vicina alle note; secondaria = più lontana
-                _prim = _b1 if abs(_b1_mid - _s_mid) < abs(_b2_mid - _s_mid) else _b2
-                _sec = _b2 if _prim is _b1 else _b1
+                # FIX (30 Set 2026): il criterio "primaria = più vicina alle
+                # note, secondaria = più lontana" spostava il SEC, ma i gambi
+                # sono attaccati alla beam ESTERNA (più lontana) — quindi
+                # veniva spostata proprio la beam a cui i gambi si agganciano,
+                # rompendo l'attaccatura (audit: gambo attaccato alla beam
+                # esterna vs il pass 7a che aggancia lì). FIX: spostare la
+                # beam che NON interferisce con i gambi: la beam a cui i
+                # gambi del gruppo si agganciano resta FISSA; l'altra
+                # (quella senza gambi o più interna) viene riposizionata.
+                # Attaccatura = il gambo raggiunge il bordo esterno della
+                # beam (bottom per stems-up / top per stems-down).
+                _attach_b1 = any(abs(st[1] - _b1[3]) < 25 or abs(st[2] - _b1[1]) < 25 for st in _grp_stems)
+                _attach_b2 = any(abs(st[1] - _b2[3]) < 25 or abs(st[2] - _b2[1]) < 25 for st in _grp_stems)
+                if _attach_b1 and not _attach_b2:
+                    _sec = _b2   # b1 agganciata ai gambi: sposta b2
+                elif _attach_b2 and not _attach_b1:
+                    _sec = _b1   # b2 agganciata ai gambi: sposta b1
+                else:
+                    # fallback: entrambe o nessuna agganciata — sposta la
+                    # più interna (più vicina alle note)
+                    _p_tmp = _b1 if abs(_b1_mid - _s_mid) < abs(_b2_mid - _s_mid) else _b2
+                    _sec = _b2 if _p_tmp is _b1 else _b1
+                _prim = _b2 if _sec is _b1 else _b1  # il prim = l'altra beam
                 _sec_mid = (_sec[1] + _sec[3]) / 2
                 _prim_mid = (_prim[1] + _prim[3]) / 2
                 if _sec_mid > _prim_mid:
                     _new_y = _prim[3] + 50   # secondaria sotto la primaria
                 else:
-                    _new_y = _prim[1] - 50   # secondaria sopra la primaria
+                    # FIX (30 Set 2026): _new_y = _prim[1] - 50 metteva il
+                    # top della secondaria 50px sopra il top della primaria,
+                    # ma la secondaria è spessa 47px: il suo BOTTOM finiva
+                    # a 3px sopra il top della primaria (beams toccanti,
+                    # fuse in un blocco unico). Il gap deve essere misurato
+                    # dal BOTTOM della secondaria: 50px + 47px di spessore.
+                    _new_y = _prim[1] - 50 - 47   # secondaria sopra la primaria
                 _key = (_sec[0], _sec[1], _sec[2], _sec[3])
                 _tok = None
                 for _m2 in _flat_beam_pat.finditer(modified):
@@ -11738,7 +11777,14 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     for _m3 in _flat_beam_pat.finditer(modified):
                         _p3 = _parse_pts(_m3)
                         _beams_fin2.append((min(_p3[0], _p3[2]), _p3[1], max(_p3[0], _p3[2]), max(_p3[1::2])))
+                    # FIX (30 Set 2026): il break precedente usciva SOLO dal
+                    # loop interno for _j: il loop for _i ripartiva con la
+                    # lista ricaricata e poteva rimettere la beam appena
+                    # spostata (loop oscillante). Uscire da entrambi i loop.
+                    _decollide_done = True
                     break
+            if _decollide_done:
+                break
 
     # 7c) FIX barline stretched (rhythm mode): una barline molto più alta
     #     delle micro-celle del proprio sistema (residuo y-stretch) viene
