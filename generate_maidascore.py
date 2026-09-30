@@ -11996,18 +11996,22 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         # croma (pattern visivo corretto).
                         _sec_below = True
                     if _sec_below:
-                        # FIX (30 Set 2026, round 9ottavo, direttiva Marco):
-                        # gruppo CROMA con gambo in SU (rhythm): la sec deve
-                        # stare ATTACCATA al bottom della prim (top della sec
-                        # tocca il bottom della prim, gap 0), NON separata
-                        # (gap 50px = volante). Gap 50px solo per le coppie
-                        # STESSO spessore (semicrome impilate).
                         # FIX (30 Set 2026, direttiva Marco): le due linee
                         # della travatura NON devono essere attaccate (gap
                         # 0 = blocco unico indistinguibile): gap visibile
                         # 15px tra la beam della croma e la beam delle
                         # semicrome (gap 5px era troppo piccolo, round 0ce97f1).
-                        _new_y = _prim[3] + 15
+                        # FIX (30 Set 2026, round 11, direttiva Marco: check
+                        # b31-35): il gap 15 vale SOLO per i gruppi CROMA
+                        # (larghezze diverse > 40). Per le coppie STESSO
+                        # spessore (semicrome impilate) il gap resta >= 50px
+                        # (round 7b: le 2 linee si distinguono) — il round 10
+                        # applicava gap 15 a TUTTE le coppie bad = le
+                        # semicrome impilate fuse in un blocco unico.
+                        if _croma_group:
+                            _new_y = _prim[3] + 15
+                        else:
+                            _new_y = _prim[3] + 50
                     else:
                         # FIX (30 Set 2026): _new_y = _prim[1] - 50 metteva il
                         # top della secondaria 50px sopra il top della primaria,
@@ -12029,7 +12033,15 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         # SOVRAPPALLA prim (stessa Y = blocco fuso).
                         # FIX (30 Set 2026, direttiva Marco): gap visibile
                         # 15px (il bottom della sec = top della prim - 15).
-                        _new_y = _prim[1] - (_sec[3] - _sec[1]) - 15
+                        # FIX (30 Set 2026, round 11, direttiva Marco: check
+                        # b31-35): il gap 15 vale SOLO per i gruppi CROMA
+                        # (larghezze diverse > 40). Per le coppie STESSO
+                        # spessore (semicrome impilate) il gap resta >= 50px
+                        # (round 7b: le 2 linee si distinguono).
+                        if _croma_group:
+                            _new_y = _prim[1] - (_sec[3] - _sec[1]) - 15
+                        else:
+                            _new_y = _prim[1] - (_sec[3] - _sec[1]) - 50
                     # FIX (30 Set 2026, round 5, beams adiacenti): se la
                     # posizione _new_y sovrappone una beam ADIACENTE (X
                     # overlap, stesso sistema), sposto la beam oltre quella
