@@ -11982,16 +11982,19 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     # più BASSA → sec sopra (_sec_below = False).
                     _croma_group = abs(_prim[2] - _prim[0] - (_sec[2] - _sec[0])) > 40
                     if _croma_group:
-                        # La direzione = la DIREZIONE DEI GAMBI del gruppo:
-                        # gambo in SU (rhythm mode) → la beam della croma
-                        # deve stare sulla linea più ALTA → sec sotto
-                        # (_sec_below = True); gambo in GIÙ (notazione) →
-                        # la beam della croma = quella più in BASSO → sec
-                        # sopra (_sec_below = False). In notazione vale per
-                        # TUTTI i gruppi croma (gambi che si fermano al top
-                        # della prim o scendono dal bottom): la sec va sopra
-                        # attaccata al top della prim.
-                        _sec_below = rhythm_mode
+                        # FIX (30 Set 2026, round 10, direttiva Marco con
+                        # immagine — REGOLA DEFINITIVA, supersede round 9):
+                        # la beam della CROMA (la LUNGA) deve stare SEMPRE
+                        # sulla linea PIÙ ALTA della coppia, la beam corta
+                        # (semicrome) SOTTO, in ENTRAMBE le modalità e per
+                        # ENTRAMBE le direzioni del gambo. Il round 9 usava
+                        # _sec_below = rhythm_mode (sec SOPRA in notazione =
+                        # croma sulla linea più BASSA = errato, segnalato da
+                        # Marco sui gruppi b73-77 Radetsky f2). Con gambi
+                        # stems-down la sec sotto la croma sta a prim[3]+15
+                        # e i gambi la attraversano per attaccarsi alla
+                        # croma (pattern visivo corretto).
+                        _sec_below = True
                     if _sec_below:
                         # FIX (30 Set 2026, round 9ottavo, direttiva Marco):
                         # gruppo CROMA con gambo in SU (rhythm): la sec deve
@@ -12170,7 +12173,10 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             _prim_mid = (_prim2[1] + _prim2[3]) / 2
             # FIX (30 Set 2026, direttiva Marco): gap visibile 15px tra
             # le due linee della travatura (gap 0 = blocco unico).
-            _new_y = (_prim2[3] + 15) if rhythm_mode else _prim2[1] - (_sec2[3] - _sec2[1]) - 15
+            # FIX (30 Set 2026, round 10): la sec SOTTO la croma SEMPRE
+            # (la croma = la LUNGA = la linea PIÙ ALTA, supersede round 9
+            # che metteva la sec SOPRA in notazione = croma più BASSA).
+            _new_y = _prim2[3] + 15
             _sec_l = _sec2
             _p_tmp = _prim2
         elif _sec_mid > _prim_mid:
