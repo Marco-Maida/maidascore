@@ -7824,13 +7824,49 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     t = (x - pri['x_left']) / xw
                     return t
                 if _sec_mid < _pri_mid_here:
-                    # secondaria SOPRA la primaria: bordo sup. sec = pri_top - 47
-                    sec['y1'] = _pri_top_l + (_pri_top_r - _pri_top_l) * _interpl(sec['x_left']) - 47 - th
-                    sec['y2'] = _pri_top_l + (_pri_top_r - _pri_top_l) * _interpl(sec['x_right']) - 47 - th
+                    # FIX (30 Set 2026, round 9ter, direttiva Marco con
+                    # immagine): gruppo CROMA con gambo in GIÙ (notazione):
+                    # il gambo attraversa la secondaria e si attacca alla
+                    # beam della croma → la sec deve stare ATTACCATA alla
+                    # prim (bottom della sec tocca il top della prim, gap 0).
+                    # Il gap 47px la staccava (sec volante 47px sopra il
+                    # top della prim). Se la sec è già attaccata (il loop
+                    # decollide l'ha posizionata a gap 0), NON applicare il
+                    # gap: lasciare attaccata.
+                    _sec_bot_l = (sec['y1'] + sec['y4']) / 2 + th / 2
+                    _sec_bot_r = (sec['y2'] + sec['y3']) / 2 + th / 2
+                    _pri_top_mid = (_pri_top_l + _pri_top_r) / 2
+                    # FIX (30 Set 2026, round 9quater): il gruppo croma
+                    # (X ranges DIVERSI tra prim/sec) con gambo in GIÙ = la
+                    # sec va ATTACCATA al top della prim SEMPRE (gap 0,
+                    # bottom della sec tocca il top della prim), non solo
+                    # quando il loop decollide l'ha già posizionata.
+                    _croma_group2 = abs((sec['x_right'] - sec['x_left']) - (pri['x_right'] - pri['x_left'])) > 40
+                    _attached_now = _croma_group2 or abs(min(_sec_bot_l, _sec_bot_r) - _pri_top_mid) < 15
+                    if _attached_now:
+                        sec['y1'] = _pri_top_l + (_pri_top_r - _pri_top_l) * _interpl(sec['x_left']) - th
+                        sec['y2'] = _pri_top_l + (_pri_top_r - _pri_top_l) * _interpl(sec['x_right']) - th
+                    else:
+                        # secondaria SOPRA la primaria: bordo sup. sec = pri_top - 47
+                        sec['y1'] = _pri_top_l + (_pri_top_r - _pri_top_l) * _interpl(sec['x_left']) - 47 - th
+                        sec['y2'] = _pri_top_l + (_pri_top_r - _pri_top_l) * _interpl(sec['x_right']) - 47 - th
                 else:
-                    # secondaria SOTTO la primaria: bordo sup. sec = pri_bot + 47
-                    sec['y1'] = _pri_bot_l + (_pri_bot_r - _pri_bot_l) * _interpl(sec['x_left']) + 47
-                    sec['y2'] = _pri_bot_l + (_pri_bot_r - _pri_bot_l) * _interpl(sec['x_right']) + 47
+                    # FIX (30 Set 2026, round 9quinto, direttiva Marco con
+                    # immagine): gruppo CROMA con gambo in GIÙ (notazione):
+                    # la beam della croma = quella più in BASSO della coppia
+                    # (il matching Step 1 assegna sec = la beam LUNGA =
+                    # croma, pri = la beam CORTA = semicrome sopra): la sec
+                    # deve stare ATTACCATA alla prim (top della sec tocca il
+                    # bottom della prim, gap 0), NON separata (gap 47px =
+                    # volante).
+                    _cg_w_diff = abs((sec['x_right'] - sec['x_left']) - (pri['x_right'] - pri['x_left']))
+                    if _cg_w_diff > 40:
+                        sec['y1'] = _pri_bot_l + (_pri_bot_r - _pri_bot_l) * _interpl(sec['x_left'])
+                        sec['y2'] = _pri_bot_l + (_pri_bot_r - _pri_bot_l) * _interpl(sec['x_right'])
+                    else:
+                        # secondaria SOTTO la primaria: bordo sup. sec = pri_bot + 47
+                        sec['y1'] = _pri_bot_l + (_pri_bot_r - _pri_bot_l) * _interpl(sec['x_left']) + 47
+                        sec['y2'] = _pri_bot_l + (_pri_bot_r - _pri_bot_l) * _interpl(sec['x_right']) + 47
                 sec['y3'] = sec['y2'] + th
                 sec['y4'] = sec['y1'] + th
                 sec['y_top'] = min(sec['y1'], sec['y2'])
@@ -11749,7 +11785,13 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             # oscillante rimetteva la beam spostata, annullando il fix).
             _k1 = (_b1[0], _b1[1], _b1[2], _b1[3])
             _k2 = (_b2[0], _b2[1], _b2[2], _b2[3])
-            if -200 < _d_real < 60 and _k1 not in _moved and _k2 not in _moved:
+            # FIX (30 Set 2026, round 9undicesimo): gruppo CROMA (X
+            # ranges DIVERSI > 40): la sec va ATTACCATA alla croma anche
+            # quando il gap è grande (gap 97 = volante). Il criterio
+            # d_real < 60 escludeva le coppie con gap 97 = il flusso non
+            # le processava. Per il gruppo croma estendere a < 150.
+            if ((_d_real < 60 and abs((_b1[2] - _b1[0]) - (_b2[2] - _b2[0])) <= 40) or
+                (_d_real < 150 and abs((_b1[2] - _b1[0]) - (_b2[2] - _b2[0])) > 40)) and _k1 not in _moved and _k2 not in _moved:
                 # sovrapposte o troppo vicine: la beam più lontana dalle
                 # note (determinata dai gambi del gruppo) va spostata.
                 _grp_stems = [(float(_sm.group(1)), min(float(_sm.group(2)), float(_sm.group(4))), max(float(_sm.group(2)), float(_sm.group(4))))
@@ -11938,19 +11980,36 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                             _sec_below = True
                     else:
                         _sec_below = _sec_mid > _prim_mid
-                    # FIX (30 Set 2026, round 8quater): gruppo CROMA
-                    # rilevato DALLE beams della coppia (X ranges diversi
-                    # > 40 tra prim e sec: la prim = beam LUNGA = croma):
-                    # la sec va SOPRA la prim (croma sulla linea più alta)
-                    # in ENTRAMBE le modalità, indipendentemente dai gambi
-                    # (in notazione _stems_pair può essere vuoto e il
-                    # fallback relativo mandava sec SOPRA... no: la croma
-                    # sulla linea più BASSA).
+                    # FIX (30 Set 2026, round 9, direttiva Marco con
+                    # immagine): la regola dipende dalla DIREZIONE DEL
+                    # GAMBO della croma. Gruppo CROMA rilevato DALLE beams
+                    # della coppia (X ranges diversi > 40 tra prim e sec:
+                    # la prim = beam LUNGA = croma). La beam della croma
+                    # sta SEMPRE più LONTANA dalle note: gambo in SU
+                    # (rhythm, beams sopra le note) → beam croma = la più
+                    # ALTA → sec sotto (_sec_below = True); gambo in GIÙ
+                    # (notazione, beams sotto le note) → beam croma = la
+                    # più BASSA → sec sopra (_sec_below = False).
                     _croma_group = abs(_prim[2] - _prim[0] - (_sec[2] - _sec[0])) > 40
                     if _croma_group:
-                        _sec_below = True
+                        # La direzione = la DIREZIONE DEI GAMBI del gruppo:
+                        # gambo in SU (rhythm mode) → la beam della croma
+                        # deve stare sulla linea più ALTA → sec sotto
+                        # (_sec_below = True); gambo in GIÙ (notazione) →
+                        # la beam della croma = quella più in BASSO → sec
+                        # sopra (_sec_below = False). In notazione vale per
+                        # TUTTI i gruppi croma (gambi che si fermano al top
+                        # della prim o scendono dal bottom): la sec va sopra
+                        # attaccata al top della prim.
+                        _sec_below = rhythm_mode
                     if _sec_below:
-                        _new_y = _prim[3] + 50   # secondaria sotto la primaria
+                        # FIX (30 Set 2026, round 9ottavo, direttiva Marco):
+                        # gruppo CROMA con gambo in SU (rhythm): la sec deve
+                        # stare ATTACCATA al bottom della prim (top della sec
+                        # tocca il bottom della prim, gap 0), NON separata
+                        # (gap 50px = volante). Gap 50px solo per le coppie
+                        # STESSO spessore (semicrome impilate).
+                        _new_y = _prim[3]   # sec attaccata al bottom della prim
                     else:
                         # FIX (30 Set 2026): _new_y = _prim[1] - 50 metteva il
                         # top della secondaria 50px sopra il top della primaria,
@@ -11958,7 +12017,19 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         # a 3px sopra il top della primaria (beams toccanti,
                         # fuse in un blocco unico). Il gap deve essere misurato
                         # dal BOTTOM della secondaria: 50px + 47px di spessore.
-                        _new_y = _prim[1] - 50 - 47   # secondaria sopra la primaria
+                        # FIX (30 Set 2026, round 9bis, direttiva Marco con
+                        # immagine): gruppo CROMA con gambo in GIÙ (notazione):
+                        # il gambo attraversa la secondaria e si attacca alla
+                        # beam della croma → la sec deve essere ATTACCATA alla
+                        # croma (top della sec = bottom della prim, gap 0),
+                        # NON separata (gap 97px = volante). Gap 50px solo per
+                        # le coppie STESSO spessore (semicrome impilate).
+                        # Il bottom della sec tocca il TOP della prim
+                        # (sec y_top = prim[1] - th_sec: il bottom della sec
+                        # = 5378+47 = 5425 = top della prim = attaccata).
+                        # _new_y = prim[3] - th_sec metteva la sec
+                        # SOVRAPPALLA prim (stessa Y = blocco fuso).
+                        _new_y = _prim[1] - (_sec[3] - _sec[1])   # sec attaccata sopra il top della prim
                     # FIX (30 Set 2026, round 5, beams adiacenti): se la
                     # posizione _new_y sovrappone una beam ADIACENTE (X
                     # overlap, stesso sistema), sposto la beam oltre quella
@@ -11990,6 +12061,14 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         if _old in modified:
                             _n_before = modified.count(_old)
                             modified = modified.replace(_old, _new, 1)
+                            # FIX (30 Set 2026, round 9decimo): se _old
+                            # appare PIÙ volte (frammenti duplicati della
+                            # stessa beam), il replace(count=1) ne rimuove
+                            # 1 e le ALTRE restano = beams TRIPLE. Rimuovere
+                            # tutte le occorrenze extra (lasciare solo il
+                            # nuovo path).
+                            if _n_before > 1:
+                                modified = modified.replace(_old, '', modified.count(_old) - 1)
                             _moved.add(_key)
                             _moved.add((_key[0], _new_y, _key[2], _new_y + 47))
                             # FIX (30 Set 2026, lock): registro SIA la
@@ -12009,6 +12088,15 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
     # coppie sovrapposte/toccanti (max 5 iterazioni). Il lock _moved
     # evita oscillazioni (una beam spostata non viene rimossa).
     for _round_n in range(5):
+        if os.environ.get('MAIDA_DBG_ROUNDS'):
+            import re as _re_d
+            _bs = []
+            for _mm in _flat_beam_pat.finditer(modified):
+                _p = _parse_pts(_mm)
+                _bs.append((min(_p[0], _p[2]), _p[1], max(_p[0], _p[2]), max(_p[1::2])))
+            _s3 = [b for b in _bs if 5000 < b[2] < 6000]
+            _s3 = _s3[:12]
+            print(f'ROUND {_round_n}: ' + '; '.join(f'x{b[0]:.0f} y{b[2]:.0f} w{b[1]-b[0]:.0f}' for b in _s3))
         if os.environ.get('MAIDA_DEBUG_FLAT2'):
                 _fdrl.write(modified)
         _bad_pair = None
@@ -12023,7 +12111,14 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     continue
                 _croma_group = False
                 _d_real = max(_b1[1], _b2[1]) - min(_b1[3], _b2[3])
-                if _d_real >= 15 or _d_real < -200:
+                # FIX (30 Set 2026, round 9nono): gruppo CROMA (X ranges
+                # DIVERSI > 40 tra le beams): la sec deve stare ATTACCATA
+                # alla croma (gap 0) in ENTRAMBE le modalità. Il criterio
+                # d_real >= 15 skippava le coppie con gap 50 (la sec
+                # volante) = il flusso non la riposizionava. Per il gruppo
+                # croma NON skippare (il flusso la processa e la riattacca).
+                _cg_w = abs((_b1[2] - _b1[0]) - (_b2[2] - _b2[0]))
+                if (_d_real >= 15 or _d_real < -200) and _cg_w <= 40:
                     continue
                 _bad_pair = (_i, _j)
                 break
@@ -12053,7 +12148,33 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         _sec_l = _b2 if _p_tmp is _b1 else _b1
         _sec_mid = (_sec_l[1] + _sec_l[3]) / 2
         _prim_mid = (_p_tmp[1] + _p_tmp[3]) / 2
-        if _sec_mid > _prim_mid:
+        # FIX (30 Set 2026, round 9sesto, direttiva Marco con immagine):
+        # gruppo CROMA (X ranges DIVERSI > 40 tra le beams della coppia):
+        # la beam della CROMA (la LUNGA) deve stare sulla linea più in
+        # BASSO della coppia (gambo in giù) e la beam corta (semicrome)
+        # sopra ATTACCATA (top della sec tocca il bottom della prim, gap 0).
+        # Il flusso storico usava il _new_y vecchio (prim[1] - 50 - 47 =
+        # gap 47) e sovrascriveva il fix del round 6/7b.
+        _cg_w = (_p_tmp[2] - _p_tmp[0]) - (_sec_l[2] - _sec_l[0])
+        if abs(_cg_w) > 40:
+            # FIX (30 Set 2026, round 9settimo, direttiva Marco con immagine):
+            # gruppo CROMA nel flusso round 1 (il flusso storico usava il
+            # _new_y vecchio gap 47 e sovrascriveva il fix round 6/7b).
+            # La regola dipende dalla DIREZIONE DEL GAMBO: gambo in SU
+            # (rhythm) → la croma (beam LUNGA) = la linea più ALTA → la
+            # sec (CORTA) sotto attaccata al bottom della prim: _new_y =
+            # prim[3]; gambo in GIÙ (notazione) → la croma = la linea più
+            # in BASSO → la sec sopra attaccata al top della prim:
+            # _new_y = prim[1] - th. In ENTRAMBE le modalità la beam della
+            # croma = la LUNGA = prim, la sec = la CORTA attaccata.
+            _prim2 = _b1 if (_b1[2] - _b1[0]) > (_b2[2] - _b2[0]) else _b2
+            _sec2 = _b1 if _prim2 is _b2 else _b2
+            _sec_mid = (_sec2[1] + _sec2[3]) / 2
+            _prim_mid = (_prim2[1] + _prim2[3]) / 2
+            _new_y = _prim2[3] if rhythm_mode else _prim2[1] - (_sec2[3] - _sec2[1])
+            _sec_l = _sec2
+            _p_tmp = _prim2
+        elif _sec_mid > _prim_mid:
             _new_y = _p_tmp[3] + 50
         else:
             _new_y = _p_tmp[1] - 50 - 47
@@ -12118,7 +12239,15 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
     _stem_pat_fin2 = re.compile(r'(<polyline class="Stem"[^>]*points=")([\d.\-]+),([\d.\-]+) ([\d.\-]+),([\d.\-]+)"([^>]*>)')
     if os.environ.get('MAIDA_DEBUG_FLAT2'):
             _fdpf.write(modified)
+    if os.environ.get('MAIDA_DBG_FIN'):
+        _fin_n = next(globals().setdefault('_fin_counter', [0]) and iter(globals()['_fin_counter']) or iter([globals()['_fin_counter'][0] + 1]))
+        globals()['_fin_counter'][0] = _fin_n
+        with open(f'/tmp/finb_{_fin_n}.svg', 'w') as _fb:
+            _fb.write(modified)
     modified = _stem_pat_fin2.sub(_stem_fin_sub, modified)
+    if os.environ.get('MAIDA_DBG_FIN'):
+        with open(f'/tmp/fina_{_fin_n}.svg', 'w') as _fa:
+            _fa.write(modified)
     if os.environ.get('MAIDA_DUMP7'):
         import itertools as _it7
         _dump7_n = _it7.count(1)
