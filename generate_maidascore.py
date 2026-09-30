@@ -8794,10 +8794,18 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     ny_mid = quad[0][1]  # y dei cerchi (tutti ~uguali)
                     # rimuovi TUTTE le travature esistenti nella zona del gruppo
                     # (primarie parziali 2+2 + secondarie stantie di MuseScore)
-                    _lo, _hi = sx1 - 200, sx2 + 200
+                    # FIX (30 Set 2026): il margine X da 200 a 300: la beam
+                    # stale può eccedere il bordo del gruppo di più di 200
+                    # (es. beam doppia x_right 3385.2 vs _hi+200 3377, beam
+                    # 2+2 di 2 gruppi contigui x_left 4310.1 vs _lo-250
+                    # 4310.6) e restava NON rimossa (beams triple/quadruple).
+                    _lo, _hi = sx1 - 300, sx2 + 300
                     _y_lo, _y_hi = ny_mid - 1300, ny_mid + 300
+                    if os.environ.get('MAIDA_DEBUG_FLAT'):
+                        for _bq in _beams_q:
+                            _in = (_bq['x_left'] >= _lo - 200 and _bq['x_right'] <= _hi + 200 and _y_lo <= _bq['y_top'] <= _y_hi)
                     for bi in _beams_q:
-                        if (bi['x_left'] >= _lo - 200 and bi['x_right'] <= _hi + 200
+                        if (bi['x_left'] >= _lo - 300 and bi['x_right'] <= _hi + 300
                                 and _y_lo <= bi['y_top'] <= _y_hi):
                             tok = bi['match'].group(0)
                             if tok in modified:
@@ -11283,7 +11291,6 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         # FIX (30 Set 2026, spessore uniforme): nel ramo else (beam IN
         # _flat_new), le beams GIÀ DRITTE con spessore != _BEAM_TH
         # vengono RIDIMENSIONATE a _BEAM_TH mantenendo il top.
-        if abs(_y2 - _y1) < 1e-6:
             if abs(_y2 - _y1 - _BEAM_TH) > 0.5:
                 return (f'<path class="Beam" fill="#000000" fill-rule="evenodd" '
                         f'd="M{_x1:.2f},{_y1:.2f} L{_x2:.2f},{_y1:.2f} '
@@ -11298,6 +11305,8 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 f'L{_x1:.2f},{_ft:.2f}"')
 
     modified = _flat_beam_pat.sub(_flat_beam_sub, modified)
+    if os.environ.get('MAIDA_DEBUG_FLAT2'):
+            _fdpfl.write(modified)
 
     # 2) RICALCOLO gambi: endpoint = bordo esterno della beam appiattita.
     #    Ricavo le beams appiattite dal SVG aggiornato.
@@ -11307,11 +11316,6 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         _flat_beams_after.append((min(_p[0], _p[2]), _p[1], max(_p[0], _p[2]), max(_p[1::2])))
 
     def _flat_stem_sub(m):
-        import os as _os_dbg7
-        if _os_dbg7.environ.get('MAIDA_DEBUG_FLAT'):
-            _g7 = [float(m.group(i)) for i in (2,3,4,5)]
-            if 3320 < _g7[0] < 3328 and 9000 < max(_g7[1], _g7[3]) < 11500:
-                print(f'  [DBG7] sub match gambo 3324: {_g7}')
         _prefix = m.group(1)
         _x1, _y1, _x2, _y2 = (float(m.group(i)) for i in (2, 3, 4, 5))
         _suffix = m.group(6)
@@ -11409,8 +11413,6 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 _best = _ups[0]
             else:
                 _best = min(_cands, key=lambda c: abs((c[1] + c[3]) / 2 - _smid))
-        if _os_dbg7.environ.get('MAIDA_DEBUG_FLAT') and (abs(_x1 - 2311.62) < 3 or abs(_x1 - 5567.5) < 3):
-            print(f'  [DBGP2] gambo {_x1:.0f}: _st_top={_st_top:.0f} _st_bot={_st_bot:.0f} up={[(round(c[1]), round(c[3])) for c in _up_cands]} down={[(round(c[1]), round(c[3])) for c in _down_cands]} _ext={round(_ext[1]) if _ext else None}')
         # direzione: beam sopra il gambo (bmid < smid) = stems-up
         _bmid = (_best[1] + _best[3]) / 2
         _smid = (_st_top + _st_bot) / 2
@@ -11588,7 +11590,6 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         _beams_fin2.append((min(_p[0], _p[2]), _p[1], max(_p[0], _p[2]), max(_p[1::2])))
 
     def _stem_fin_sub(m):
-        import os as _os_dbg
         _prefix = m.group(1)
         _x1, _y1, _x2, _y2 = (float(m.group(i)) for i in (2, 3, 4, 5))
         _suffix = m.group(6)
@@ -11683,8 +11684,6 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 _best = _ups[0]
             else:
                 _best = min(_cands, key=lambda c: abs((c[1] + c[3]) / 2 - _smid))
-        if _os_dbg.environ.get('MAIDA_DEBUG_FLAT') and (abs(_x1 - 2311.62) < 3 or abs(_x1 - 5567.5) < 3):
-            print(f'  [DBGP7] gambo {_x1:.0f}: _st_top={_st_top:.0f} _st_bot={_st_bot:.0f} up={[(round(c[1]), round(c[3])) for c in _up_cands]} down={[(round(c[1]), round(c[3])) for c in _down_cands]} _ext={round(_ext[1]) if _ext else None}')
         _bmid = (_best[1] + _best[3]) / 2
         if _bmid < _smid:
             # FIX3 (29 Set 2026): il gambo si ferma al bordo INFERIORE
@@ -11716,9 +11715,14 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
     if os.environ.get('MAIDA_DEBUG_FLAT'):
         with open(f'/tmp/dump_beamsfin2_{len(_beams_fin2)}.svg', 'w') as _fd2b:
             _fd2b.write(modified)
+            _fd2c.write(modified)
         print(f'  [DBGDEC] _beams_fin2: {len(_beams_fin2)} beams')
     for _i in range(len(_beams_fin2)):
+        if _i >= len(_beams_fin2):
+            break
         for _j in range(_i + 1, len(_beams_fin2)):
+            if _i >= len(_beams_fin2) or _j >= len(_beams_fin2):
+                break
             if os.environ.get('MAIDA_DEBUG_FLAT') and (abs(_beams_fin2[_i][0] - 2690.27) < 3 or abs(_beams_fin2[_i][0] - 7900.68) < 3):
                 print(f'  [DBGDEC] coppia {_i},{_j}: {_beams_fin2[_i]} vs {_beams_fin2[_j]}')
             _b1, _b2 = _beams_fin2[_i], _beams_fin2[_j]
@@ -11783,6 +11787,27 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     # = la beam con X range più stretto (più interna).
                     _w1 = _b1[2] - _b1[0]
                     _w2 = _b2[2] - _b2[0]
+                    # FIX (30 Set 2026, round 4, beams duplicate): quando la
+                    # beam più STRETTA è TOTAMENTE CONTENUTA nella più larga
+                    # (stesso Y, th uguali), è un FRAMMENTO DUPLICATO della
+                    # stessa beam (MuseScore renderizza la primaria 2+2 come
+                    # 2 path sovrapposti) — NON va spostata (produce beams
+                    # triple), va RIMOSSA.
+                    if _b1_mid == _b2_mid and min(_b1[2], _b2[2]) - max(_b1[0], _b2[0]) >= min(_w1, _w2) - 5:
+                        _dup = _b2 if _w2 < _w1 else _b1
+                        _dup_tok = None
+                        for _m2 in _flat_beam_pat.finditer(modified):
+                            _p2 = _parse_pts(_m2)
+                            if (min(_p2[0], _p2[2]), _p2[1], max(_p2[0], _p2[2])) == (_dup[0], _dup[1], _dup[2]):
+                                _dup_tok = _m2
+                        if _dup_tok is not None and _dup_tok.group(0) in modified:
+                            modified = modified.replace(_dup_tok.group(0), '', 1)
+                            _moved.add((_dup[0], _dup[1], _dup[2], _dup[3]))
+                            _beams_fin2 = []
+                            for _m3 in _flat_beam_pat.finditer(modified):
+                                _p3 = _parse_pts(_m3)
+                                _beams_fin2.append((min(_p3[0], _p3[2]), _p3[1], max(_p3[0], _p3[2]), max(_p3[1::2])))
+                            continue
                     if _b1_mid == _b2_mid:
                         _p_tmp = _b1 if _w1 > _w2 else _b2
                     else:
@@ -11831,8 +11856,6 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 # blocco round 2 (th diff > 10) non copre questi casi.
                 # La selezione prim/sec per attaccatura + il replace.
                 else:
-                    if os.environ.get('MAIDA_DEBUG_FLAT') and abs(_b1[0] - 2631.93) < 3 and 480 < _b1[1] < 600:
-                        print(f'  [DBGR2] coppia p2: b1={_b1}, b2={_b2}, sec={_sec}, d_real={max(_b1[2], _b2[2]) - min(_b1[3], _b2[3]):.1f}')
                     _prim = _b2 if _sec is _b1 else _b1  # il prim = l'altra beam
                     _sec_mid = (_sec[1] + _sec[3]) / 2
                     _prim_mid = (_prim[1] + _prim[3]) / 2
@@ -11846,6 +11869,22 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         # fuse in un blocco unico). Il gap deve essere misurato
                         # dal BOTTOM della secondaria: 50px + 47px di spessore.
                         _new_y = _prim[1] - 50 - 47   # secondaria sopra la primaria
+                    # FIX (30 Set 2026, round 5, beams adiacenti): se la
+                    # posizione _new_y sovrappone una beam ADIACENTE (X
+                    # overlap, stesso sistema), sposto la beam oltre quella
+                    # adiacente (le beams adiacenti della stessa beam
+                    # spezzata NON devono sovrapporsi — beams duplicate).
+                    for _ba in _beams_fin2:
+                        if _ba is _sec or _ba is _prim:
+                            continue
+                        if not (_ba[0] <= _sec[2] and _sec[0] <= _ba[2]):
+                            continue
+                        if abs((_ba[1] + _ba[3]) / 2 - (_sec[1] + _sec[3]) / 2) > 600:
+                            continue
+                        if _sec_mid > _prim_mid and _ba[3] + 15 > _new_y >= _ba[1] - 15:
+                            _new_y = _ba[3] + 50
+                        elif _sec_mid <= _prim_mid and _ba[1] - 15 < _new_y + 47 <= _ba[3] + 15:
+                            _new_y = _ba[1] - 50 - 47
                     _key = (_sec[0], _sec[1], _sec[2], _sec[3])
                     _tok = None
                     for _m2 in _flat_beam_pat.finditer(modified):
@@ -11859,7 +11898,10 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                                 f'L{_key[2]:.2f},{_new_y + 47:.2f} L{_key[0]:.2f},{_new_y + 47:.2f} '
                                 f'L{_key[0]:.2f},{_new_y:.2f}"')
                         if _old in modified:
+                            _n_before = modified.count(_old)
                             modified = modified.replace(_old, _new, 1)
+                            _moved.add(_key)
+                            _moved.add((_key[0], _new_y, _key[2], _new_y + 47))
                             # FIX (30 Set 2026, lock): registro SIA la
                             # chiave PRE che POST: le iterazioni successive
                             # vedono il d post-replace e il lock deve
@@ -11871,13 +11913,19 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                             _p3 = _parse_pts(_m3)
                             _beams_fin2.append((min(_p3[0], _p3[2]), _p3[1], max(_p3[0], _p3[2]), max(_p3[1::2])))
 
+    if os.environ.get('MAIDA_DEBUG_FLAT2'):
+            _fdpl.write(modified)
     # FIX (30 Set 2026, loop decollide): il 7b ripete FINCHÉ esistono
     # coppie sovrapposte/toccanti (max 5 iterazioni). Il lock _moved
     # evita oscillazioni (una beam spostata non viene rimossa).
     for _round_n in range(5):
+        if os.environ.get('MAIDA_DEBUG_FLAT2'):
+                _fdrl.write(modified)
         _bad_pair = None
         for _i in range(len(_beams_fin2)):
             for _j in range(_i + 1, len(_beams_fin2)):
+                if _i >= len(_beams_fin2) or _j >= len(_beams_fin2):
+                    break
                 _b1, _b2 = _beams_fin2[_i], _beams_fin2[_j]
                 if not (_b1[0] <= _b2[2] and _b2[0] <= _b1[2]):
                     continue
@@ -11977,6 +12025,8 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         modified = _bar_pat_fin2.sub(_barline_fin_sub, modified)
 
     _stem_pat_fin2 = re.compile(r'(<polyline class="Stem"[^>]*points=")([\d.\-]+),([\d.\-]+) ([\d.\-]+),([\d.\-]+)"([^>]*>)')
+    if os.environ.get('MAIDA_DEBUG_FLAT2'):
+            _fdpf.write(modified)
     modified = _stem_pat_fin2.sub(_stem_fin_sub, modified)
     if os.environ.get('MAIDA_DUMP7'):
         import itertools as _it7
