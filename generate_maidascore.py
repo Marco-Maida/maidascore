@@ -11269,8 +11269,27 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         _p = _parse_pts(m)
         _x1, _y1, _x2, _y2 = _p[0], _p[1], _p[2], _p[3]
         _key = (_x1, _y1, _x2, _y2)
-        if _key not in _flat_new or abs(_y2 - _y1) < 1e-6:
-            return m.group(0)   # già dritta o ignota
+        # FIX (30 Set 2026, spessore uniforme): le beams GIÀ DRITTE con
+        # spessore != _BEAM_TH (th 49 residuo del flatten, th 30.6/31
+        # delle secondarie di MuseScore) vengono RIDIMENSIONATE a
+        # _BEAM_TH mantenendo il bordo superiore.
+        if _key not in _flat_new:
+            if abs(_y2 - _y1) < 1e-6 and abs(_y2 - _y1 - _BEAM_TH) > 0.5:
+                return (f'<path class="Beam" fill="#000000" fill-rule="evenodd" '
+                        f'd="M{_x1:.2f},{_y1:.2f} L{_x2:.2f},{_y1:.2f} '
+                        f'L{_x2:.2f},{_y1 + _BEAM_TH:.2f} L{_x1:.2f},{_y1 + _BEAM_TH:.2f} '
+                        f'L{_x1:.2f},{_y1:.2f}"')
+            return m.group(0)   # ignota
+        # FIX (30 Set 2026, spessore uniforme): nel ramo else (beam IN
+        # _flat_new), le beams GIÀ DRITTE con spessore != _BEAM_TH
+        # vengono RIDIMENSIONATE a _BEAM_TH mantenendo il top.
+        if abs(_y2 - _y1) < 1e-6:
+            if abs(_y2 - _y1 - _BEAM_TH) > 0.5:
+                return (f'<path class="Beam" fill="#000000" fill-rule="evenodd" '
+                        f'd="M{_x1:.2f},{_y1:.2f} L{_x2:.2f},{_y1:.2f} '
+                        f'L{_x2:.2f},{_y1 + _BEAM_TH:.2f} L{_x1:.2f},{_y1 + _BEAM_TH:.2f} '
+                        f'L{_x1:.2f},{_y1:.2f}"')
+            return m.group(0)   # già dritta e th corretto
         _ft = _flat_new[_key]
         # nuovo quadrilatero: bordo sup orizzontale a _ft, offset _BEAM_TH
         return (f'<path class="Beam" fill="#000000" fill-rule="evenodd" '
@@ -11692,6 +11711,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
     #     un gap >= 50px (le linee si distinguono). La secondaria viene
     #     riposizionata rispettando la direzione (si allontana dalle note).
     _changed_beams = {}
+    _moved = set()
     _decollide_done = False
     if os.environ.get('MAIDA_DEBUG_FLAT'):
         with open(f'/tmp/dump_beamsfin2_{len(_beams_fin2)}.svg', 'w') as _fd2b:
@@ -11720,7 +11740,12 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             # FIX (30 Set 2026, round 3): il criterio < 50 non triggerava
             # le coppie beam croma (th 31) con gap reale 56 (gap visivo
             # 8px): le beams restavano con la croma SOTTO. Usare < 60.
-            if -200 < _d_real < 60:
+            # FIX (30 Set 2026, lock loop): le beam GIÀ SPOSTATE in una
+            # iterazione precedente NON vengono mosse di nuovo (il loop
+            # oscillante rimetteva la beam spostata, annullando il fix).
+            _k1 = (_b1[0], _b1[1], _b1[2], _b1[3])
+            _k2 = (_b2[0], _b2[1], _b2[2], _b2[3])
+            if -200 < _d_real < 60 and _k1 not in _moved and _k2 not in _moved:
                 # sovrapposte o troppo vicine: la beam più lontana dalle
                 # note (determinata dai gambi del gruppo) va spostata.
                 _grp_stems = [(float(_sm.group(1)), min(float(_sm.group(2)), float(_sm.group(4))), max(float(_sm.group(2)), float(_sm.group(4))))
@@ -11777,7 +11802,10 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     _thick, _thin = (_b1, _b2) if _th1 > _th2 else (_b2, _b1)
                     if _thin[1] > _thick[1]:
                         # la sottile sta sotto la spessa: spostarla SOPRA
-                        _new_y = _thick[1] - (_thin[3] - _thin[1]) - 5
+                        # FIX (30 Set 2026, gap 15): il gap 5px era
+                        # troppo piccolo (beams quasi toccanti, Marco).
+                        # Il gap deve essere 15px (visibile e uniforme).
+                        _new_y = _thick[1] - (_thin[3] - _thin[1]) - 15
                         _key = (_thin[0], _thin[1], _thin[2], _thin[3])
                         _tok = None
                         for _m2 in _flat_beam_pat.finditer(modified):
@@ -11803,6 +11831,8 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 # blocco round 2 (th diff > 10) non copre questi casi.
                 # La selezione prim/sec per attaccatura + il replace.
                 else:
+                    if os.environ.get('MAIDA_DEBUG_FLAT') and abs(_b1[0] - 2631.93) < 3 and 480 < _b1[1] < 600:
+                        print(f'  [DBGR2] coppia p2: b1={_b1}, b2={_b2}, sec={_sec}, d_real={max(_b1[2], _b2[2]) - min(_b1[3], _b2[3]):.1f}')
                     _prim = _b2 if _sec is _b1 else _b1  # il prim = l'altra beam
                     _sec_mid = (_sec[1] + _sec[3]) / 2
                     _prim_mid = (_prim[1] + _prim[3]) / 2
@@ -11830,10 +11860,85 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                                 f'L{_key[0]:.2f},{_new_y:.2f}"')
                         if _old in modified:
                             modified = modified.replace(_old, _new, 1)
+                            # FIX (30 Set 2026, lock): registro SIA la
+                            # chiave PRE che POST: le iterazioni successive
+                            # vedono il d post-replace e il lock deve
+                            # matchare quello.
+                            _moved.add(_key)
+                            _moved.add((_key[0], _new_y, _key[2], _new_y + 47))
                         _beams_fin2 = []
                         for _m3 in _flat_beam_pat.finditer(modified):
                             _p3 = _parse_pts(_m3)
                             _beams_fin2.append((min(_p3[0], _p3[2]), _p3[1], max(_p3[0], _p3[2]), max(_p3[1::2])))
+
+    # FIX (30 Set 2026, loop decollide): il 7b ripete FINCHÉ esistono
+    # coppie sovrapposte/toccanti (max 5 iterazioni). Il lock _moved
+    # evita oscillazioni (una beam spostata non viene rimossa).
+    for _round_n in range(5):
+        _bad_pair = None
+        for _i in range(len(_beams_fin2)):
+            for _j in range(_i + 1, len(_beams_fin2)):
+                _b1, _b2 = _beams_fin2[_i], _beams_fin2[_j]
+                if not (_b1[0] <= _b2[2] and _b2[0] <= _b1[2]):
+                    continue
+                if abs((_b1[1] + _b1[3]) / 2 - (_b2[1] + _b2[3]) / 2) > 600:
+                    continue
+                _d_real = max(_b1[1], _b2[1]) - min(_b1[3], _b2[3])
+                if _d_real >= 15 or _d_real < -200:
+                    continue
+                _bad_pair = (_i, _j)
+                break
+            if _bad_pair:
+                break
+        if not _bad_pair:
+            break
+        # riapplica il flusso 7b: rieseguo la selezione prim/sec e replace
+        # sull'intero blocco ricominciando (le _moved bloccano le beam
+        # già spostate; la coppia rimasta triggera il replace dell'altra)
+        _i, _j = _bad_pair
+        _b1, _b2 = _beams_fin2[_i], _beams_fin2[_j]
+        _grp_stems = [(float(_sm.group(1)), min(float(_sm.group(2)), float(_sm.group(4))), max(float(_sm.group(2)), float(_sm.group(4))))
+                      for _sm in re.finditer(r'<polyline class="Stem"[^>]*points="([\d.\-]+),([\d.\-]+) ([\d.\-]+),([\d.\-]+)"', modified)
+                      if _b1[0] - 30 <= float(_sm.group(1)) <= _b1[2] + 30]
+        if not _grp_stems:
+            break
+        _s_mid = sum((s[1] + s[2]) / 2 for s in _grp_stems) / len(_grp_stems)
+        _b1_mid = (_b1[1] + _b1[3]) / 2
+        _b2_mid = (_b2[1] + _b2[3]) / 2
+        _w1 = _b1[2] - _b1[0]
+        _w2 = _b2[2] - _b2[0]
+        if _b1_mid == _b2_mid:
+            _p_tmp = _b1 if _w1 > _w2 else _b2
+        else:
+            _p_tmp = _b1 if abs(_b1_mid - _s_mid) < abs(_b2_mid - _s_mid) else _b2
+        _sec_l = _b2 if _p_tmp is _b1 else _b1
+        _sec_mid = (_sec_l[1] + _sec_l[3]) / 2
+        _prim_mid = (_p_tmp[1] + _p_tmp[3]) / 2
+        if _sec_mid > _prim_mid:
+            _new_y = _p_tmp[3] + 50
+        else:
+            _new_y = _p_tmp[1] - 50 - 47
+        _key = (_sec_l[0], _sec_l[1], _sec_l[2], _sec_l[3])
+        _tok = None
+        for _m2 in _flat_beam_pat.finditer(modified):
+            _p2 = _parse_pts(_m2)
+            if (min(_p2[0], _p2[2]), _p2[1], max(_p2[0], _p2[2])) == (_key[0], _key[1], _key[2]):
+                _tok = _m2
+        if _tok is not None and _tok.group(0) in modified:
+            _old = _tok.group(0)
+            _new = (f'<path class="Beam" fill="#000000" fill-rule="evenodd" '
+                    f'd="M{_key[0]:.2f},{_new_y:.2f} L{_key[2]:.2f},{_new_y:.2f} '
+                    f'L{_key[2]:.2f},{_new_y + 47:.2f} L{_key[0]:.2f},{_new_y + 47:.2f} '
+                    f'L{_key[0]:.2f},{_new_y:.2f}"')
+            modified = modified.replace(_old, _new, 1)
+            _moved.add(_key)
+            _moved.add((_key[0], _new_y, _key[2], _new_y + 47))
+            _beams_fin2 = []
+            for _m3 in _flat_beam_pat.finditer(modified):
+                _p3 = _parse_pts(_m3)
+                _beams_fin2.append((min(_p3[0], _p3[2]), _p3[1], max(_p3[0], _p3[2]), max(_p3[1::2])))
+        else:
+            break
 
     # 7c) FIX barline stretched (rhythm mode): una barline molto più alta
     #     delle micro-celle del proprio sistema (residuo y-stretch) viene
