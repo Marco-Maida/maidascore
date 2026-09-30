@@ -12009,7 +12009,12 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         # tocca il bottom della prim, gap 0), NON separata
                         # (gap 50px = volante). Gap 50px solo per le coppie
                         # STESSO spessore (semicrome impilate).
-                        _new_y = _prim[3]   # sec attaccata al bottom della prim
+                        # FIX (30 Set 2026, direttiva Marco): le due linee
+                        # della travatura NON devono essere attaccate (gap
+                        # 0 = blocco unico indistinguibile): gap visibile
+                        # 15px tra la beam della croma e la beam delle
+                        # semicrome (gap 5px era troppo piccolo, round 0ce97f1).
+                        _new_y = _prim[3] + 15
                     else:
                         # FIX (30 Set 2026): _new_y = _prim[1] - 50 metteva il
                         # top della secondaria 50px sopra il top della primaria,
@@ -12029,7 +12034,9 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         # = 5378+47 = 5425 = top della prim = attaccata).
                         # _new_y = prim[3] - th_sec metteva la sec
                         # SOVRAPPALLA prim (stessa Y = blocco fuso).
-                        _new_y = _prim[1] - (_sec[3] - _sec[1])   # sec attaccata sopra il top della prim
+                        # FIX (30 Set 2026, direttiva Marco): gap visibile
+                        # 15px (il bottom della sec = top della prim - 15).
+                        _new_y = _prim[1] - (_sec[3] - _sec[1]) - 15
                     # FIX (30 Set 2026, round 5, beams adiacenti): se la
                     # posizione _new_y sovrappone una beam ADIACENTE (X
                     # overlap, stesso sistema), sposto la beam oltre quella
@@ -12171,7 +12178,9 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             _sec2 = _b1 if _prim2 is _b2 else _b2
             _sec_mid = (_sec2[1] + _sec2[3]) / 2
             _prim_mid = (_prim2[1] + _prim2[3]) / 2
-            _new_y = _prim2[3] if rhythm_mode else _prim2[1] - (_sec2[3] - _sec2[1])
+            # FIX (30 Set 2026, direttiva Marco): gap visibile 15px tra
+            # le due linee della travatura (gap 0 = blocco unico).
+            _new_y = (_prim2[3] + 15) if rhythm_mode else _prim2[1] - (_sec2[3] - _sec2[1]) - 15
             _sec_l = _sec2
             _p_tmp = _prim2
         elif _sec_mid > _prim_mid:
