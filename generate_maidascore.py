@@ -7563,14 +7563,15 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
     # y_stretch_systems scala le Y di ~3x → il spessore beam originale (~47px)
     # diventa 140-280px. Riduci al spessore naturale (47px) mantenendo la
     # posizione centrale della beam. Solo per beam ingrossate (>70px).
+    # Reduce beam thickness after y_stretch. def _beam_re fuori
+    # dal guard: il Pass 6 clip lo usa anche in rhythm mode.
+    _beam_re = re.compile(
+            r'<path class="Beam"[^>]*d="M([\d.\-]+),([\d.\-]+) L([\d.\-]+),([\d.\-]+) L([\d.\-]+),([\d.\-]+) L([\d.\-]+),([\d.\-]+)[^"]*"\s*/>'
+    )
     if not rhythm_mode:
         # Reduce beam thickness AND secondary beam gap after y_stretch.
         # y_stretch_systems scales Y ~3x → beam thickness ~47→140px (fixed to 47),
         # AND secondary beam gap ~47→163px (fix: reposition secondary close to primary).
-        # Step 1: collect all beams, fix thickness.
-        _beam_re = re.compile(
-            r'<path class="Beam"[^>]*d="M([\d.\-]+),([\d.\-]+) L([\d.\-]+),([\d.\-]+) L([\d.\-]+),([\d.\-]+) L([\d.\-]+),([\d.\-]+)[^"]*"\s*/>'
-        )
         beam_infos = []  # (match_obj, x_left, x_right, y_top, y_bot, thickness)
         for m in _beam_re.finditer(modified):
             vals = [float(m.group(i+1)) for i in range(8)]
@@ -8295,58 +8296,79 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 modified = modified.replace('</svg>', new_sec + '\n</svg>')
             print(f"  [Step1] Created {len(_new_secondary_beams)} secondary beams for dotted-eighth+16th")
         
-        # Shorten stems that extend beyond their beam.
-        # After y_stretch, some stems are longer than the beam position,
-        # causing them to poke out past the beam. Clip stem endpoints to
-        # the nearest beam edge.
-        # Re-parse beams from the modified SVG (positions may have changed).
-        _final_beams = []
-        for m in _beam_re.finditer(modified):
-            vals = [float(m.group(i+1)) for i in range(8)]
-            y_top = min(vals[1], vals[3])
-            y_bot = max(vals[5], vals[7])
-            x_left = min(vals[0], vals[6])
-            x_right = max(vals[2], vals[4])
-            _final_beams.append((x_left, y_top, x_right, y_bot))
-        
-        def _clip_stem(m):
-            prefix = m.group(1)
-            x1, y1, x2, y2 = (float(m.group(2)), float(m.group(3)),
-                              float(m.group(4)), float(m.group(5)))
-            suffix = m.group(6)
-            stem_x = x1  # stems are vertical, x1 == x2
-            stem_top = min(y1, y2)
-            stem_bot = max(y1, y2)
-            # FIX (30 Set 2026): raccogli TUTTE le candidate nel range X
-            # (stesso sistema Y) e scegli quella con il bordo più vicino
-            # all'endpoint del gambo: per stems-up (gambo in su) = la beam
-            # con y_top più PICCOLO (topmost); per stems-down = la beam
-            # con y_bot più GRANDE (bottommost). Il break dopo il primo
-            # match attaccava il gambo alla PRIMA beam nel range X (la
-            # beam croma lunga) invece della beam delle semicrome.
-            _cands = [(bx1, by_top, bx2, by_bot) for (bx1, by_top, bx2, by_bot) in _final_beams
-                      if bx1 - 30 <= stem_x <= bx2 + 30 and abs(by_top - stem_top) <= 1000]
-            if not _cands:
-                return f'{prefix}{x1:.2f},{y1:.2f} {x2:.2f},{y2:.2f}"{suffix}'
-            up_stem = y1 > y2
-            if up_stem:
-                bx1, by_top, bx2, by_bot = min(_cands, key=lambda c: c[1])
-                if stem_top < by_top - 5:
-                    clip_y = by_top + 10
-                    y2 = clip_y  # y2 is top per stems-up: il clip accorcia il TOP del gambo alla beam, il bottom (y1) resta alla testa
-            else:
-                bx1, by_top, bx2, by_bot = max(_cands, key=lambda c: c[3])
-                if stem_bot > by_bot + 5:
-                    clip_y = by_bot - 10
-                    y2 = clip_y  # y2 is bottom per stems-down
 
+
+
+    # Shorten stems that extend beyond their beam.
+    # After y_stretch, some stems are longer than the beam position,
+    # causing them to poke out past the beam. Clip stem endpoints to
+    # the nearest beam edge.
+    # Re-parse beams from the modified SVG (positions may have changed).
+    if os.environ.get('MAIDA_DBG_P9'):
+        print(f'[DBG_P9] pass6 start: _beam_re={_beam_re is not None}')
+    _final_beams = []
+    for m in _beam_re.finditer(modified):
+        vals = [float(m.group(i+1)) for i in range(8)]
+        y_top = min(vals[1], vals[3])
+        y_bot = max(vals[5], vals[7])
+        x_left = min(vals[0], vals[6])
+        x_right = max(vals[2], vals[4])
+        _final_beams.append((x_left, y_top, x_right, y_bot))
+    
+    def _clip_stem(m):
+        prefix = m.group(1)
+        x1, y1, x2, y2 = (float(m.group(2)), float(m.group(3)),
+                          float(m.group(4)), float(m.group(5)))
+        suffix = m.group(6)
+        stem_x = x1  # stems are vertical, x1 == x2
+        stem_top = min(y1, y2)
+        stem_bot = max(y1, y2)
+        # FIX (30 Set 2026): raccogli TUTTE le candidate nel range X
+        # (stesso sistema Y) e scegli quella con il bordo più vicino
+        # all'endpoint del gambo: per stems-up (gambo in su) = la beam
+        # con y_top più PICCOLO (topmost); per stems-down = la beam
+        # con y_bot più GRANDE (bottommost). Il break dopo il primo
+        # match attaccava il gambo alla PRIMA beam nel range X (la
+        # beam croma lunga) invece della beam delle semicrome.
+        _cands = [(bx1, by_top, bx2, by_bot) for (bx1, by_top, bx2, by_bot) in _final_beams
+                  if bx1 - 30 <= stem_x <= bx2 + 30 and abs(by_top - stem_top) <= 1000]
+        if not _cands:
             return f'{prefix}{x1:.2f},{y1:.2f} {x2:.2f},{y2:.2f}"{suffix}'
-        
-        modified = re.sub(
-            r'(<polyline[^>]*points=")([\d.\-]+),([\d.\-]+) ([\d.\-]+),([\d.\-]+)"([^>]*>)',
-            _clip_stem, modified)
+        up_stem = y1 > y2
+        if up_stem:
+            bx1, by_top, bx2, by_bot = min(_cands, key=lambda c: c[1])
+            # FIX (30 Set 2026, round 12quinto-sei): il gambo UP che
+            # si ferma PRIMA della beam (stem_top > by_top + 30) deve
+            # essere ESTESO al bordo della beam — il gambo
+            # dell'accordo (testa esterna più bassa) che non
+            # raggiungeva la beam comune restava staccato (gap 320px
+            # nell'accordo verticale Do+Re). Le note SENZA beam
+            # (gambo standard) restano intatte.
+            if stem_top > by_top + 5:
+                y2 = by_top + 10  # y2 is top per stems-up: estendi il TOP fino alla beam
+            elif stem_top < by_top - 5:
+                clip_y = by_top + 10
+                y2 = clip_y  # y2 is top per stems-up: il clip accorcia il TOP del gambo alla beam, il bottom (y1) resta alla testa
+        else:
+            bx1, by_top, bx2, by_bot = max(_cands, key=lambda c: c[3])
+            # FIX (30 Set 2026, round 12quinto-sette): il gambo
+            # stems-down che si ferma PRIMA della beam (stem_bot <
+            # by_top) deve essere ESTESO al bordo superiore della
+            # beam — il gambo non raggiungeva la beam del gruppo
+            # (gap 141px). Il clip oltrepassato resta invariato.
+            if stem_bot > by_bot + 5:
+                clip_y = by_bot - 10
+                y2 = clip_y  # y2 is bottom per stems-down
+            elif stem_bot < by_top - 5:
+                y2 = by_top - 10  # estendi il bottom fino al bordo della beam
 
-
+        return f'{prefix}{x1:.2f},{y1:.2f} {x2:.2f},{y2:.2f}"{suffix}'
+    
+    if os.environ.get('MAIDA_DBG_P9'):
+        print(f'[DBG_P9] clip pass6: beams={len(_final_beams)}')
+    modified = re.sub(
+        r'(<polyline[^>]*points=")([\d.\-]+),([\d.\-]+) ([\d.\-]+),([\d.\-]+)"([^>]*>)',
+        _clip_stem, modified)
 
     # merge broken secondary beams in rhythm mode too.
     # In rhythm mode, beams are repositioned by the rhythm code above, but
@@ -12273,6 +12295,329 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
 
 
 
+    # Pass 9 (30 Set 2026, round 12): le coppie di beams NON devono
+    # MAI coprire le stafflines del pentagramma (la beam sec y 1228-
+    # 1275 copriva la staffline y 1260 = le linee del rigo attraversate
+    # dalle travature, segnalato da Marco sui gruppi b1 e b31-35).
+    # Se una beam copre una staffline, sposto ENTRAMBE le beams della
+    # coppia dello STESSO offset (il gap interno resta), nel CENTRO
+    # dello spazio tra le 2 stafflines circostanti.
+    _staff_ys_all = []
+    for _m9 in re.finditer(r'<polyline[^>]*class="StaffLines"[^>]*points="([\d.\-]+),([\d.\-]+) ([\d.\-]+),([\d.\-]+)"', modified):
+        _sy9 = float(_m9.group(2))
+        # FIX (30 Set 2026, round 12ter): il raggruppamento per RIGO —
+        # le 5 stafflines dello stesso rigo distano 280px (raggio
+        # 200-400): il vecchio raggruppamento (>100px) metteva OGNI
+        # staffline in un gruppo separato e _g9[si-1]/_g9[si+1] NON
+        # esistevano (up/down = sl±300 = il centro sbagliato).
+        _joined = False
+        for _g9s in _staff_ys_all:
+            if 100 < abs(_sy9 - _g9s[-1]) < 400:
+                _g9s.append(_sy9)
+                _joined = True
+                break
+        if not _joined:
+            _staff_ys_all.append([_sy9])
+    def _beam_staff_sub(m):
+        _d = m.group(0)
+        _p9 = [float(x) for x in re.findall(r'-?\d+\.?\d*', m.group(1))]
+        _x1, _x2 = min(_p9[0], _p9[2]), max(_p9[0], _p9[2])
+        _b_top, _b_bot = min(_p9[1::2]), max(_p9[1::2])
+        _th = _b_bot - _b_top
+        for _g9 in _staff_ys_all:
+            for _si, _sl in enumerate(_g9):
+                if _b_top < _sl - 9 and _b_bot > _sl + 9:
+                    # la beam copre la staffline: sposto ENTRAMBE le
+                    # beams della coppia nel CENTRO dello spazio tra
+                    # le 2 stafflines circostanti
+                    _up = _g9[_si - 1] + 9 if _si > 0 else _sl - 9 - 300
+                    _down = _g9[_si + 1] - 9 if _si < len(_g9) - 1 else _sl + 9 + 300
+                    _space_mid = (_up + _down) / 2
+                    # la coppia (prim + sec = th + gap 15 + th = ~109px)
+                    # deve stare interamente nello spazio [_up, _down]
+                    _pair_h = 109
+                    if _space_mid - _pair_h / 2 < _up:
+                        _new_top = _up + 10
+                    elif _space_mid + _pair_h / 2 > _down:
+                        _new_top = _down - 10 - _pair_h
+                    else:
+                        _new_top = _space_mid - _pair_h / 2
+                    _shift = _new_top - _b_top
+                    # calcolo il partner (sec): la beam impilata più
+                    # vicina nello stesso X range
+                    _partner = None
+                    for _m2b in re.finditer(r'<path[^>]*class="Beam"[^>]*d="([^"]+)"', modified):
+                        if _m2b.group(0) == _d:
+                            continue
+                        _p2b = [float(x) for x in re.findall(r'-?\d+\.?\d*', _m2b.group(1))]
+                        _xl2, _xr2 = min(_p2b[0::2]), max(_p2b[0::2])
+                        if min(_x1, _xr2) - max(_x1, _xl2) <= 5:
+                            continue
+                        _bt2, _bb2 = min(_p2b[1::2]), max(_p2b[1::2])
+                        if abs((_bt2 + _bb2) / 2 - (_b_top + _b_bot) / 2) > 120:
+                            continue
+                        if _partner is None or abs(_bt2 - _b_top) < abs((_partner[0] - _b_top)):
+                            _partner = (_bt2, _bb2, _m2b.group(0))
+                    _new_d = _d.replace(
+                        f'M{_p9[0]:.2f},{_b_top:.2f}', f'M{_p9[0]:.2f},{_b_top + _shift:.2f}'
+                    ).replace(
+                        f'L{_p9[2]:.2f},{_b_top:.2f}', f'L{_p9[2]:.2f},{_b_top + _shift:.2f}'
+                    ).replace(
+                        f'L{_p9[2]:.2f},{_b_bot:.2f}', f'L{_p9[2]:.2f},{_b_bot + _shift:.2f}'
+                    ).replace(
+                        f'L{_p9[0]:.2f},{_b_bot:.2f}', f'L{_p9[0]:.2f},{_b_bot + _shift:.2f}'
+                    )
+                    _out = _d.replace(f'M{_p9[0]:.2f},{_b_top:.2f}', f'M{_p9[0]:.2f},{_b_top + _shift:.2f}')
+                    return None  # placeholder
+        return m.group(0)
+    # Il Pass 9 gira come sostituzione diretta sulle beams che coprono
+    # le stafflines: sposta ENTRAMBE le beams della coppia (prim e sec)
+    # dello stesso offset, calcolato sulla coppia completa.
+    for _g9 in _staff_ys_all:
+        pass
+    if os.environ.get('MAIDA_DBG_P9'):
+        print(f'[DBG_P9] staff_ys_all: {_staff_ys_all[:3]}')
+    _beams_p9 = []
+    for _m9 in re.finditer(r'<path[^>]*class="Beam"[^>]*d="([^"]+)"', modified):
+        _p9 = [float(x) for x in re.findall(r'-?\d+\.?\d*', _m9.group(1))]
+        _beams_p9.append((min(_p9[0], _p9[2]), max(_p9[0], _p9[2]), min(_p9[1::2]), max(_p9[1::2]), _m9.group(0)))
+    _moved_p9 = set()
+    # FIX (30 Set 2026, round 12bis): il Pass 9 processa ANCHE le
+    # beams SINGOLE (gruppi di 1 beam, senza partner impilato) che
+    # coprono una staffline — le crome semplici coprivano la staffline
+    # e il Pass 9 (solo coppie) non le processava.
+    for _b9s in _beams_p9:
+        _b1 = _b9s
+        if _b1[4] in _moved_p9:
+            continue
+        _has_partner = False
+        for _b2c in _beams_p9:
+            if _b2c[4] is _b1[4] or _b2c[4] == _b1[4]:
+                continue
+            if min(_b1[1], _b2c[1]) - max(_b1[0], _b2c[0]) > 5 and abs((_b1[2] + _b1[3]) / 2 - (_b2c[2] + _b2c[3]) / 2) < 120:
+                _has_partner = True
+                break
+        if _has_partner:
+            continue
+        _pair_top, _pair_bot = _b1[2], _b1[3]
+        _covered = None
+        for _g9 in _staff_ys_all:
+            for _si, _sl in enumerate(_g9):
+                if _pair_top < _sl - 9 and _pair_bot > _sl + 9:
+                    _covered = (_g9, _si, _sl)
+                    break
+            if _covered:
+                break
+        if not _covered:
+            continue
+        _g9, _si, _sl = _covered
+        _up = _g9[_si - 1] + 9 if _si > 0 else _sl - 9 - 300
+        _down = _g9[_si + 1] - 9 if _si < len(_g9) - 1 else _sl + 9 + 300
+        _pair_h = _pair_bot - _pair_top
+        # FIX (30 Set 2026, round 12quater): lo spazio deve ESCLUDERE
+        # la staffline coperta — la coppia va nel lato (sopra o sotto
+        # la staffline) con lo spazio più vicino alla posizione attuale.
+        _space_up = (_up, _sl - 9)
+        _space_down = (_sl + 9, _down)
+        _h_up = _space_up[1] - _space_up[0]
+        _h_down = _space_down[1] - _space_down[0]
+        if _pair_h > _h_up - 20 and _pair_h > _h_down - 20:
+            continue
+        if _pair_h <= _h_up - 20 and (_pair_h > _h_down - 20 or abs(_space_up[0] - _pair_top) < abs(_space_down[0] - _pair_top)):
+            _side_top, _side_bot = _space_up
+        else:
+            _side_top, _side_bot = _space_down
+        _new_top = (_side_top + _side_bot) / 2 - _pair_h / 2
+        if _pair_top < _up:
+            _new_top = _up + 10
+        elif _pair_bot > _down:
+            _new_top = _down - 10 - _pair_h
+        _shift = _new_top - _pair_top
+        if abs(_shift) < 5:
+            continue
+        _tok = _b1[4]
+        _new_d = (_tok
+            .replace(f'M{_b1[0]:.2f},{_b1[2]:.2f}', f'M{_b1[0]:.2f},{_b1[2] + _shift:.2f}')
+            .replace(f'L{_b1[1]:.2f},{_b1[2]:.2f}', f'L{_b1[1]:.2f},{_b1[2] + _shift:.2f}')
+            .replace(f'L{_b1[1]:.2f},{_b1[3]:.2f}', f'L{_b1[1]:.2f},{_b1[3] + _shift:.2f}')
+            .replace(f'L{_b1[0]:.2f},{_b1[3]:.2f}', f'L{_b1[0]:.2f},{_b1[3] + _shift:.2f}'))
+        _new_d = _new_d.replace(f'L{_b1[0]:.2f},{_b1[2]:.2f}', f'L{_b1[0]:.2f},{_b1[2] + _shift:.2f}')
+        if _tok in modified:
+            modified = modified.replace(_tok, _new_d, 1)
+            _moved_p9.add(_tok)
+            # FIX (30 Set 2026, round 12quinto-otto): il ramo beam
+            # singole estende ANCHE i gambi staccati — come il ramo
+            # coppie (round 12quinto-quater): il gambo che viene da
+            # SOPRA la beam estende il BOTTOM al bordo inferiore della
+            # beam spostata; quello da SOTTO estende il TOP.
+            for _sm9 in re.finditer(r'<polyline[^>]*class="Stem"[^>]*points="([\d.\-]+),([\d.\-]+) ([\d.\-]+),([\d.\-]+)"[^>]*/>', modified):
+                _sx9 = float(_sm9.group(1))
+                if not (_b1[0] - 30 <= _sx9 <= _b1[1] + 30):
+                    continue
+                _sy1, _sy2 = float(_sm9.group(2)), float(_sm9.group(4))
+                _st_top, _st_bot = min(_sy1, _sy2), max(_sy1, _sy2)
+                _legata = abs(_st_bot - _b1[2]) < 15 or abs(_st_top - _b1[3]) < 15 or (_st_top < _b1[3] and _st_bot > _b1[2])
+                if not _legata:
+                    continue
+                _old_pts = _sm9.group(0)
+                if _st_top < (_b1[2] + _b1[3]) / 2:
+                    _y1s, _y2s = _sy1, _sy2
+                    _y_tgt = _b1[3] + _shift
+                    if _sy2 == _st_bot:
+                        _y2s = _y_tgt
+                    else:
+                        _y1s = _y_tgt
+                else:
+                    _y1s, _y2s = _sy1, _sy2
+                    _y_tgt = _b1[2] + _shift
+                    if _sy1 == _st_top:
+                        _y1s = _y_tgt
+                    else:
+                        _y2s = _y_tgt
+                _pts_attr = _sm9.group(0)[_sm9.group(0).find('points='):]
+                _new_pts_attr = _pts_attr.replace(f',{_sy1:.2f}', f',{_y1s:.2f}', 1).replace(f',{_sy2:.2f}', f',{_y2s:.2f}', 1)
+                if _old_pts in modified:
+                    modified = modified.replace(_old_pts, _old_pts.replace(_pts_attr, _new_pts_attr), 1)
+
+    for _i9 in range(len(_beams_p9)):
+        for _j9 in range(_i9 + 1, len(_beams_p9)):
+            _b1, _b2 = _beams_p9[_i9], _beams_p9[_j9]
+            if min(_b1[1], _b2[1]) - max(_b1[0], _b2[0]) <= 5:
+                continue
+            if abs((_b1[2] + _b1[3]) / 2 - (_b2[2] + _b2[3]) / 2) > 120:
+                continue
+            if _b1[4] in _moved_p9 or _b2[4] in _moved_p9:
+                continue
+            # la coppia impilata: copre una staffline?
+            _pair_top = min(_b1[2], _b2[2])
+            _pair_bot = max(_b1[3], _b2[3])
+            _covered = None
+            for _g9 in _staff_ys_all:
+                for _si, _sl in enumerate(_g9):
+                    if _pair_top < _sl - 9 and _pair_bot > _sl + 9:
+                        _covered = (_g9, _si, _sl)
+                        break
+                if _covered:
+                    break
+            if not _covered:
+                continue
+            _g9, _si, _sl = _covered
+            _up = _g9[_si - 1] + 9 if _si > 0 else _sl - 9 - 300
+            _down = _g9[_si + 1] - 9 if _si < len(_g9) - 1 else _sl + 9 + 300
+            _pair_h = _pair_bot - _pair_top
+            # FIX (30 Set 2026, round 12quater): lo spazio deve
+            # ESCLUDERE la staffline coperta — la coppia va nel lato
+            # (sopra o sotto la staffline) con lo spazio più vicino.
+            _space_up = (_up, _sl - 9)
+            _space_down = (_sl + 9, _down)
+            _h_up = _space_up[1] - _space_up[0]
+            _h_down = _space_down[1] - _space_down[0]
+            if _pair_h > _h_up - 20 and _pair_h > _h_down - 20:
+                # la coppia non ci sta in nessun lato: salto (non posso
+                # risolvere senza rompere il gap)
+                continue
+            if _pair_h <= _h_up - 20 and (_pair_h > _h_down - 20 or abs(_space_up[0] - _pair_top) < abs(_space_down[0] - _pair_top)):
+                _side_top, _side_bot = _space_up
+            else:
+                _side_top, _side_bot = _space_down
+            _new_top = (_side_top + _side_bot) / 2 - _pair_h / 2
+            if _pair_top < _up:
+                _new_top = _up + 10
+            elif _pair_bot > _down:
+                _new_top = _down - 10 - _pair_h
+            _shift = _new_top - _pair_top
+            if abs(_shift) < 5:
+                continue
+            for _b in (_b1, _b2):
+                _tok = _b1[4] if _b is _b1 else _b2[4]
+                _tok = _b[4]
+                _old_d = _tok
+                _new_d = (_old_d
+                    .replace(f'M{_b[0]:.2f},{_b[2]:.2f}', f'M{_b[0]:.2f},{_b[2] + _shift:.2f}')
+                    .replace(f'L{_b[1]:.2f},{_b[2]:.2f}', f'L{_b[1]:.2f},{_b[2] + _shift:.2f}')
+                    .replace(f'L{_b[1]:.2f},{_b[3]:.2f}', f'L{_b[1]:.2f},{_b[3] + _shift:.2f}')
+                    .replace(f'L{_b[0]:.2f},{_b[3]:.2f}', f'L{_b[0]:.2f},{_b[3] + _shift:.2f}'))
+                # FIX (30 Set 2026, round 12): il path chiuso termina
+                # con L{x},{y_top} (il punto di chiusura): sostituire
+                # ANCHE questo punto (il primo replace matcha solo il
+                # M iniziale) — senza questo il path resta APERTO e il
+                # fill-rule evenodd produce un fill PARZIALE.
+                _new_d = _new_d.replace(f'L{_b[0]:.2f},{_b[2]:.2f}', f'L{_b[0]:.2f},{_b[2] + _shift:.2f}')
+                if _old_d in modified:
+                    modified = modified.replace(_old_d, _new_d, 1)
+                    _moved_p9.add(_tok)
+            # FIX (30 Set 2026, round 12quinto): sposta ANCHE i gambi
+            # della coppia — i gambi che finiscono sul bordo esterno
+            # delle beams spostate (bottom per stems-up / top per
+            # stems-down) devono seguire lo stesso shift, altrimenti
+            # si staccano dalle travature (audit: gambi R4 finivano a
+            # 9390 con beams a 9504 = gap 114px).
+            for _sm9 in re.finditer(r'<polyline[^>]*class="Stem"[^>]*points="([\d.\-]+),([\d.\-]+) ([\d.\-]+),([\d.\-]+)"[^>]*/>', modified):
+                _sx9 = float(_sm9.group(1))
+                if not (_b1[0] - 30 <= _sx9 <= _b1[1] + 30 or _b2[0] - 30 <= _sx9 <= _b2[1] + 30):
+                    continue
+                _sy1, _sy2 = float(_sm9.group(2)), float(_sm9.group(4))
+                _st_top, _st_bot = min(_sy1, _sy2), max(_sy1, _sy2)
+                # il gambo tocca il bordo della beam (entro 15px)?
+                _touches = None
+                for _b in (_b1, _b2):
+                    _bt_old, _bb_old = _b[2], _b[3]
+                    # FIX (30 Set 2026, round 12quinto-ter): il gambo
+                    # è legato alla beam se la TOCCA (il bordo interno)
+                    # o la INTERSECA (il gambo passa attraverso: i
+                    # gambi stems-down attraversano la beam).
+                    if abs(_st_bot - _bt_old) < 15 or abs(_st_top - _bb_old) < 15 or (_st_top < _bb_old and _st_bot > _bt_old):
+                        _touches = (_st_top, _st_bot)
+                        break
+                if not _touches:
+                    continue
+                # FIX (30 Set 2026, round 12quinto-quater): NON spostare
+                # il gambo — ESTENDERLO fino alle beams spostate. Il
+                # shift rompeva l'attaccatura alla testa (il pass 8
+                # riattaccava il top alla testa e il gambo restava
+                # staccato dalle travature). Il gambo che viene da
+                # SOPRA la coppia (st_top < pair_top) estende il
+                # BOTTOM al bordo inferiore della coppia spostata; il
+                # gambo che viene da SOTTO estende il TOP al bordo
+                # superiore.
+                _old_pts = _sm9.group(0)
+                # FIX (30 Set 2026, round 12quinto-quater): ESTENDERE
+                # l'endpoint del gambo (non shiftare tutto il gambo):
+                # il gambo che viene da SOPRA (st_top < pair_top, il
+                # bottom finisce sulla beam) estende il BOTTOM al bordo
+                # inferiore della coppia spostata; il gambo che viene
+                # da SOTTO estende il TOP al bordo superiore. Lo shift
+                # rompeva l'attaccatura alla testa (il pass 8 riattac-
+                # cava il top alla testa e il gambo restava staccato
+                # dalle travature).
+                _pair_top_new = min(_b1[2], _b2[2]) + _shift
+                _pair_bot_new = max(_b1[2], _b2[2]) + _shift
+                if _st_top < (_b1[2] + _b2[2]) / 2:
+                    # il gambo viene da sopra: estendi il bottom
+                    _y1s, _y2s = _sy1, _sy2
+                    _y_tgt = _pair_bot_new
+                    if _sy2 == _st_bot:
+                        _y2s = _y_tgt
+                    else:
+                        _y1s = _y_tgt
+                else:
+                    # il gambo viene da sotto: estendi il top
+                    _y1s, _y2s = _sy1, _sy2
+                    _y_tgt = _pair_top_new
+                    if _sy1 == _st_top:
+                        _y1s = _y_tgt
+                    else:
+                        _y2s = _y_tgt
+                _pts_attr = _sm9.group(0)[_sm9.group(0).find('points='):]
+                # FIX (30 Set 2026, round 12quinto-quin): ENTRAMBI gli Y
+                # stanno DOPO la virgola ("x1,y1 x2,y2"): il replace del
+                # secondo Y con ' y2"' NON matcha (il carattere prima di
+                # y2 = la virgola, non lo spazio).
+                _new_pts_attr = _pts_attr.replace(f',{_sy1:.2f}', f',{_y1s:.2f}', 1).replace(f',{_sy2:.2f}', f',{_y2s:.2f}', 1)
+                _old_pts_attr = _pts_attr
+                if _old_pts_attr != _new_pts_attr and _old_pts in modified:
+                    modified = modified.replace(_old_pts, _old_pts.replace(_pts_attr, _new_pts_attr), 1)
+
     # Pass 8 (30 Set 2026): estendi i gambi fino alle teste. Il clip
     # precedente accorcia i gambi alla beam, ma se la testa della nota
     # è stata spostata (riposizionamento onset-based / y-stretch) il
@@ -12280,11 +12625,31 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
     # il top deve essere il centro della testa, gambo-up = il bottom.
     # Re-parse heads and stems from the modified SVG.
     _head_re8 = re.compile(
-        r'<circle[^>]*cx="([\d.]+)"[^>]*cy="([\d.]+)"[^>]*r="(88|72)"[^>]*fill="([^"]+)"')
+        # FIX (30 Set 2026, round 12quinto-dieci): r="90" incluso — le teste
+        # GRANDI (r=90) erano ESCLUSE dal cands: il gambo della testa r=90
+        # veniva esteso alla testa sbagliata del rigo successivo.
+        # FIX (round 12quinto-quattordici): r="58" incluso — le teste
+        # PICCOLE (crome/semicrome) erano ESCLUSE: i gambi degli accordi
+        # di teste r=58 venivano estesi alla testa sbagliata del rigo
+        # precedente.
+        r'<circle[^>]*cx="([\d.]+)"[^>]*cy="([\d.]+)"[^>]*r="(88|89|90|72|58)"[^>]*fill="([^"]+)"')
     _heads8 = []
     for m in _head_re8.finditer(modified):
         _f = m.group(4)
-        if _f in ('#FFFFFF', 'white', 'none'):
+        # il TAIL del match (il resto del tag fino a '>'): lo stroke viene
+        # DOPO il fill nel file e NON è incluso in m.group(0) (il match
+        # termina al fill) — il check round 12quinto-dodici su m.group(0)
+        # era sempre False.
+        _tail = modified[m.end():m.end() + 200]
+        _tag_open = modified[m.start():m.start() + 400]
+        # FIX (30 Set 2026, round 12quinto-dodici): le note APERTE (fill
+        # white + stroke colorato = cerchio bianco bordo) NON vanno
+        # filtrate — solo i placeholder senza contorno (fill white senza
+        # stroke o fill none). Escludere le teste aperte toglieva il
+        # cands della nota aperta: il gambo veniva esteso alla testa
+        # sbagliata (il gambo della nota aperta Si cy 9841 esteso alla
+        # testa Do cy 8350 del rigo precedente).
+        if _f in ('#FFFFFF', 'white', 'none') and 'stroke=' not in _tag_open:
             continue
         _heads8.append((float(m.group(1)), float(m.group(2))))
     _stem_re8 = re.compile(
@@ -12303,11 +12668,31 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         stem_top, stem_bot = min(y1, y2), max(y1, y2)
         # trova la testa più vicina in X nello stesso sistema (Y ±1200)
         _cands = [(hx, hy) for (hx, hy) in _heads8
-                  if abs(hx - x1) <= 100 and abs(hy - stem_top) <= 1200]
+                  if abs(hx - x1) <= 100 and abs(hy - stem_top) <= 2000]
         if not _cands:
             return m.group(0)
-        # la testa con la Y più vicina al top del gambo
-        hx, hy = min(_cands, key=lambda c: abs(c[1] - stem_top))
+        # FIX (30 Set 2026, round 12quinto-undici): PRIMA la testa DENTRO
+        # l'intervallo del gambo (già toccata: l'intervallo interseca il
+        # cerchio ±67), POI la più vicina in X. Il criterio X-first puro
+        # scartava la testa giusta quando una seconda testa (stesso
+        # accordo/rigo) era più vicina in X ma lontana in Y — il gambo
+        # veniva esteso attraverso la testa giusta fino alla testa
+        # sbagliata (il gambo della testa Do cy 5367 esteso alla testa
+        # Do cy 3875 del rigo precedente).
+        _inside = [c for c in _cands if stem_top <= c[1] + 67 and stem_bot >= c[1] - 67]
+        if _inside:
+            hx, hy = min(_inside, key=lambda c: (abs(c[0] - x1), abs(c[1] - stem_top)))
+        else:
+            hx, hy = min(_cands, key=lambda c: (abs(c[0] - x1), abs(c[1] - stem_top)))
+        # FIX (30 Set 2026, round 12quinto-tredici): il gambo GIÀ ATTACCATO
+        # a DUE teste (l'accordo verticale: entrambi gli endpoint
+        # intersecano teste) NON va esteso — il pass 8 estendeva il top
+        # del gambo dell'accordo Fa+Sol (cy 12825) alla testa Do del rigo
+        # precedente (cy 11333), attraversando il gambo.
+        _heads_touched = [(h) for (h) in _heads8
+                          if abs(h[0] - x1) <= 100 and stem_top <= h[1] + 67 and stem_bot >= h[1] - 67]
+        if len(_heads_touched) >= 2:
+            return m.group(0)
         # se l'intervallo del gambo non interseca il cerchio (±67),
         # estendi l'endpoint verso la testa
         if stem_top <= hy + 67 and stem_bot >= hy - 67:
