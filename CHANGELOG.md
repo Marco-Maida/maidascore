@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.16] - 2026-10-01
+
+### Fixed
+- **Pass 9e filters rejected stems-down croma pairs (b13-16, round 12bis)**:
+  three filter bugs left the stems-down croma pairs unprocessed — (1) the
+  stem-group Y filter used the stem MIN (the head, far above the pair for
+  stems-down) instead of the interval intersection; (2) the croma stem
+  X filter rejected stems 4px inside the secondary border (the croma stem
+  sits at the note X, ±15 from the sec border); (3) the touch check used
+  max(st) instead of min(st) for the beam-side endpoint. New: the group
+  stem must have a real notehead (r 58-90) near its X (fragments extended
+  by the 9d pass, with no head, were swapped for the croma stem → wrong
+  direction → re-swap of already-corrected pairs). The crossing-stem case
+  is now checked FIRST (top above the zone and bottom below) and its
+  direction is read from the real notehead nearest the stem X, not from
+  y1-vs-y2 (MuseScore writes crossing stems with the head as first point
+  in either order). Audit: 0 wrong pairs across Radetsky F1/F2 (both
+  modes), example; 0 anomalous beams. Validator passed.
+
 ## [1.2.15] - 2026-10-01
 
 ### Fixed

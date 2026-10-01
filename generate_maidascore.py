@@ -12927,30 +12927,67 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             # range X della sec = NON sono un gruppo croma → skip (il 9e
             # le scambiava = beams volanti e coppie rotte).
             _sec_x0v, _sec_x1v = min(_short9e[0], _short9e[1]), max(_short9e[0], _short9e[1])
+            # Filtro Y per INTERSEZIONE con la zona della coppia, non col
+            # min: per i gambi DOWN la min del gambo = la testa (molto sopra
+            # la coppia) — il filtro sul min scarta il gambo e il gruppo
+            # croma non viene mai processato (coppie b13-16 nonate non
+            # riordinate). Il gambo della croma interseca la coppia (la sua
+            # estremità beam-side sta nella zona, o attraversa entrambe).
+            _zone_top_chk = min(_b1[2], _b2[2]) - 15
+            _zone_bot_chk = max(_b1[3], _b2[3]) + 15
             _gs_chk = [st for st in _stems_9e
                        if min(_b1[0], _b2[0]) - 30 <= st[0] <= max(_b1[1], _b2[1]) + 30
-                       and min(_b1[2], _b2[2]) - 15 <= min(st[1], st[3]) <= max(_b1[3], _b2[3]) + 15]
+                       and (min(st[1], st[3]) <= max(_b1[3], _b2[3]) and max(st[1], st[3]) >= min(_b1[2], _b2[2])
+                            or abs(st[1] - _zone_top_chk) < 30 or abs(st[3] - _zone_bot_chk) < 30)]
             _cs_chk = [st for st in _gs_chk if st[0] < _sec_x0v - 5 or st[0] > _sec_x1v + 5]
             _long_y_top = min(_long9e[2], _long9e[3])
             _long_y_bot = max(_long9e[2], _long9e[3])
-            _touch_chk = any(abs(min(st[1], st[3]) - _long_y_top) < 15 or abs(max(st[1], st[3]) - _long_y_bot) < 15
+            # touch top/bottom col MIN del gambo, non col max: il gambo della
+            # croma PARTE dal bordo della beam (min del gambo = beam-side per
+            # gambo-down; max per gambo-up che attraversa). Il check col max
+            # scartava i gambi-down e la coppia non veniva mai processata.
+            _touch_chk = any(abs(min(st[1], st[3]) - _long_y_top) < 15 or abs(min(st[1], st[3]) - _long_y_bot) < 15
+                             or abs(max(st[1], st[3]) - _long_y_top) < 15 or abs(max(st[1], st[3]) - _long_y_bot) < 15
                              or (min(st[1], st[3]) < _long_y_top and max(st[1], st[3]) > _long_y_bot)
                              for st in _cs_chk)
             if not _touch_chk:
                 continue
             _short9e = _b2 if _w19e > _w29e else _b1
             # gambo della coppia: nel range X con una estremità dentro la zona
+            _zone_top9e = min(_b1[2], _b2[2]) - 15
+            _zone_bot9e = max(_b1[3], _b2[3]) + 15
             _gs9e = [st for st in _stems_9e
                      if min(_b1[0], _b2[0]) - 30 <= st[0] <= max(_b1[1], _b2[1]) + 30
-                     and min(_b1[2], _b2[2]) - 15 <= min(st[1], st[3]) <= max(_b1[3], _b2[3]) + 15]
+                     and (min(st[1], st[3]) <= max(_b1[3], _b2[3]) and max(st[1], st[3]) >= min(_b1[2], _b2[2])
+                          or abs(st[1] - _zone_top9e) < 30 or abs(st[3] - _zone_bot9e) < 30)]
             if not _gs9e:
                 continue
-            # il gambo della CROMA = quello FUORI dal range X della sec
-            # (il gambo della croma sta alla X della sua nota, fuori
-            # dalla travatura delle semicrome). Se non esiste, il gambo
-            # del gruppo = il più vicino al centro della coppia.
+            # il gambo della CROMA = quello nel range X della COPPIA con
+            # tolleranza ±15 rispetto ai BORDI della sec (il gambo della
+            # croma sta alla X della sua nota che può stare a ±15 del
+            # bordo della sec — la beam sec finisce alla X dell'ultima
+            # semicroma). In b13-16 (gambo UP) il gambo della croma sta a
+            # 4px DENTRO il bordo sx della sec: il filtro "fuori dal range
+            # X della sec ±5" lo scartava e la coppia non veniva mai
+            # riordinata.
             _sec_x0, _sec_x1 = min(_short9e[0], _short9e[1]), max(_short9e[0], _short9e[1])
-            _croma_st9e = [st for st in _gs9e if st[0] < _sec_x0 - 5 or st[0] > _sec_x1 + 5]
+            _croma_st9e = [st for st in _gs9e if st[0] < _sec_x0 + 15 or st[0] > _sec_x1 - 15]
+            # VERIFICA TESTA: il gambo della croma DEVE avere una testa (r 58-90) nel
+            # range X ±110 del gambo, con l'intervallo Y del gambo che interseca
+            # [hy-67, hy+67]. I frammenti di beam spezzata (estesi dal pass 9d, senza
+            # testa vicina) vengono scambiati per il gambo della croma → direzione
+            # sbagliata → ri-swap della coppia già corretta dal pass 9 = REGRESSIONE.
+            _head_pat9e_v = re.compile(r'<circle[^>]{0,200}>')
+            _heads9e_v = []
+            for _hm9e in _head_pat9e_v.finditer(modified):
+                _rt9e_v = re.search(r'r="([\d.]+)"', _hm9e.group(0))
+                _cx9e_v = re.search(r'cx="([\d.\-]+)"', _hm9e.group(0))
+                _cy9e_v = re.search(r'cy="([\d.\-]+)"', _hm9e.group(0))
+                if _rt9e_v and _cx9e_v and _cy9e_v and 58 <= float(_rt9e_v.group(1)) <= 90:
+                    _heads9e_v.append((float(_cx9e_v.group(1)), float(_cy9e_v.group(1))))
+            _croma_st9e = [st for st in _croma_st9e
+                           if any(abs(st[0] - hx) <= 110 and (min(st[1], st[3]) - 67 <= hy <= max(st[1], st[3]) + 67)
+                                  for hx, hy in _heads9e_v)]
             if _croma_st9e:
                 # il gambo della CROMA: quello che tocca la croma (la sua
                 # estremità sta alla y della croma, entro 15px) O il più
@@ -12970,15 +13007,28 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             # la coppia) sta SOPRA la coppia (il gambo scende dalle note
             # verso la beam); gambo in SU = la testa sta SOTTO la coppia.
             _sec_top, _sec_bot = min(_b1[2], _b2[2]), max(_b1[3], _b2[3])
-            if _top9e <= _sec_top + 15:
+            # L'ATTRAVERSAMENTO va controllato PRIMO: un gambo che attraversa
+            # la coppia (top SOPRA la zona e bottom SOTTO) viene classificato
+            # DOWN/UP dai rami if/elif (top <= sec_top+15 = True per il top
+            # oltre la beam) = direzione sbagliata. La direzione per un gambo
+            # che attraversa NON si legge da y1 vs y2 (l'ordine dei punti del
+            # gambo dipende da come MuseScore li scrive): si legge dalla TESTA
+            # REALE (il pallino r 58-90 più vicino in X al gambo).
+            if _top9e < _sec_top and _bot9e > _sec_bot:
+                _heads9e_dir = _heads9e_v
+                _hy9e_near = min(_heads9e_dir, key=lambda hh: abs(hh[0] - _st9e[0])) if _heads9e_dir else None
+                if _hy9e_near is not None:
+                    # head_below=True = gambo in su (testa SOTTO la coppia,
+                    # y maggiore); False = gambo in giù (testa SOPRA, y minore)
+                    _head_below = _hy9e_near[1] > (_sec_top + _sec_bot) / 2
+                else:
+                    _head_below = _st9e[3] > _st9e[1]
+            elif _top9e <= _sec_top + 15:
                 # gambo in giù (testa sopra la coppia)
                 _head_below = False
-            elif _bot9e >= _sec_bot - 15:
+            else:
                 # gambo in su (testa sotto la coppia)
                 _head_below = True
-            else:
-                # gambo che attraversa la coppia: direzione da y1 vs y2
-                _head_below = _st9e[3] > _st9e[1]
             if _head_below:
                 # gambo in su: croma deve stare SOPRA la sec
                 if _long9e[2] < _short9e[2]:
