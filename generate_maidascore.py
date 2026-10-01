@@ -12740,7 +12740,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         # PICCOLE (crome/semicrome) erano ESCLUSE: i gambi degli accordi
         # di teste r=58 venivano estesi alla testa sbagliata del rigo
         # precedente.
-        r'<circle[^>]*cx="([\d.]+)"[^>]*cy="([\d.]+)"[^>]*r="(88|89|90|72|58)"[^>]*fill="([^"]+)"')
+        r'<circle[^>]*cx="([\d.]+)"[^>]*cy="([\d.]+)"[^>]*r="(88|89|90|72|58|110)"[^>]*fill="([^"]+)"')
     _heads8 = []
     for m in _head_re8.finditer(modified):
         _f = m.group(4)
@@ -13149,7 +13149,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
     # testa (come il pass 8). NON estende i gambi già attaccati a 2+ teste
     # (accordi verticali) e i gambi con la testa dentro l'intervallo.
     _head_re10 = re.compile(
-        r'<circle[^>]*cx="([\d.]+)"[^>]*cy="([\d.]+)"[^>]*r="(88|89|90|72|58)"[^>]*fill="([^"]+)"')
+        r'<circle[^>]*cx="([\d.]+)"[^>]*cy="([\d.]+)"[^>]*r="(88|89|90|72|58|110)"[^>]*fill="([^"]+)"')
     _heads10 = []
     for _m10 in _head_re10.finditer(modified):
         _f10 = _m10.group(4)
