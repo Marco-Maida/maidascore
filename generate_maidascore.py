@@ -13269,13 +13269,20 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         _b11, (_d11, _rt11, _rb11) = _target11
         _sig11 = (round(_b11['x_left'], 1), round(_b11['y_top'], 1))
         # partner della coppia: sovrapposizione X >60% del più stretto
+        # E i Y ranges VICINI (gap < 200px): le coppie impilate sono
+        # vicine in Y per definizione. SENZA il check Y, le beams con lo
+        # stesso X in RIGHI DIVERSI (stessa pagina, 5 righi) vengono
+        # accopiate erroneamente e il Pass 11 sposta la beam del rigo
+        # sbagliato (regressione: la sec b34 rigo 1 spostata di +301
+        # insieme alla croma del rigo 3).
         _partner11 = None
         for _j11, _b2 in enumerate(_beam_data11):
             if _b2 is _b11:
                 continue
             _ovl11 = min(_b11['x_right'], _b2['x_right']) - max(_b11['x_left'], _b2['x_left'])
             _wmin11 = min(_b11['x_right'] - _b11['x_left'], _b2['x_right'] - _b2['x_left'])
-            if _wmin11 > 0 and _ovl11 > 0.6 * _wmin11:
+            _gap_y11 = max(0, max(_b11['y_top'], _b2['y_top']) - min(_b11['y_bot'], _b2['y_bot']))
+            if _wmin11 > 0 and _ovl11 > 0.6 * _wmin11 and _gap_y11 < 200:
                 _partner11 = _b2
                 break
         # shift unico per la coppia: stems-up → beam bottom = staff top + 20;
