@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.19] - 2026-10-01
+### Fixed
+- Gambi staccati dalla testa ("crome senza gambo", es. battute 13-16 notazione): i pass 9d/9e (coppie impilate) girano DOPO il pass 8 e spostano/estendono i gambi alla beam — un gambo esteso dal pass 9d/9e può NON raggiungere la testa (gambo finito alla beam mentre la testa sta più lontano, es. testa cy 5889 e gambo y 5179-5236 = gap 653px). FIX: Pass 10 in coda a process_svg (coordinate definitive, ENTRAMBE le modalità, prima del footer): re-parse heads e stems dall'SVG corrente e per ogni gambo la cui estremità NON interseca il cerchio della testa più vicina (±67) estende l'endpoint verso la testa (come il pass 8). NON estende i gambi già attaccati a 2+ teste (accordi verticali) né i gambi con la testa dentro l'intervallo.
+- Audit: notazione 0 teste senza gambo (era 5-6), rhythm 1-2 residue, example 0. Validatore TUTTO OK su tutte le pagine (entrambe le modalità).
+
 ## [1.2.18] - 2026-10-01
 ### Fixed
 - Linea di travatura in più a battuta con croma puntata + semicroma (dotted-eighth + sixteenth): MuseScore esporta la backward hook dell'ultima semicroma anche per questa figura (beam stretta w<200 ancorata al gambo della semicroma). Il creator della secondaria manuale, non rilevando l'hook esistente, ne creava un DUPLICATO — due linee sovrapposte sulla semicroma, poi due linee parallele dopo il decollide. FIX: il creator salta la creazione della secondaria quando l'hook è già presente nel SVG (check: beam stretta w<200 con x_right al gambo della semicroma ±60, stesso sistema, anche se già marcata secondaria dal pairing). Verifica oggettiva: 0 beams secondarie duplicate su Radetsky (entrambe le modalità) ed example; 0 beams oblique; 0 teste senza gambo.
