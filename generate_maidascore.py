@@ -8357,6 +8357,97 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                                    f'L{sx1:.2f},{syt1:.2f}"/>')
                         modified = modified.replace('</svg>', new_sec + '\n</svg>')
                     print(f"  [Step1] Created {len(_new_sec_16_s1)} secondary beams for 16th+16th")
+        # Create missing secondary beam for 4-sixteenth groups with partial
+        # secondary (Marco 1 Ott 2026, Radetsky b3: le 4 semicrome senza
+        # doppia travatura completa). MuseScore nel layout ricostruito
+        # splitta il gruppo di 4 semicrome a metà battuta (stile default
+        # "split mid-measure"): la secondaria copre solo le prime 2 e le
+        # ultime 2 restano con la sola primaria. Il BeamMode injection
+        # (begin/mid/mid/auto = gruppo unico) viene normalizzato da
+        # MuseScore. FIX: se un gruppo di 4 semicrome consecutive (stessa
+        # battuta, onset step 0.25) è coperto da una primaria che copre
+        # TUTTE e 4 e da una secondaria che copre solo parte (w < 60% del
+        # range delle 4), creare la secondaria mancante per le note
+        # scoperte, allineata alla secondaria esistente (stesso y_top,
+        # stesso spessore).
+        _new_sec_4grp = []
+        if note_info:
+            _ni16 = note_info.get('notes', [])
+            _by_meas16 = {}
+            for _n16 in _ni16:
+                if _n16.get('dur_key') == '16th':
+                    _by_meas16.setdefault(_n16['measure_idx'], []).append(_n16)
+            _svg_notes_by_meas_4g = {}
+            for _sn in notes:
+                _mi4 = _sn.get('measure_idx')
+                if _mi4 is not None:
+                    _svg_notes_by_meas_4g.setdefault(_mi4, []).append(_sn)
+            for _m4, _lst16 in _by_meas16.items():
+                if len(_lst16) < 4:
+                    continue
+                _lst16s = sorted(_lst16, key=lambda n: n['onset'])
+                # gruppi di 4 consecutive con onset step 0.25
+                for _k in range(len(_lst16s) - 3):
+                    _grp = _lst16s[_k:_k + 4]
+                    if any(_grp[j]['onset'] != _grp[0]['onset'] + 0.25 * j for j in range(4)):
+                        continue
+                    _mns4 = sorted(_svg_notes_by_meas_4g.get(_m4, []), key=lambda n: n['center_x'])
+                    if len(_mns4) < 4:
+                        continue
+                    # mappa onset → indice SVG per battuta (fallback posizionale)
+                    _ni_meas4 = sorted([n for n in _ni16 if n['measure_idx'] == _m4], key=lambda n: n['onset'])
+                    _idxs4 = []
+                    for _g in _grp:
+                        _j4 = None
+                        for _jj, _nn in enumerate(_ni_meas4):
+                            if _nn['onset'] == _g['onset']:
+                                _j4 = _jj
+                                break
+                        if _j4 is None or _j4 >= len(_mns4):
+                            _j4 = None
+                        _idxs4.append(_j4)
+                    if any(i is None for i in _idxs4):
+                        continue
+                    _cxs4 = [_mns4[i]['center_x'] for i in _idxs4]
+                    # primaria che copre tutte e 4
+                    _prim4 = None
+                    for _bi4 in beam_infos:
+                        if id(_bi4) in beam_is_secondary:
+                            continue
+                        if _bi4['x_left'] - 60 <= _cxs4[0] and _cxs4[3] <= _bi4['x_right'] + 60:
+                            _prim4 = _bi4
+                            break
+                    if _prim4 is None:
+                        continue
+                    _ys4 = [_mns4[i].get('y', 0) for i in _idxs4]
+                    _ym4 = (min(_ys4) + max(_ys4)) / 2
+                    if abs((_prim4['y_top'] + _prim4['y_bot']) / 2 - _ym4) > 1000:
+                        continue
+                    # secondaria esistente nel range del gruppo?
+                    _secs4 = [_bi4 for _bi4 in beam_infos if id(_bi4) in beam_is_secondary
+                              and abs((_bi4['y_top'] + _bi4['y_bot']) / 2 - _ym4) < 1000
+                              and _bi4['x_left'] >= _cxs4[0] - 60 and _bi4['x_right'] <= _cxs4[3] + 60]
+                    _grp_range = _cxs4[3] - _cxs4[0]
+                    if not _secs4:
+                        continue
+                    _sec4 = max(_secs4, key=lambda b: b['x_right'] - b['x_left'])
+                    _sec4_w = _sec4['x_right'] - _sec4['x_left']
+                    if _sec4_w >= 0.6 * _grp_range:
+                        continue  # la sec è già (quasi) completa
+                    # parte scoperta: dalla fine della sec alla 4ª nota
+                    _x_start = _sec4['x_right']
+                    _x_end = _cxs4[3]
+                    if _x_end - _x_start < 60:
+                        continue
+                    _new_sec_4grp.append((_x_start, _sec4['y_top'], _x_end, _sec4['y_bot'], _sec4['y_bot'] - _sec4['y_top']))
+            if _new_sec_4grp:
+                for sx1, syt1, sx2, syb2, _sth in _new_sec_4grp:
+                    new_sec = (f'<path class="Beam" fill="#000000" fill-rule="evenodd" '
+                               f'd="M{sx1:.2f},{syt1:.2f} L{sx2:.2f},{syt1:.2f} '
+                               f'L{sx2:.2f},{syt1 + _sth:.2f} L{sx1:.2f},{syt1 + _sth:.2f} '
+                               f'L{sx1:.2f},{syt1:.2f}"/>')
+                    modified = modified.replace('</svg>', new_sec + '\n</svg>')
+                print(f"  [Step1] Created {len(_new_sec_4grp)} secondary beams for partial 4-16th groups")
         if _new_secondary_beams:
             for sx1, syt1, sx2, syt2, _sth in _new_secondary_beams:
                 new_sec = (f'<path class="Beam" fill="#000000" fill-rule="evenodd" '
@@ -13375,6 +13466,99 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         modified = _stem_re11.sub(_ext_pair11, modified)
     if _n_moved11:
         print(f"    [FIX] Pass 11 coppie fuori dal rigo riportate dentro (shift unico per coppia): {_n_moved11}")
+
+    # Pass 12 (1 Ott 2026): secondary beam SPORGENTE oltre la fine della
+    # primaria (Marco, Radetsky b3: "l'ultimo Sol ha una linea di
+    # travatura in basso sbagliata"). CAUSA: nel layout RAW affiancato di
+    # MuseScore le coppie croma+semicrome multi-battuta hanno la
+    # secondaria che attraversa i confini di battuta; quando il
+    # postprocessore rimappa le beams per battuta, il frammento di
+    # secondaria che ricade nella battuta successiva viene posizionato a
+    # PARTIRE dalla sua X raw (fuori dalla nuova battuta): la sec finisce
+    # DOPO l'ultima nota della primaria invece di coprire le semicrome
+    # del gruppo. Sintomo: la seconda travatura appare oltre l'ultimo
+    # Sol e le 4 semicrome restano senza doppia travatura completa.
+    # FIX: per ogni sec il cui x_left sta OLTRE la fine della primaria
+    # associata (stesso sistema, partner per sovrapposizione Y) e che ha
+    # note 16th sotto la primaria: riposizionare la sec all'inizio del
+    # gruppo (x_left = prim.x_left) e estenderla fino all'ultima semicroma
+    # coperta dalla primaria (doppia travatura completa come il beaming
+    # originale del file di Marco).
+    _n_sec_fix12 = 0
+    _beams12 = []
+    for _m12 in _beam_re.finditer(modified):
+        _v12 = [float(_m12.group(i + 1)) for i in range(8)]
+        _beams12.append({'x_left': min(_v12[0], _v12[6]), 'x_right': max(_v12[2], _v12[4]),
+                         'y_top': min(_v12[1], _v12[3], _v12[5], _v12[7]),
+                         'y_bot': max(_v12[1], _v12[3], _v12[5], _v12[7]),
+                         'm': _m12})
+    for _i12, _b12 in enumerate(_beams12):
+        _w12 = _b12['x_right'] - _b12['x_left']
+        if _w12 > 400:
+            continue  # solo sec corte
+        # la primaria associata: stessa Y-range (coppia impilata), x_left
+        # simile, x_right oltre la fine della sec
+        _prim12 = None
+        for _b2_12 in _beams12:
+            if _b2_12 is _b12:
+                continue
+            if _b2_12['x_right'] - _b2_12['x_left'] <= _w12 + 40:
+                continue
+            _yov12 = min(_b12['y_bot'], _b2_12['y_bot']) - max(_b12['y_top'], _b2_12['y_top'])
+            _ygap12 = max(0, max(_b12['y_top'], _b2_12['y_top']) - min(_b12['y_bot'], _b2_12['y_bot']))
+            if _ygap12 > 200 or (_yov12 <= 0 and _ygap12 > 200):
+                continue
+            if abs(_b2_12['x_left'] - _b12['x_left']) > 2000:
+                # la sec sporgente: x_left della sec ≥ x_right della prim - 50
+                pass
+            if _b2_12['x_left'] - 60 <= _b12['x_left'] <= _b2_12['x_left'] + 60:
+                continue  # la sec è già allineata all'inizio della prim
+            if _b12['x_left'] >= _b2_12['x_right'] - 50 and _b12['x_left'] <= _b2_12['x_right'] + 150:
+                _prim12 = _b2_12
+                break
+        if _prim12 is None:
+            continue
+        # note 16th sotto la primaria: il gruppo = le note nel range X
+        # della primaria (±20) con Y vicino
+        _heads12 = []
+        for _h12 in re.finditer(r'<circle[^>]*?cx="([\d.]+)"[^>]*?cy="([\d.]+)"[^>]*?r="(72|88)"[^>]*?>', modified):
+            if float(_h12.group(3)) >= 115:
+                continue
+            _hx12, _hy12 = float(_h12.group(1)), float(_h12.group(2))
+            if float(_h12.group(3)) >= 115:
+                continue
+            if _prim12['x_left'] - 60 <= _hx12 <= _prim12['x_right'] + 60:
+                _ym12 = (_prim12['y_top'] + _prim12['y_bot']) / 2
+                if abs(_hy12 - _ym12) < 1200:
+                    _heads12.append(_hx12)
+        if len(_heads12) < 2:
+            continue
+        _new_l12 = _prim12['x_left']
+        _new_r12 = max(_heads12)
+        if _new_r12 - _new_l12 < 60:
+            continue
+        _dy12 = _new_l12 - _b12['x_left']
+        _old_d12 = _b12['m'].group(0)
+        # trasla la sec: subtract old x_left, add new coords per x
+        _pts12 = re.findall(r'([\d.]+),([\d.]+)', _old_d12)
+        _new_d12 = []
+        _xs12 = [float(p[0]) for p in _pts12]
+        _old_l12, _old_r12 = min(_xs12), max(_xs12)
+        _scale12 = (_new_r12 - _new_l12) / (_old_r12 - _old_l12) if _old_r12 > _old_l12 else 1.0
+        for _px12, _py12 in _pts12:
+            _nx12 = _new_l12 + (float(_px12) - _old_l12) * _scale12
+            _new_d12.append(f'{_nx12:.2f},{_py12}')
+        _new_path12 = _old_d12
+        for _px12, _py12 in _pts12:
+            _nx12 = _new_l12 + (float(_px12) - _old_l12) * _scale12
+            _old_frag = f'{_px12},{_py12}'
+            if _old_frag in _new_path12:
+                _new_path12 = _new_path12.replace(_old_frag, f'{_nx12:.2f},{_py12}', 1)
+        if _new_path12 != _old_d12 and _old_d12 in modified:
+            modified = modified.replace(_old_d12, _new_path12, 1)
+            _n_sec_fix12 += 1
+    if _n_sec_fix12:
+        print(f"    [FIX] Pass 12 secondary beam sporgente riposizionata all'inizio del gruppo: {_n_sec_fix12}")
 
     # FOOTER COPYRIGHT su ogni pagina.
     # Testo in basso al CENTRO: "generated by MaidaScore — © 2026 Marco Maida"
