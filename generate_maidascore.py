@@ -13330,7 +13330,22 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 if abs(_hxf - _sx) > 110:
                     continue
                 if _yt - 67 <= _hyf <= _yb + 67:
-                    return _m.group(0)  # gambo già attaccato alla testa
+                    # gambo attaccato alla testa: NON estendere, MAI se
+                    # ATTRAVERSA una beam spostata va accorciato (il
+                    # gambo fuoriesce dalla travatura): skip del return
+                    # solo se il gambo attraversa la nuova posizione.
+                    for _bmv_c in ([_b11, _partner11] if _partner11 else [_b11]):
+                        if _bmv_c is None:
+                            continue
+                        if _bmv_c['x_left'] - 15 <= _sx <= _bmv_c['x_right'] + 15:
+                            _bnt_c = _bmv_c['y_top'] + _shift11
+                            _bnb_c = _bmv_c['y_bot'] + _shift11
+                            if _yt < _bnt_c and _yb > _bnb_c:
+                                _head_protect = False
+                                break
+                    else:
+                        return _m.group(0)  # non attraversa: lasciare
+                    # attraversa: proseguire per l'accorciamento
             for _bmv in ([_b11, _partner11] if _partner11 else [_b11]):
                 if _bmv is None:
                     continue
@@ -13341,6 +13356,20 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         _yb = _b_new_bot
                     elif _yt > _b_new_bot:
                         _yt = _b_new_top
+                    elif _yt < _b_new_top and _yb > _b_new_bot:
+                        # il gambo ATTRAVERSA la beam spostata: la beam
+                        # si è mossa e il gambo va OLTRE l'altro bordo
+                        # della beam = "fuoriesce dalla travatura".
+                        # Lato da accorciare = la direzione dello shift:
+                        # shift < 0 = beam salita (stems-down): il bottom
+                        # del gambo va oltre il nuovo bottom della beam →
+                        # accorciare il bottom al nuovo bottom + 10.
+                        # shift > 0 = beam scesa (stems-up): accorciare
+                        # il top al nuovo top - 10.
+                        if _shift11 < 0:
+                            _yb = _b_new_bot + 10
+                        else:
+                            _yt = _b_new_top - 10
                     return _m.group(1) + f"{_sx:.2f},{_yt:.2f} {_sx:.2f},{_yb:.2f}" + '"' + _m.group(6)
             return _m.group(0)
         modified = _stem_re11.sub(_ext_pair11, modified)
