@@ -7805,6 +7805,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     t = (x - pri['x_left']) / xw
                     return pri_top_y1 + (pri_top_y2 - pri_top_y1) * t
                 gap = 47  # distanza verticale secondaria→primaria
+                _sec_x_orig_l, _sec_x_orig_r = sec['x_left'], sec['x_right']
                 # 16 Set 2026 (semicrome staccate, round 2): il gap verticale
                 # post-clamp deve essere di 47px EDGE-TO-EDGE (th clampato a
                 # 47 dal FIX #151), NON l'offset centro-centro originale
@@ -7872,6 +7873,61 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 sec['y4'] = sec['y1'] + th
                 sec['y_top'] = min(sec['y1'], sec['y2'])
                 sec['y_bot'] = max(sec['y3'], sec['y4'])
+                # FIX (1 Ott 2026, battuta 2 notazione — REGOLA DEFINITIVA):
+                # MuseScore esporta la BACKWARD HOOK dell'ultima semicroma come
+                # beam SECONDARIA FULL-WIDTH (stesso X della primaria) per i
+                # gruppi eighth+eighth+dotted-eighth+16th (croma-croma-3/4-1/4):
+                # la sec full-width copre TUTTE le note = una linea di travatura
+                # in più che non deve esserci (l'hook deve coprire SOLO l'ultima
+                # semicroma). Il ramo else (round 9quinto, _cg_w_diff <= 40 = X
+                # ranges IDENTICI) la lasciava full-width. FIX: sec full-width
+                # (stesso X della prim, w diff 0) → troncare sec x_right alla x
+                # dell'ultima SEMICROMA del gruppo (l'ultima nota 16th prima della
+                # fine del gruppo, dur_key '16th' in note_info).
+                _same_x_full = abs((sec['x_right'] - sec['x_left']) - (pri['x_right'] - pri['x_left'])) < 5
+                if _same_x_full and note_info:
+                    # range del troncamento = la PRIM ±100: la backward hook copre
+                    # l'ultima semicroma che può stare oltre il bordo dx della sec
+                    # remappata (la sec remappata finisce al gambo dell'ultima
+                    # semicroma, la nota sta oltre). senza il margine l'ultima
+                    # semicroma non viene vista e il troncamento non avviene.
+                    _xl, _xr = min(pri['x_left'], sec['x_left']), max(pri['x_right'], sec['x_right'])
+                    _sec_sn = [sn for sn in notes
+                               if sn.get('center_x') is not None
+                               and _xl - 100 <= sn.get('center_x') <= _xr + 100
+                               and abs((sn.get('y') or 0) - ((sec['y_top'] + sec['y_bot']) / 2)) < 1400]
+                    _sec_sn.sort(key=lambda sn: sn.get('center_x'))
+                    _last_16th = _sec_sn[-1] if _sec_sn and _sec_sn[-1].get('dur_key') == '16th' else None
+                    if _last_16th is not None and _last_16th.get('center_x') is not None:
+                        # il backward hook copre SOLO l'ultima semicroma: la sec
+                        # troncata parte dal gambo dell'ultima semicroma (cx - r)
+                        # e finisce al bordo dx della sec attuale (il gambo + over)
+                        _nh_r = _last_16th.get('radius') or 72
+                        _new_left = _last_16th['center_x'] - _nh_r - 4.7
+                        # il backward hook copre SOLO l'ultima semicroma: il
+                        # frammento va dal gambo (cx - r - 4.7) al bordo dx della
+                        # nota + over (cx + r + 4.7): il frammento copre la nota
+                        # che sta oltre la fine della prim (la prim finisce al
+                        # gambo dell'ultima semicroma, la nota sta oltre). NOTA
+                        # sec['x_right'] (5139 = gambo + 4.7) = frammento w 5 =
+                        # TROPPO CORTO (quasi invisibile). usare cx + r + 4.7.
+                        _new_right = _last_16th['center_x'] + _nh_r + 4.7
+                        if _xl < _new_left < _new_right:
+                            # conserva le Y esistenti (già impostate dal ramo
+                            # round 9quinto con _pri_bot_l): interpola i Y1/Y2
+                            # attuali alle X nuove (la sec resta parallela alla prim)
+                            sec['x_left'] = _new_left
+                            sec['x_right'] = _new_right
+                            _old_l, _old_r = _sec_x_orig_l, _sec_x_orig_r
+                            _y1_old, _y2_old = sec['y1'], sec['y2']
+                            _t_new_l = (sec['x_left'] - _old_l) / (_old_r - _old_l) if _old_r > _old_l else 0
+                            _t_new_r = (sec['x_right'] - _old_l) / (_old_r - _old_l) if _old_r > _old_l else 0
+                            sec['y1'] = _y1_old + (_y2_old - _y1_old) * _t_new_l
+                            sec['y2'] = _y1_old + (_y2_old - _y2_old) * _t_new_r
+                            sec['y3'] = sec['y2'] + th
+                            sec['y4'] = sec['y1'] + th
+                            sec['y_top'] = min(sec['y1'], sec['y2'])
+                            sec['y_bot'] = max(sec['y3'], sec['y4'])
         
         # Step 3: merge broken secondary fragments. For each primary, collect
         # all its secondaries, extend the widest one to span the full primary

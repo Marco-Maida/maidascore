@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.17] - 2026-10-01
+
+### Fixed
+- **Extra beam line on backward hook (round 13)**: MuseScore exports the
+  backward hook of the last 16th note as a beam SECONDARIA FULL-WIDTH
+  (same X as the primary) for groups eighth+eighth+dotted-eighth+16th
+  (croma-croma-3/4-1/4): the full-width secondary covers ALL notes = an
+  extra beam line that should not exist (the hook must cover only the
+  last 16th). The notazione branch (round 9quinto, X ranges identical)
+  left it full-width. FIX: same-X full-width secondary (w diff 0) →
+  truncate to the hook width: from the last 16th stem (cx - r - 4.7) to
+  the note right edge + overhang (cx + r + 4.7) — the note sits beyond
+  the primary's end (the primary ends at the last stem), so the hook
+  fragment covers the note. GOTCHAS: (1) the truncation scan uses sn.get('y')
+  not 'center_y' (note dicts have 'y', not 'center_y' — the filter with
+  center_y=0 rejected all notes → no truncation); (2) the truncation
+  range = the PRIMARY ±100 (the last 16th sits beyond the truncated
+  secondary's right edge — without the margin the note is not seen);
+  (3) sec['x_left']/_x_right MUST be assigned (an earlier draft computed
+  the interpolated Y but never assigned the new X = incomplete truncation);
+  (4) the Y interpolation uses _sec_x_orig_l/_r (the secondary X BEFORE
+  reposition, defined before the sec/pri branch to avoid UnboundLocalError);
+  (5) the audit "oblique beam" check must break at the FIRST point with a
+  different X (comparing p0 with p2 bottom-right gives false positives on
+  straight quadrilateral beams).
+  Audit: 0 full-width secondaries across Radetsky (both modes), example;
+  0 oblique beams (corrected audit); validator passed on all pages.
+
 ## [1.2.16] - 2026-10-01
 
 ### Fixed
