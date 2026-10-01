@@ -13204,6 +13204,142 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
     if _n_ext10[0]:
         print(f"    [FIX] Pass 10 gambi staccati estesi alla testa: {_n_ext10[0]}")
 
+    # Pass 11: coppie impilate (croma + semicrome) parcheggiate FUORI dal
+    # rigo (tra i sistemi, dopo lo y-stretch del layout verticale). Il
+    # layout RAW affiancato di MuseScore le mette legittimamente tra i
+    # righi; nel layout verticale devono stare DENTRO il pentagramma.
+    # La coppia intera viene spostata con UNO stesso shift (calcolato
+    # dalla beam della croma), preservando il gap della coppia: spostare
+    # croma e semicrome indipendentemente le fonderebbe (doppia
+    # travatura distrutta). I gambi della coppia vengono estesi verso la
+    # nuova posizione della beam. Re-parse dell'SVG a OGNI iterazione:
+    # gli edit dei gambi invalidano gli offset delle beam.
+    _stem_re11 = re.compile(
+        r'(<polyline[^>]*class="Stem"[^>]*points=")([\d.\-]+),([\d.\-]+) ([\d.\-]+),([\d.\-]+)"([^>]*>)')
+    _pairs_done11 = set()
+    _n_moved11 = 0
+    for _iter11 in range(400):
+        _beam_re11 = re.compile(r'<path[^>]*class="Beam"[^>]*d="([^"]+)"[^>]*/>')
+        _beam_data11 = []
+        for _bm11 in _beam_re11.finditer(modified):
+            _p11 = [float(x) for x in re.findall(r'-?\d+\.?\d*', _bm11.group(1))]
+            if len(_p11) >= 8:
+                _beam_data11.append({
+                    'start': _bm11.start(1), 'end': _bm11.end(1),
+                    'pts': _p11,
+                    'x_left': min(_p11[0], _p11[2]),
+                    'x_right': max(_p11[0], _p11[2]),
+                    'y_top': min(_p11[1::2]),
+                    'y_bot': max(_p11[1::2]),
+                    'th': abs(_p11[3] - _p11[1]) if abs(_p11[0] - _p11[2]) < 1 else abs(_p11[5] - _p11[3]),
+                })
+        # Righi: le staffline = polyline separate (5 per sistema);
+        # raggruppare per Y consecutive (<400) in range di rigo.
+        _sl_ys11 = []
+        for _sm11 in re.finditer(r'<polyline[^>]*class="StaffLines"[^>]*points="([^"]+)"', modified):
+            _sy11 = float(_sm11.group(1).replace(',', ' ').split()[1])
+            _joined11 = False
+            for _g11 in _sl_ys11:
+                if 100 < abs(_sy11 - _g11[-1]) < 400:
+                    _g11.append(_sy11); _joined11 = True; break
+            if not _joined11:
+                _sl_ys11.append([_sy11])
+        # la prima coppia NON processata e FUORI dal rigo
+        _target11 = None
+        for _i11, _b11 in enumerate(_beam_data11):
+            _sig11 = (round(_b11['x_left'], 1), round(_b11['y_top'], 1))
+            if _sig11 in _pairs_done11:
+                continue
+            _best11 = None
+            for _g11 in _sl_ys11:
+                _rt11, _rb11 = _g11[0], _g11[-1]
+                if _b11['y_top'] >= _rt11 - 50 and _b11['y_bot'] <= _rb11 + 50:
+                    _best11 = None
+                    break
+                _d11 = _rt11 - _b11['y_bot'] if _b11['y_bot'] < _rt11 else _b11['y_top'] - _rb11
+                if _best11 is None or _d11 < _best11[0]:
+                    _best11 = (_d11, _rt11, _rb11)
+            if _best11 is None:
+                _pairs_done11.add(_sig11)  # già dentro il rigo
+                continue
+            _target11 = (_b11, _best11)
+            break
+        if _target11 is None:
+            break
+        _b11, (_d11, _rt11, _rb11) = _target11
+        _sig11 = (round(_b11['x_left'], 1), round(_b11['y_top'], 1))
+        # partner della coppia: sovrapposizione X >60% del più stretto
+        _partner11 = None
+        for _j11, _b2 in enumerate(_beam_data11):
+            if _b2 is _b11:
+                continue
+            _ovl11 = min(_b11['x_right'], _b2['x_right']) - max(_b11['x_left'], _b2['x_left'])
+            _wmin11 = min(_b11['x_right'] - _b11['x_left'], _b2['x_right'] - _b2['x_left'])
+            if _wmin11 > 0 and _ovl11 > 0.6 * _wmin11:
+                _partner11 = _b2
+                break
+        # shift unico per la coppia: stems-up → beam bottom = staff top + 20;
+        # stems-down → beam top = staff bottom - 20 - spessore
+        if _b11['y_bot'] < _rt11:
+            _new_top11 = _rt11 + 20
+        else:
+            _new_top11 = _rb11 - 20 - _b11['th']
+        _shift11 = _new_top11 - _b11['y_top']
+        if abs(_shift11) < 5:
+            _pairs_done11.add(_sig11)
+            continue
+        _pair_sig11 = [_sig11]
+        if _partner11 is not None:
+            _pair_sig11.append((round(_partner11['x_left'], 1), round(_partner11['y_top'], 1)))
+        for _sig in _pair_sig11:
+            _pairs_done11.add(_sig)
+        _n_moved11 += 1
+        # sposta la coppia intera (beam + partner) con LO STESSO shift
+        for _bmv in ([_b11, _partner11] if _partner11 else [_b11]):
+            _tok11 = modified[_bmv['start']:_bmv['end']]
+            _new_tok11 = _tok11
+            for _k11 in range(0, len(_bmv['pts']) - 1, 2):
+                _old11 = f"{_bmv['pts'][_k11]:.2f},{_bmv['pts'][_k11+1]:.2f}"
+                _new11 = f"{_bmv['pts'][_k11]:.2f},{_bmv['pts'][_k11+1] + _shift11:.2f}"
+                if _old11 in _new_tok11:
+                    _new_tok11 = _new_tok11.replace(_old11, _new11)
+            modified = modified[:_bmv['start']] + _new_tok11 + modified[_bmv['end']:]
+        # estende SOLO i gambi della coppia NON attaccati a una testa
+        # (l'ultima estremità interseca il cerchio della testa più vicina
+        # ±67 = gambo già attaccato = NON toccare: il Pass 10 ha già
+        # esteso i gambi alle teste)
+        def _ext_pair11(_m, _b11=_b11, _partner11=_partner11, _shift11=_shift11):
+            _sx = float(_m.group(2))
+            _yt = min(float(_m.group(3)), float(_m.group(5)))
+            _yb = max(float(_m.group(3)), float(_m.group(5)))
+            # il gambo già attaccato a una testa nel range X ±110? NON toccare
+            _heads_here = re.findall(
+                r'<circle[^>]*cx="([\d.]+)"[^>]*cy="([\d.]+)"[^>]*r="([\d.]+)"[^>]*/?>',
+                modified)
+            for _hx, _hy, _hr in _heads_here:
+                _hxf, _hyf, _hrf = float(_hx), float(_hy), float(_hr)
+                if _hrf >= 115:
+                    continue
+                if abs(_hxf - _sx) > 110:
+                    continue
+                if _yt - 67 <= _hyf <= _yb + 67:
+                    return _m.group(0)  # gambo già attaccato alla testa
+            for _bmv in ([_b11, _partner11] if _partner11 else [_b11]):
+                if _bmv is None:
+                    continue
+                if _bmv['x_left'] - 15 <= _sx <= _bmv['x_right'] + 15:
+                    _b_new_top = _bmv['y_top'] + _shift11
+                    _b_new_bot = _bmv['y_bot'] + _shift11
+                    if _yb < _b_new_top:
+                        _yb = _b_new_bot
+                    elif _yt > _b_new_bot:
+                        _yt = _b_new_top
+                    return _m.group(1) + f"{_sx:.2f},{_yt:.2f} {_sx:.2f},{_yb:.2f}" + '"' + _m.group(6)
+            return _m.group(0)
+        modified = _stem_re11.sub(_ext_pair11, modified)
+    if _n_moved11:
+        print(f"    [FIX] Pass 11 coppie fuori dal rigo riportate dentro (shift unico per coppia): {_n_moved11}")
+
     # FOOTER COPYRIGHT su ogni pagina.
     # Testo in basso al CENTRO: "generated by MaidaScore — © 2026 Marco Maida"
     # Legge la viewBox corrente (post-shift rhythm) per posizionarsi al centro del margine inferiore.

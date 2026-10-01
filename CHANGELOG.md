@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.2.22] — 1 Ott 2026
+### Fixed
+- fix: dotted-eighth secondary beams missing when the beamed group is parked between systems (staves 3, bars 3 and 13-16). Cause: the horizontal layout of MuseScore parks multi-bar beam groups (eighth+two sixteenths) between staves legitimately; the vertical layout post-processor remaps Y faithfully, so the group stays outside the staff — sixteenth notes appear with no visible beam and stems cross the pentagram. FIX: new Pass 11 in process_svg (before the footer, both modes): the WHOLE group (beam + partner secondary beam) is moved with ONE single shift (computed from the primary beam), preserving the group gap — moving beams independently fuses them (double beam destroyed, v1.2.21 regression reverted in 757a04c). Stems of the group are extended toward the new beam position ONLY when not already attached to a notehead (Pass 10 already extended them). Gotchas: (1) the group is detected by X-range overlap >60% of the narrower beam (not by the pairing flag); (2) stems-up (beam above staff) → beam bottom = staff top + 20; stems-down → beam top = staff bottom - 20 - thickness; (3) the group shift must be applied BEFORE extending stems and the SVG re-parsed per iteration (edits invalidate beam offsets — stale offsets produced 27 beams outside the staff); (4) the Stem polyline replacement MUST re-emit the closing quote (missing quote broke the XML tag and made every stem unreadable); (5) staffline polylines can have more than 2 points (multi-segment) — parse with replace(',',' ').split()[1], not split(',')[1]; (6) re-parse heads per iteration for the already-attached check.
+
 ## [1.2.20] — 1 Ott 2026
 - fix: stem-extension regex (Pass 8/10) included r=110 heads (quarter/half notes). Stems of these notes (head 47px above stem top) were never extended — vertical lines crossing the staff without touching the notehead. Audit: 0 headless stems on Radetsky notation (3 pages) and rhythm.
 
