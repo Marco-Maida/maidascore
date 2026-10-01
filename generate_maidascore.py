@@ -12654,6 +12654,23 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 _legata = abs(_st_bot - _b1[2]) < 15 or abs(_st_top - _b1[3]) < 15 or (_st_top < _b1[3] and _st_bot > _b1[2])
                 if not _legata:
                     continue
+                # FIX (1 Ott 2026, v1.2.28): un gambo che ATTRAVERSA la
+                # beam (top sopra il top della beam E bottom sotto il
+                # bottom) NON va esteso al nuovo bordo: andrebbe a
+                # finire ~1900px oltre (linea da un sistema all'altro).
+                # Va ACCORCIATO al bordo esterno della beam spostata.
+                if _st_top < _b1[2] and _st_bot > _b1[3]:
+                    _old_pts = _sm9.group(0)
+                    _y_tgt = _b1[3] + _shift + 10
+                    if _sy2 == _st_bot:
+                        _y2s = _y_tgt
+                    else:
+                        _y1s = _y_tgt
+                    _pts_attr = _sm9.group(0)[_sm9.group(0).find('points='):]
+                    _new_pts_attr = _pts_attr.replace(f',{_sy1:.2f}', f',{_y1s:.2f}', 1).replace(f',{_sy2:.2f}', f',{_y2s:.2f}', 1)
+                    if _old_pts in modified:
+                        modified = modified.replace(_old_pts, _old_pts.replace(_pts_attr, _new_pts_attr), 1)
+                    continue
                 _old_pts = _sm9.group(0)
                 if _st_top < (_b1[2] + _b1[3]) / 2:
                     _y1s, _y2s = _sy1, _sy2
@@ -12787,6 +12804,23 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 # dalle travature).
                 _pair_top_new = min(_b1[2], _b2[2]) + _shift
                 _pair_bot_new = max(_b1[2], _b2[2]) + _shift
+                # FIX (1 Ott 2026, v1.2.28): gambo che ATTRAVERSA la
+                # coppia impilata (top sopra il top E bottom sotto il
+                # bottom): NON estendere il bottom alla nuova coppia
+                # (linea da un sistema all'altro): accorciare al bordo
+                # esterno (+10 linecap round).
+                if _st_top < min(_b1[2], _b2[2]) and _st_bot > max(_b1[2], _b2[2]):
+                    _old_pts = _sm9.group(0)
+                    _y_tgt = _pair_bot_new + 10
+                    if _sy2 == _st_bot:
+                        _y2s = _y_tgt
+                    else:
+                        _y1s = _y_tgt
+                    _pts_attr = _sm9.group(0)[_sm9.group(0).find('points='):]
+                    _new_pts_attr = _pts_attr.replace(f',{_sy1:.2f}', f',{_y1s:.2f}', 1).replace(f',{_sy2:.2f}', f',{_y2s:.2f}', 1)
+                    if _old_pts in modified:
+                        modified = modified.replace(_old_pts, _old_pts.replace(_pts_attr, _new_pts_attr), 1)
+                    continue
                 if _st_top < (_b1[2] + _b2[2]) / 2:
                     # il gambo viene da sopra: estendi il bottom
                     _y1s, _y2s = _sy1, _sy2
@@ -13633,6 +13667,54 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         if _si13 < 0:
             return tag
         _a13, _b13 = _rig13[_si13]
+        # FIX (1 Ott 2026, v1.2.28): un gambo NON deve attraversare il
+        # gap tra due sistemi (linea che va da un sistema all'altro,
+        # b51+ Radetsky). Il rigo di appartenenza = quello della testa
+        # attaccata (gambo-up = la testa sta al bottom, gambo-down =
+        # al top), non necessariamente quello del top del gambo.
+        _head_top13 = None
+        _head_bot13 = None
+        for _hx13, _hy13, _hr13 in _head_cands13:
+            if abs(_hx13 - x) <= 115:
+                if abs(_hy13 - yt) <= _hr13 + 70:
+                    _head_top13 = _hy13
+                if abs(_hy13 - yb) <= _hr13 + 70:
+                    _head_bot13 = _hy13
+        # rigo che contiene la testa (o il top del gambo se nessuna testa)
+        _ref_y13 = _head_top13 if _head_top13 is not None else (_head_bot13 if _head_bot13 is not None else yt)
+        _si13 = -1
+        for _i13, (_a13, _b13) in enumerate(_rig13):
+            if _a13 - 350 <= _ref_y13 <= _b13 + 350:
+                _si13 = _i13
+                break
+        if _si13 < 0:
+            return tag
+        _a13, _b13 = _rig13[_si13]
+        # crossing: l'endpoint opposto alla testa entra nel gap e
+        # raggiunge un altro rigo (>= top-10 del successivo o
+        # <= bottom+10 del precedente)
+        _new_yb13 = _new_yt13 = None
+        for _j13 in range(_si13 + 1, len(_rig13)):
+            if yb >= _rig13[_j13][0] - 10:
+                _new_yb13 = _b13 + 20
+                break
+        if _new_yb13 is None:
+            for _j13 in range(_si13 - 1, -1, -1):
+                if yt <= _rig13[_j13][1] + 10:
+                    _new_yt13 = _a13 - 20
+                    break
+        if _new_yb13 is not None or _new_yt13 is not None:
+            _p13 = []
+            for _v13 in (y1, y2):
+                _v_new = _v13
+                if _new_yb13 is not None and abs(_v13 - yb) < 0.01:
+                    _v_new = _new_yb13
+                if _new_yt13 is not None and abs(_v13 - yt) < 0.01:
+                    _v_new = _new_yt13
+                _p13.append(_v_new)
+            _n_clip13[0] += 1
+            _new_pts = f'{x1:.2f},{_p13[0]:.2f} {x2:.2f},{_p13[1]:.2f}'
+            return tag.replace(pts, _new_pts)
         _new_pts = pts
         # sporge sotto?
         if yb - _b13 > 40:
