@@ -12659,18 +12659,19 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 # bottom) NON va esteso al nuovo bordo: andrebbe a
                 # finire ~1900px oltre (linea da un sistema all'altro).
                 # Va ACCORCIATO al bordo esterno della beam spostata.
-                if _st_top < _b1[2] and _st_bot > _b1[3]:
-                    _old_pts = _sm9.group(0)
-                    _y_tgt = _b1[3] + _shift + 10
-                    if _sy2 == _st_bot:
-                        _y2s = _y_tgt
-                    else:
-                        _y1s = _y_tgt
-                    _pts_attr = _sm9.group(0)[_sm9.group(0).find('points='):]
-                    _new_pts_attr = _pts_attr.replace(f',{_sy1:.2f}', f',{_y1s:.2f}', 1).replace(f',{_sy2:.2f}', f',{_y2s:.2f}', 1)
-                    if _old_pts in modified:
-                        modified = modified.replace(_old_pts, _old_pts.replace(_pts_attr, _new_pts_attr), 1)
-                    continue
+                # FIX (1 Ott 2026, v1.2.30): il blocco "attraversa"
+                # introdotto in v1.2.28 nel ramo beam singole
+                # classificava falsamente come attraversante il gambo
+                # che si attacca al BORDO ESTERNO della beam (il test
+                # attraversamento st_top < y_min AND st_bot > y_max
+                # matcha anche il gambo che termina ESATTAMENTE al
+                # bordo: st_bot == y_max > y_min). Il gambo Sol
+                # semicroma b3 (testa fuori rigo con ledger, gambo
+                # dalla testa 560 alla beam 1704) veniva clippato al
+                # bordo della beam PRIMA dello shift e orfanato. I
+                # gambi-monstro (linee da un sistema all'altro) sono
+                # gestiti dal Pass 13 (gap-crossing v2): qui il blocco
+                # è RIMOSSO.
                 _old_pts = _sm9.group(0)
                 if _st_top < (_b1[2] + _b1[3]) / 2:
                     _y1s, _y2s = _sy1, _sy2

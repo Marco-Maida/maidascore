@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.2.30] - 1 Ott 2026
+### Fixed
+- fix: gambo mancante sull'ultima semicroma della battuta 3 (Marco con immagine: la Sol semicroma b3 rigo 1 senza gambo). CAUSA: il blocco "attraversa" introdotto in v1.2.28 nel ramo BEAM SINGOLE del Pass 9 classificava falsamente come attraversante il gambo che si attacca al BORDO ESTERNO della beam (il test attraversamento st_top < y_min AND st_bot > y_max matcha anche il gambo che termina ESATTAMENTE al bordo: st_bot == y_max > y_min): il gambo della Sol (testa fuori rigo con ledger a y560, gambo dalla testa alla beam a 1704) veniva accorciato al bordo della beam PRIMA dello shift e orfanato (risultato: frammento 21px al rigo successivo).
+### Changed
+- Il blocco "attraversa" del ramo beam singole è RIMOSSO: i gambi-monstro (linee da un sistema all'altro) sono già gestiti dal Pass 13 (gap-crossing v2, v1.2.28): audit conferma 0 stems >1300px senza il blocco. Il blocco equivalente del ramo coppie resta (non coinvolto nel bug).
+### Gotchas
+- (1) il test "attraversa" con st_bot > y_max: un gambo ATTACCATO al bordo esterno (st_bot == y_max) soddisfa st_bot > y_min e st_top < y_max = falso attraversamento: i test di attraversamento devono richiedere un GAP reale dall'endpoint (es. st_bot > y_max + soglia); (2) DEBUG che ha trovato il bug: print chirurgico nel ramo beam singole quando sx == x del gambo rotto (stampa beam range + shift + stem range + flag legata): UN solo tocco = il ramo singole; disabilitare i blocchi uno alla volta (nocross / notouch / nosing) e verificare il gambo target dopo ognuno = bisect empirico in 3 generazioni; (3) i CONNETTORI tavola sonora usano class="Stem" col COLORE DELLA NOTA (stroke #00695C per Sol): NON sono gambi: un audit "teste senza gambo" deve distinguerli (gli stroke colorati = gambi nota O connettori tavola); (4) BUG SEPARATO PRE-ESISTENTE (v1.2.20 pure, NON fixato in questa versione): 3 note Re semicroma senza gambo e senza beam frammento (2 su pag2 rigo 5 a y11499 nel gap rigo-tavola, 1 su pag3 rigo 3 a y6824): il gruppo beam raw multi-battuta 24937-27842 viene frammentato per battuta e le ULTIME note del gruppo perdono frammento di beam e gambo.
+### Audit
+- gambo Sol b3: 607-1704 ripristinato (era frammento 21px al rigo 2); 0 teste r72/58 senza gambo su pag1; 0 stems >1300px (3 pagine notazione + 2 rhythm); 0 tavole fuori posto (audit v1.2.29 regge); validatore TUTTO OK (soli false positivi noti).
+
 ## [1.2.29] - 1 Ott 2026
 ### Fixed
 - fix: tavole sonore troppo basse (Marco con immagine di esempio: tavola attaccata al pentagramma successivo invece che subito sotto il rigo proprio). CAUSA: il draw_tavola (v1.2.26, chiamato DOPO i pass in coda) calcolava dynamic_gap = max(180, max_stem_y - bottom_y + 50) con max_stem_y letto PRIMA del Pass 13: i gambi-monstro e le sporgenze amplificate (accorciati DOPO dal Pass 13) spingevano la tavola in fondo al gap fino al cap = attaccata al rigo successivo (es. tavola a 214px dal rigo sotto e 1192 dal rigo proprio, pag 2 Radetsky).
