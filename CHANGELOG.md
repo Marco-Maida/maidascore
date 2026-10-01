@@ -1,5 +1,8 @@
 # Changelog
 
+## [1.2.20] — 1 Ott 2026
+- fix: stem-extension regex (Pass 8/10) included r=110 heads (quarter/half notes). Stems of these notes (head 47px above stem top) were never extended — vertical lines crossing the staff without touching the notehead. Audit: 0 headless stems on Radetsky notation (3 pages) and rhythm.
+
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
