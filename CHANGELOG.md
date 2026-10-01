@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.2.21] — 1 Ott 2026
+### Fixed
+- fix: stems crossing the whole staff to attach to beams parked OUTSIDE the staff (in the gap between systems). Cause: the Pass 9 stem-relocation only processed beams that COVER a staffline — beams parked completely between systems (never covering any staffline) were left outside the staff, and stems crossed the pentagram to reach them (Radetsky b40-48). FIX: new Pass 9d in process_svg (before the footer): every beam whose Y does not intersect its nearest staff range (±50) is brought back INSIDE the staff — stems-up (beam above) → beam bottom to staff top + 20; stems-down → beam top to staff bottom - 20 - thickness. Gotchas: (1) the beam regex groups are SEPARATE — _m9d.group(1) is only the FIRST value (findall on group(1) gives 1 value, len<8 → early return = no shift); extract the full `d` attribute from group(0) via re.search(r'd="([^"]+)"'); (2) re.findall on group(0) picks up fill="#000000" (0.0 as first number) — extract the d attribute first; (3) audit staffline grouping: each staffline is a separate polyline (5 per system) — group by consecutive Y distance (<400) into staff ranges; (4) beams legit above/below the staff for ledger notes are NOT affected (the Pass 9d only moves beams fully outside ±50).
+
 ## [1.2.20] — 1 Ott 2026
 - fix: stem-extension regex (Pass 8/10) included r=110 heads (quarter/half notes). Stems of these notes (head 47px above stem top) were never extended — vertical lines crossing the staff without touching the notehead. Audit: 0 headless stems on Radetsky notation (3 pages) and rhythm.
 

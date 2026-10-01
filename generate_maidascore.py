@@ -11933,6 +11933,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     # la croma SOTTO = croma sulla linea più BASSA, gruppi
                     # x 5358-5760/5563-5760 Radetsky notazione).
                     _croma_group = abs(_w1 - _w2) > 40 and _b1_mid != _b2_mid
+                    import os as _os6a
                     if _croma_group:
                         _sec = _b2 if _w1 > _w2 else _b1
                     else:
@@ -11959,6 +11960,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                             _p_tmp = _b1 if abs(_b1_mid - _s_mid) < abs(_b2_mid - _s_mid) else _b2
                         _sec = _b2 if _p_tmp is _b1 else _b1
                     _prim = _b2 if _sec is _b1 else _b1
+                    import os as _os6a
                 # FIX (30 Set 2026, round 2, direttiva Marco): beam della
                 # CROMA (gruppo 2 semicrome + croma): la croma = 1 beam
                 # con th ~31 vs le primarie th 47-49. MuseScore la
@@ -11990,6 +11992,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         # bottom della thin + 15 (i gambi attraversano la
                         # thick per attaccarsi alla croma)
                         _new_y = _thick[1] + (_thick[3] - _thick[1]) + 15
+                        import os as _os6r
                         _key = (_thick[0], _thick[1], _thick[2], _thick[3])
                         _th_s = _thick[3] - _thick[1]
                     else:
@@ -12011,6 +12014,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                             _tok = _m2
                             break
                     if _tok is not None:
+                        import os as _os6
                         _old = _tok.group(0)
                         _new = (f'<path class="Beam" fill="#000000" fill-rule="evenodd" '
                                 f'd="M{_key[0]:.2f},{_new_y:.2f} L{_key[2]:.2f},{_new_y:.2f} '
@@ -12438,8 +12442,8 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     # la beam copre la staffline: sposto ENTRAMBE le
                     # beams della coppia nel CENTRO dello spazio tra
                     # le 2 stafflines circostanti
-                    _up = _g9[_si - 1] + 9 if _si > 0 else _sl - 9 - 300
-                    _down = _g9[_si + 1] - 9 if _si < len(_g9) - 1 else _sl + 9 + 300
+                    _up = _g9[_si - 1] + 9 if _si > 0 else _sl - 9  # FIX 1 Ott 2026 v1.2.21: era _sl-9-300 (fuori dal rigo)
+                    _down = _g9[_si + 1] - 9 if _si < len(_g9) - 1 else _sl + 9  # FIX 1 Ott 2026 v1.2.21: era _sl+9+300 (fuori dal rigo)
                     _space_mid = (_up + _down) / 2
                     # la coppia (prim + sec = th + gap 15 + th = ~109px)
                     # deve stare interamente nello spazio [_up, _down]
@@ -12519,8 +12523,8 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         if not _covered:
             continue
         _g9, _si, _sl = _covered
-        _up = _g9[_si - 1] + 9 if _si > 0 else _sl - 9 - 300
-        _down = _g9[_si + 1] - 9 if _si < len(_g9) - 1 else _sl + 9 + 300
+        _up = _g9[_si - 1] + 9 if _si > 0 else _sl - 9  # FIX 1 Ott 2026 v1.2.21: era _sl-9-300 (fuori dal rigo)
+        _down = _g9[_si + 1] - 9 if _si < len(_g9) - 1 else _sl + 9  # FIX 1 Ott 2026 v1.2.21: era _sl+9+300 (fuori dal rigo)
         _pair_h = _pair_bot - _pair_top
         # FIX (30 Set 2026, round 12quater): lo spazio deve ESCLUDERE
         # la staffline coperta — la coppia va nel lato (sopra o sotto
@@ -12610,8 +12614,8 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             if not _covered:
                 continue
             _g9, _si, _sl = _covered
-            _up = _g9[_si - 1] + 9 if _si > 0 else _sl - 9 - 300
-            _down = _g9[_si + 1] - 9 if _si < len(_g9) - 1 else _sl + 9 + 300
+            _up = _g9[_si - 1] + 9 if _si > 0 else _sl - 9  # FIX 1 Ott 2026 v1.2.21: era _sl-9-300 (fuori dal rigo)
+            _down = _g9[_si + 1] - 9 if _si < len(_g9) - 1 else _sl + 9  # FIX 1 Ott 2026 v1.2.21: era _sl+9+300 (fuori dal rigo)
             _pair_h = _pair_bot - _pair_top
             # FIX (30 Set 2026, round 12quater): lo spazio deve
             # ESCLUDERE la staffline coperta — la coppia va nel lato
@@ -12636,6 +12640,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             _shift = _new_top - _pair_top
             if abs(_shift) < 5:
                 continue
+            import os as _os9
             for _b in (_b1, _b2):
                 _tok = _b1[4] if _b is _b1 else _b2[4]
                 _tok = _b[4]
@@ -12725,6 +12730,76 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 _old_pts_attr = _pts_attr
                 if _old_pts_attr != _new_pts_attr and _old_pts in modified:
                     modified = modified.replace(_old_pts, _old_pts.replace(_pts_attr, _new_pts_attr), 1)
+
+    # Pass 9d (1 Ott 2026, v1.2.21): beams completamente FUORI dal proprio
+    # rigo (nello spazio tra i sistemi: la beam sta sopra il top o sotto il
+    # bottom del rigo, senza coprire nessuna staffline). Sintomo: gambi che
+    # attraversano il pentagramma per intero per attaccarsi alla beam
+    # spostata nello spazio tra i sistemi (b40-48 Radetsky).
+    # FIX: ogni beam la cui Y NON interseca il proprio rigo (±50) viene
+    # riportata DENTRO il rigo: stems-up (beam sopra il rigo) → beam bottom
+    # al top del rigo + 20; stems-down (beam sotto il rigo) → beam top al
+    # bottom del rigo - 20 - th. I gambi vengono poi accorciati dalla
+    # estensione (i pass 8/10 li estendono alla beam spostata).
+    _beam_re9d = re.compile(
+        r'<path[^>]*class="Beam"[^>]*d="M([\d.\-]+),([\d.\-]+) L([\d.\-]+),([\d.\-]+) L([\d.\-]+),([\d.\-]+) L([\d.\-]+),([\d.\-]+)[^"]*"\s*/>')
+    _sl_ys_9d = []
+    for _m9d in re.finditer(r'<polyline[^>]*class="StaffLines"[^>]*points="([\d.\-]+),([\d.\-]+) ([\d.\-]+),([\d.\-]+)"', modified):
+        _sy9d = float(_m9d.group(2))
+        _joined = False
+        for _g9d in _sl_ys_9d:
+            if 100 < abs(_sy9d - _g9d[-1]) < 400:
+                _g9d.append(_sy9d)
+                _joined = True
+                break
+        if not _joined:
+            _sl_ys_9d.append([_sy9d])
+    _n9d = [0]
+    def _beam_out_sub(_m9d):
+        # FIX: group(1) = SOLO il primo valore del match (il regex ha i gruppi
+        # separati): estrarre la d COMPLETA dal group(0) con il findall sui
+        # numeri del tag completo.
+        _d9d_m = re.search(r'd="([^"]+)"', _m9d.group(0))
+        if not _d9d_m:
+            return _m9d.group(0)
+        _p9d = [float(x) for x in re.findall(r'-?\d+\.?\d*', _d9d_m.group(1))]
+        if len(_p9d) < 8:
+            return _m9d.group(0)
+        _x9d1, _x9d2 = min(_p9d[0], _p9d[2]), max(_p9d[0], _p9d[2])
+        _b9d_t, _b9d_bot = min(_p9d[1::2]), max(_p9d[1::2])
+        _th9d = max(_p9d[1::2]) - min(_p9d[1::2])
+        # il rigo che contiene la beam (o il più vicino)
+        _best = None
+        for _g9d in _sl_ys_9d:
+            _rt, _rb = _g9d[0], _g9d[-1]
+            if _b9d_t >= _rt - 50 and _b9d_bot <= _rb + 50:
+                return _m9d.group(0)  # dentro il rigo
+            _d = _rt - _b9d_bot if _b9d_bot < _rt else _b9d_t - _rb
+            if _best is None or _d < _best[0]:
+                _best = (_d, _rt, _rb)
+        if _best is None:
+            return _m9d.group(0)
+        _rt, _rb = _best[1], _best[2]
+        # stems-up: la beam sta SOPRA il rigo (b9d_bot < rt): beam bottom → rt + 20
+        if _b9d_bot < _rt:
+            _new_top = _rt + 20
+        else:
+            _new_top = _rb - 20 - _th9d
+        _shift9d = _new_top - _b9d_t
+        if abs(_shift9d) < 5:
+            return _m9d.group(0)
+        _tok9d = _m9d.group(0)
+        _new_d9d = (_tok9d
+            .replace(f'M{_p9d[0]:.2f},{_p9d[1]:.2f}', f'M{_p9d[0]:.2f},{_p9d[1] + _shift9d:.2f}')
+            .replace(f'L{_p9d[2]:.2f},{_p9d[3]:.2f}', f'L{_p9d[2]:.2f},{_p9d[3] + _shift9d:.2f}')
+            .replace(f'L{_p9d[4]:.2f},{_p9d[5]:.2f}', f'L{_p9d[4]:.2f},{_p9d[5] + _shift9d:.2f}')
+            .replace(f'L{_p9d[6]:.2f},{_p9d[7]:.2f}', f'L{_p9d[6]:.2f},{_p9d[7] + _shift9d:.2f}'))
+        _new_d9d = _new_d9d.replace(f'L{_p9d[0]:.2f},{_p9d[1]:.2f}', f'L{_p9d[0]:.2f},{_p9d[1] + _shift9d:.2f}')
+        _n9d[0] += 1
+        return _new_d9d
+    modified = _beam_re9d.sub(_beam_out_sub, modified)
+    if _n9d[0]:
+        print(f"    [FIX] Pass 9d beams fuori dal rigo riportate dentro: {_n9d[0]}")
 
     # Pass 8 (30 Set 2026): estendi i gambi fino alle teste. Il clip
     # precedente accorcia i gambi alla beam, ma se la testa della nota
