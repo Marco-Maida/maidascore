@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.15] - 2026-10-01
+
+### Fixed
+- **Croma beam placement depends on stem direction (round 12)**: in a
+  stacked pair (croma + semicromas) the croma line sits on the UPPER
+  line when the stem points UP, on the LOWER line when the stem points
+  DOWN — the previous rule ("croma always on top", correct only for
+  stems-up) was inverted for stems-down. New Pass 9e at the end of
+  process_svg (final coordinates, both modes): for each croma pair
+  (X overlap > 50px, gap 0-150, width diff > 40, chromatic stem outside
+  the secondary X-range touching the croma) the direction is read from
+  the stem (head side above/below the pair), then both beams are moved
+  by pure top-swap (croma to the sec top, sec to the croma top — gap
+  preserved by construction). Audit: pre-fix 17/17 croma pairs inverted
+  (stems-down, rhythm) across Radetsky measures 1, 20-21, 23, 27-28;
+  post-fix 0 pairs wrong, 0 anomalous beams, gaps preserved, on all
+  pages in both modes (Radetsky F1/F2, example). Validator passed.
+
 ## [1.2.14] - 2026-10-01
 
 ### Fixed

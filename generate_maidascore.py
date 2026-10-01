@@ -11901,7 +11901,30 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 _th2 = _b2[3] - _b2[1]
                 if abs(_th1 - _th2) > 10:
                     _thick, _thin = (_b1, _b2) if _th1 > _th2 else (_b2, _b1)
-                    if _thin[1] > _thick[1]:
+                    # FIX (1 Ott 2026, round 12, direttiva Marco): la
+                    # direzione del gambo decide il lato: gambo in GIÙ
+                    # (beams sotto le note) → la croma (thin) resta sotto
+                    # la thick (lato opposto alle note), NON spostarla
+                    # sopra; gambo in SU → thin sopra thick. Direzione
+                    # dai gambi nel range della coppia.
+                    _gs2 = []
+                    for _sm2 in re.finditer(r'<polyline class="Stem"([^>]*)points="([\d.]+),([\d.]+) ([\d.]+),([\d.]+)"\s*/>', modified):
+                        _sx2, _st12, _st22 = (float(_sm2.group(i)) for i in (2, 3, 4))
+                        if min(_thin[0], _thick[0]) - 30 <= _sx2 <= max(_thin[2], _thick[2]) + 30:
+                            _gs2.append((_st12, _st22))
+                    _up2 = sum(1 for _s2 in _gs2 if _s2[1] > _s2[0])
+                    _down2 = sum(1 for _s2 in _gs2 if _s2[1] < _s2[0])
+                    if _down2 >= _up2:
+                        # gambo in giù: croma (thin) resta sotto la thick,
+                        # sec (thick) attaccata sopra: top della thick =
+                        # bottom della thin + 15 (i gambi attraversano la
+                        # thick per attaccarsi alla croma)
+                        _new_y = _thick[1] + (_thick[3] - _thick[1]) + 15
+                        _key = (_thick[0], _thick[1], _thick[2], _thick[3])
+                        _th_s = _thick[3] - _thick[1]
+                    else:
+                        if _thin[1] <= _thick[1]:
+                            continue
                         # la sottile sta sotto la spessa: spostarla SOPRA
                         # FIX (30 Set 2026, direttiva Marco): la beam della
                         # croma deve essere ATTACCATA alla linea superiore
@@ -11910,25 +11933,25 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         # NON staccata: il gap 5/15px la lasciava volante.
                         _new_y = _thick[1] - (_thin[3] - _thin[1])
                         _key = (_thin[0], _thin[1], _thin[2], _thin[3])
-                        _tok = None
-                        for _m2 in _flat_beam_pat.finditer(modified):
-                            _p2 = _parse_pts(_m2)
-                            if (min(_p2[0], _p2[2]), _p2[1], max(_p2[0], _p2[2])) == (_key[0], _key[1], _key[2]):
-                                _tok = _m2
-                                break
-                        if _tok is not None:
-                            _old = _tok.group(0)
-                            _th_s = _thin[3] - _thin[1]
-                            _new = (f'<path class="Beam" fill="#000000" fill-rule="evenodd" '
-                                    f'd="M{_key[0]:.2f},{_new_y:.2f} L{_key[2]:.2f},{_new_y:.2f} '
-                                    f'L{_key[2]:.2f},{_new_y + _th_s:.2f} L{_key[0]:.2f},{_new_y + _th_s:.2f} '
-                                    f'L{_key[0]:.2f},{_new_y:.2f}"')
-                            if _old in modified:
-                                modified = modified.replace(_old, _new, 1)
-                            _beams_fin2 = []
-                            for _m3 in _flat_beam_pat.finditer(modified):
-                                _p3 = _parse_pts(_m3)
-                                _beams_fin2.append((min(_p3[0], _p3[2]), _p3[1], max(_p3[0], _p3[2]), max(_p3[1::2])))
+                        _th_s = _thin[3] - _thin[1]
+                    _tok = None
+                    for _m2 in _flat_beam_pat.finditer(modified):
+                        _p2 = _parse_pts(_m2)
+                        if (min(_p2[0], _p2[2]), _p2[1], max(_p2[0], _p2[2])) == (_key[0], _key[1], _key[2]):
+                            _tok = _m2
+                            break
+                    if _tok is not None:
+                        _old = _tok.group(0)
+                        _new = (f'<path class="Beam" fill="#000000" fill-rule="evenodd" '
+                                f'd="M{_key[0]:.2f},{_new_y:.2f} L{_key[2]:.2f},{_new_y:.2f} '
+                                f'L{_key[2]:.2f},{_new_y + _th_s:.2f} L{_key[0]:.2f},{_new_y + _th_s:.2f} '
+                                f'L{_key[0]:.2f},{_new_y:.2f}"')
+                        if _old in modified:
+                            modified = modified.replace(_old, _new, 1)
+                        _beams_fin2 = []
+                        for _m3 in _flat_beam_pat.finditer(modified):
+                            _p3 = _parse_pts(_m3)
+                            _beams_fin2.append((min(_p3[0], _p3[2]), _p3[1], max(_p3[0], _p3[2]), max(_p3[1::2])))
                 # ROUND 1 (gap < 60, th uguali): primarie sovrapposte o
                 # toccanti (d_real -49..59) con lo STESSO spessore: il
                 # blocco round 2 (th diff > 10) non copre questi casi.
@@ -12002,21 +12025,29 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     # ALTA → sec sotto (_sec_below = True); gambo in GIÙ
                     # (notazione, beams sotto le note) → beam croma = la
                     # più BASSA → sec sopra (_sec_below = False).
+                # FIX (1 Ott 2026, round 12, direttiva Marco — REGOLA
+                # DEFINITIVA, supersede round 10): la posizione della
+                # beam della CROMA rispetto alla beam delle semicrome
+                # dipende dalla DIREZIONE DEL GAMBO: gambo in SU (beams
+                # sopra le note) → croma = la linea PIÙ ALTA (sec sotto);
+                # gambo in GIÙ (beams sotto le note) → croma = la linea
+                # PIÙ BASSA (sec sopra). La round 10 (_sec_below = True
+                # incondizionato) era corretta solo per gambo in su.
                     _croma_group = abs(_prim[2] - _prim[0] - (_sec[2] - _sec[0])) > 40
                     if _croma_group:
-                        # FIX (30 Set 2026, round 10, direttiva Marco con
-                        # immagine — REGOLA DEFINITIVA, supersede round 9):
-                        # la beam della CROMA (la LUNGA) deve stare SEMPRE
-                        # sulla linea PIÙ ALTA della coppia, la beam corta
-                        # (semicrome) SOTTO, in ENTRAMBE le modalità e per
-                        # ENTRAMBE le direzioni del gambo. Il round 9 usava
-                        # _sec_below = rhythm_mode (sec SOPRA in notazione =
-                        # croma sulla linea più BASSA = errato, segnalato da
-                        # Marco sui gruppi b73-77 Radetsky f2). Con gambi
-                        # stems-down la sec sotto la croma sta a prim[3]+15
-                        # e i gambi la attraversano per attaccarsi alla
-                        # croma (pattern visivo corretto).
-                        _sec_below = True
+                        # direzione del gambo dai gambi nel range della coppia:
+                        # in su = bottom del gambo verso l'alto (st2 < st1);
+                        # in giù = st2 > st1. Fallback (nessun gambo nel range):
+                        # dalla posizione della beam rispetto ai gambi — beam
+                        # più in alto dei gambi = beams sopra le note = gambo in su.
+                        _up = sum(1 for _sp in _stems_pair if _sp[2] < _sp[1])
+                        _down = sum(1 for _sp in _stems_pair if _sp[2] > _sp[1])
+                        if _up == _down:
+                            _all_mid = (min(_sec[1], _prim[1]) + max(_sec[3], _prim[3])) / 2
+                            _stems_mid = ((_sp[1] + _sp[2]) / 2 for _sp in _stems_pair)
+                            _stems_mid = sum(_stems_mid) / max(1, len(_stems_pair)) if _stems_pair else _all_mid
+                            _up, _down = (1, 0) if _all_mid <= _stems_mid else (0, 1)
+                        _sec_below = _up >= _down
                     if _sec_below:
                         # FIX (30 Set 2026, direttiva Marco): le due linee
                         # della travatura NON devono essere attaccate (gap
@@ -12191,26 +12222,33 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         # gap 47) e sovrascriveva il fix del round 6/7b.
         _cg_w = (_p_tmp[2] - _p_tmp[0]) - (_sec_l[2] - _sec_l[0])
         if abs(_cg_w) > 40:
-            # FIX (30 Set 2026, round 9settimo, direttiva Marco con immagine):
-            # gruppo CROMA nel flusso round 1 (il flusso storico usava il
-            # _new_y vecchio gap 47 e sovrascriveva il fix round 6/7b).
-            # La regola dipende dalla DIREZIONE DEL GAMBO: gambo in SU
-            # (rhythm) → la croma (beam LUNGA) = la linea più ALTA → la
-            # sec (CORTA) sotto attaccata al bottom della prim: _new_y =
-            # prim[3]; gambo in GIÙ (notazione) → la croma = la linea più
-            # in BASSO → la sec sopra attaccata al top della prim:
-            # _new_y = prim[1] - th. In ENTRAMBE le modalità la beam della
-            # croma = la LUNGA = prim, la sec = la CORTA attaccata.
+            # FIX (1 Ott 2026, round 12, direttiva Marco — REGOLA
+            # DEFINITIVA, supersede round 10): la posizione dipende dalla
+            # DIREZIONE DEL GAMBO: gambo in SU (beams sopra le note) →
+            # croma (LUNGA) = linea PIÙ ALTA, sec sotto (_new_y =
+            # prim[3] + 15); gambo in GIÙ (beams sotto le note) → croma =
+            # linea PIÙ BASSA, sec sopra attaccata (_new_y = prim[1] -
+            # th - 15, i gambi attraversano la sec per attaccarsi alla
+            # croma). Direzione dai gambi nel range della coppia.
             _prim2 = _b1 if (_b1[2] - _b1[0]) > (_b2[2] - _b2[0]) else _b2
             _sec2 = _b1 if _prim2 is _b2 else _b2
             _sec_mid = (_sec2[1] + _sec2[3]) / 2
             _prim_mid = (_prim2[1] + _prim2[3]) / 2
-            # FIX (30 Set 2026, direttiva Marco): gap visibile 15px tra
-            # le due linee della travatura (gap 0 = blocco unico).
-            # FIX (30 Set 2026, round 10): la sec SOTTO la croma SEMPRE
-            # (la croma = la LUNGA = la linea PIÙ ALTA, supersede round 9
-            # che metteva la sec SOPRA in notazione = croma più BASSA).
-            _new_y = _prim2[3] + 15
+            _gs3 = [(float(_sm.group(2)), float(_sm.group(3)), float(_sm.group(4)))
+                    for _sm in re.finditer(r'<polyline class="Stem"[^>]*points="([\d.\-]+),([\d.\-]+) ([\d.\-]+),([\d.\-]+)"', modified)
+                    if min(_sec2[0], _prim2[0]) - 30 <= float(_sm.group(2)) <= max(_sec2[2], _prim2[2]) + 30]
+            _up3 = sum(1 for _s3 in _gs3 if _s3[2] < _s3[1])
+            _down3 = sum(1 for _s3 in _gs3 if _s3[2] > _s3[1])
+            if _up3 == _down3:
+                _up3, _down3 = (1, 0) if _prim2[3] + _prim2[1] < _sec2[3] + _sec2[1] else (0, 1)
+            if _down3 >= _up3:
+                # gambo in giù: croma (prim, LUNGA) = linea PIÙ BASSA,
+                # sec (CORTA) sopra attaccata: top della sec = bottom
+                # della prim + ... no: la sec sta SOPRA la croma,
+                # bottom della sec = top della prim - 15
+                _new_y = _prim2[1] - (_sec2[3] - _sec2[1]) - 15
+            else:
+                _new_y = _prim2[3] + 15
             _sec_l = _sec2
             _p_tmp = _prim2
         elif _sec_mid > _prim_mid:
@@ -12832,6 +12870,151 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
     modified = _stem_pat_9d.sub(_stem_9d_sub, modified)
     if _stems_fixed_9d:
         print(f"    [FIX] Gambi coppie impilate estesi al bordo esterno della beam: {_stems_fixed_9d}")
+
+
+    # Pass 9e (1 Ott 2026, round 12, direttiva Marco — REGOLA DEFINITIVA):
+    # la linea di travatura della CROMA rispetto alla beam delle semicrome
+    # dipende dalla DIREZIONE DEL GAMBO: gambo in SU (beams sopra le note,
+    # il gambo scende dalla testa verso l'alto) → la croma (beam LUNGA) =
+    # la linea PIÙ ALTA della coppia, la sec (corta) SOTTO; gambo in GIÙ
+    # (beams sotto le note) → la croma = la linea PIÙ BASSA, la sec SOPRA.
+    # Il round 10 (croma SEMPRE sopra) era corretto solo per gambo in su.
+    # Il Pass 9 (round 12) sposta le coppie che coprono le staffline
+    # shiftando ENTRAMBE le beams dello stesso offset (preserva l'ordine
+    # relativo errato) — questo pass finale riordina la geometria.
+    # FIX (coordinate definitive, ENTRAMBE le modalità): per ogni coppia
+    # croma (X overlap > 50, gap 0-150, w diff > 40): la direzione si
+    # legge dal gambo (l'estremità che NON tocca la coppia = lato testa);
+    # se la croma (LUNGA) è dal lato opposto, scambia le Y delle due beams
+    # (i gambi fixati dal pass 9d attraversano entrambe, non si staccano).
+    _beam_pat_9e = re.compile(r'<path class="Beam"[^>]*d="([^"]+)"')
+    _beams_9e = []
+    for _m9e in _beam_pat_9e.finditer(modified):
+        _p9e = [(float(a), float(b)) for a, b in re.findall(r'(-?\d+\.?\d*),(-?\d+\.?\d*)', _m9e.group(1))]
+        if len(_p9e) >= 2:
+            _xs9e = [p[0] for p in _p9e]; _ys9e = [p[1] for p in _p9e]
+            _beams_9e.append((min(_xs9e), max(_xs9e), min(_ys9e), max(_ys9e), _m9e.group(0)))
+    _stem_pat_9e = re.compile(r'<polyline class="Stem"[^>]*points="([\d.\-]+),([\d.\-]+) ([\d.\-]+),([\d.\-]+)"')
+    _stems_9e = []
+    for _sm9e in _stem_pat_9e.finditer(modified):
+        _x9e, _y19e, _x29e, _y29e = (float(_sm9e.group(i)) for i in (1, 2, 3, 4))
+        _stems_9e.append((_x9e, _y19e, _x29e, _y29e))
+    _swapped_9e = 0
+    for _i9e in range(len(_beams_9e)):
+        for _j9e in range(_i9e + 1, len(_beams_9e)):
+            _b1, _b2 = _beams_9e[_i9e], _beams_9e[_j9e]
+            _ov9e = min(_b1[1], _b2[1]) - max(_b1[0], _b2[0])
+            if _ov9e <= 50:
+                continue
+            _gap9e = max(_b1[2], _b2[2]) - min(_b1[3], _b2[3])
+            if _gap9e < -5 or _gap9e > 150:
+                continue
+            _w19e, _w29e = _b1[1] - _b1[0], _b2[1] - _b2[0]
+            _th19e, _th29e = _b1[3] - _b1[2], _b2[3] - _b2[2]
+            # SOLO i gruppi CROMA (w diff > 40, la beam LUNGA = croma):
+            # in rhythm mode la croma ha th 47 identico alle semicrome
+            # (il th NON è discriminante); la w differenza è l'unico
+            # discriminante del gruppo croma (round 8/10/11).
+            if abs(_w19e - _w29e) <= 40:
+                continue
+            _long9e = _b1 if _w19e > _w29e else _b2
+            _short9e = _b2 if _w19e > _w29e else _b1
+            # verifica CHIURURGICA del gruppo croma: il gambo della CROMA
+            # (fuori dal range X della sec) DEVE esistere e toccare la
+            # croma (la sua estremità sta alla y della croma, entro 15px).
+            # Le coppie stesso-spessore con w-diff grande (beam corta
+            # adiacente di una beam spezzata) NON hanno un gambo fuori dal
+            # range X della sec = NON sono un gruppo croma → skip (il 9e
+            # le scambiava = beams volanti e coppie rotte).
+            _sec_x0v, _sec_x1v = min(_short9e[0], _short9e[1]), max(_short9e[0], _short9e[1])
+            _gs_chk = [st for st in _stems_9e
+                       if min(_b1[0], _b2[0]) - 30 <= st[0] <= max(_b1[1], _b2[1]) + 30
+                       and min(_b1[2], _b2[2]) - 15 <= min(st[1], st[3]) <= max(_b1[3], _b2[3]) + 15]
+            _cs_chk = [st for st in _gs_chk if st[0] < _sec_x0v - 5 or st[0] > _sec_x1v + 5]
+            _long_y_top = min(_long9e[2], _long9e[3])
+            _long_y_bot = max(_long9e[2], _long9e[3])
+            _touch_chk = any(abs(min(st[1], st[3]) - _long_y_top) < 15 or abs(max(st[1], st[3]) - _long_y_bot) < 15
+                             or (min(st[1], st[3]) < _long_y_top and max(st[1], st[3]) > _long_y_bot)
+                             for st in _cs_chk)
+            if not _touch_chk:
+                continue
+            _short9e = _b2 if _w19e > _w29e else _b1
+            # gambo della coppia: nel range X con una estremità dentro la zona
+            _gs9e = [st for st in _stems_9e
+                     if min(_b1[0], _b2[0]) - 30 <= st[0] <= max(_b1[1], _b2[1]) + 30
+                     and min(_b1[2], _b2[2]) - 15 <= min(st[1], st[3]) <= max(_b1[3], _b2[3]) + 15]
+            if not _gs9e:
+                continue
+            # il gambo della CROMA = quello FUORI dal range X della sec
+            # (il gambo della croma sta alla X della sua nota, fuori
+            # dalla travatura delle semicrome). Se non esiste, il gambo
+            # del gruppo = il più vicino al centro della coppia.
+            _sec_x0, _sec_x1 = min(_short9e[0], _short9e[1]), max(_short9e[0], _short9e[1])
+            _croma_st9e = [st for st in _gs9e if st[0] < _sec_x0 - 5 or st[0] > _sec_x1 + 5]
+            if _croma_st9e:
+                # il gambo della CROMA: quello che tocca la croma (la sua
+                # estremità sta alla y della croma, entro 15px) O il più
+                # vicino in X al range X della croma
+                _long_x0, _long_x1 = min(_long9e[0], _long9e[1]), max(_long9e[0], _long9e[1])
+                _long_y = min(_long9e[2], _long9e[3])
+                _touch9e = [st for st in _croma_st9e
+                            if abs(min(st[1], st[3]) - _long_y) < 15 or abs(max(st[1], st[3]) - min(_long9e[2], _long9e[3])) < 15]
+                if _touch9e:
+                    _st9e = _touch9e[0]
+                else:
+                    _st9e = min(_croma_st9e, key=lambda st: min(abs(st[0] - _long_x0), abs(st[0] - _long_x1)))
+            else:
+                _st9e = min(_gs9e, key=lambda st: abs(st[0] - (min(_b1[0], _b2[0]) + max(_b1[1], _b2[1])) / 2))
+            _top9e, _bot9e = min(_st9e[1], _st9e[3]), max(_st9e[1], _st9e[3])
+            # direzione: gambo in GIÙ = la testa (lato y1/y2 che NON tocca
+            # la coppia) sta SOPRA la coppia (il gambo scende dalle note
+            # verso la beam); gambo in SU = la testa sta SOTTO la coppia.
+            _sec_top, _sec_bot = min(_b1[2], _b2[2]), max(_b1[3], _b2[3])
+            if _top9e <= _sec_top + 15:
+                # gambo in giù (testa sopra la coppia)
+                _head_below = False
+            elif _bot9e >= _sec_bot - 15:
+                # gambo in su (testa sotto la coppia)
+                _head_below = True
+            else:
+                # gambo che attraversa la coppia: direzione da y1 vs y2
+                _head_below = _st9e[3] > _st9e[1]
+            if _head_below:
+                # gambo in su: croma deve stare SOPRA la sec
+                if _long9e[2] < _short9e[2]:
+                    continue  # già corretto
+                _y_croma_new = min(_short9e[2], _short9e[3])
+                _y_sec_new = max(_long9e[2], _long9e[3]) + (_gap9e if _gap9e > 0 else 15)
+            else:
+                # gambo in giù: croma deve stare SOTTO la sec
+                if _long9e[2] > _short9e[2]:
+                    continue  # già corretto
+                # SCAMBIO PURO DEI TOP: la croma va al top della sec, la
+                # sec al top della croma (il gap si conserva per costruzione
+                # — le beams si scambiano di posto, gli X restano propri)
+                _y_croma_new = min(_short9e[2], _short9e[3])
+                _y_sec_new = min(_long9e[2], _long9e[3])
+            # SPOSTAMENTO INTERO: entrambe le beams si spostano alla
+            # nuova posizione (tutti i valori Y del path shiftati della
+            # stessa quantità, gli X invariati). La croma va a y_croma_new
+            # (top della beam), la sec a y_sec_new.
+            for _b_old, _y_new_top in [(_long9e, _y_croma_new), (_short9e, _y_sec_new)]:
+                _old_top = min(_b_old[2], _b_old[3])
+                _shift = _y_new_top - _old_top
+                if abs(_shift) < 1:
+                    continue
+                _new_d = _b_old[4]
+                # shift dei 4 valori Y del path (y1_top, y2_top, y1_bot, y2_bot)
+                _ys_pairs = re.findall(r'(-?\d+\.?\d*),(-?\d+\.?\d*)', _new_d)
+                _y_top, _y_bot = min(_b_old[2], _b_old[3]), max(_b_old[2], _b_old[3])
+                _new_d = _new_d.replace(f'{_y_top:.2f}', f'@@{_y_top + _shift:.2f}@@')
+                _new_d = _new_d.replace(f'{_y_bot:.2f}', f'@@{_y_bot + _shift:.2f}@@')
+                _new_d = _new_d.replace(f'@@', '')
+                if _b_old[4] in modified:
+                    modified = modified.replace(_b_old[4], _new_d, 1)
+            _swapped_9e += 1
+    if _swapped_9e:
+        print(f"    [FIX] Coppie croma riordinate per direzione del gambo (gambo in giù = croma sotto): {_swapped_9e}")
 
 
     # FOOTER COPYRIGHT su ogni pagina.
