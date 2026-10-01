@@ -8147,6 +8147,20 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         if len(notes_under) != 2:
                             continue
                         _candidate_beams.append((bw, bi, byt, byb))
+                    # 1 Ott 2026 (fix linea secondaria duplicata): MuseScore
+                    # esporta la BACKWARD HOOK dell'ultima semicroma anche per
+                    # la figura croma puntata + semicroma (beam stretta w<200
+                    # ancorata al gambo della semicroma). Se l'hook esiste già,
+                    # la secondaria manuale è un DUPLICATO: due linee sovrapposte
+                    # sulla semicroma (dopo il decollide = due linee parallele).
+                    # Salta la creazione quando l'hook è già presente.
+                    _hook_exists = any(
+                        (b2i['x_right'] - b2i['x_left']) < 200
+                        and abs(b2i['x_right'] - (cx_sixteenth - meas_notes_sorted[_s_idx].get('radius', 72))) < 60
+                        and abs((b2i['y_top'] + b2i['y_bot']) / 2 - _notes_y_mid) < 2000
+                        for b2i in beam_infos)
+                    if _hook_exists:
+                        continue
                     if _candidate_beams:
                         # Pick narrowest beam
                         _candidate_beams.sort(key=lambda x: x[0])
