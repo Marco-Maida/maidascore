@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.14] - 2026-10-01
+
+### Fixed
+- **Stems in stacked beam pairs extended to outer edge**: stems in a
+  stacked pair (primary + secondary beam) stopped at the inner edge of
+  the higher beam (stem top = beam bottom) instead of crossing both
+  lines to the outer edge — the secondary beam appeared suspended in
+  the gap without stems attached. Convention: in a stacked pair stems
+  cross both beams up to the outer edge of the farthest beam from the
+  noteheads. New Pass 9d runs at the end of process_svg (final
+  coordinates, both modes): for each stem in a stacked pair (X overlap
+  > 50px, gap 0-100) the outer end is extended to the outer edge of the
+  farthest beam (offset 10px for round linecaps). Audit: pre-fix 34/34
+  stacked pairs wrong (rhythm) and 6/6 (notation) across Radetsky
+  measures 1, 20-21, 23, 27-28; post-fix 0 pairs wrong on all pages in
+  both modes. Validator passed.
+
 ## [1.2.13] - 2026-09-30
 
 ### Fixed
