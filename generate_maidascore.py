@@ -13750,6 +13750,341 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                                   measure_offset=measure_offset,
                                   mmrest_groups=mmrest_groups,
                                   system_layout=_system_layout)
+
+    # Pass 14: pulizia finale rhythm/notazione (coordinate definitive).
+    # 14a: connettori tavola che superano il bottom della propria riga
+    # tavola (linea verticale fuori contesto, Radetsky rhythm b2-b3).
+    # 14b: beam secondaria full-width spuria su gruppi di note tutte
+    # della stessa durata (le semicrome uniformi hanno SOLO la primaria).
+    _rig14 = sorted(set(round(_sly) for _sly in [float(v) for v in re.findall(
+        r'<polyline class="StaffLines"[^>]*points="[^"]*?\s+([\d.]+)"', modified)]))
+    _tav_rows14 = []
+    for _m14 in re.finditer(r'<rect[^>]*height="175"[^>]*>', modified):
+        _t14 = re.search(r'y="([\d.]+)"', _m14.group(0))
+        if _t14:
+            _tav_rows14.append(float(_t14.group(1)))
+    _tav_rows14 = sorted(set(_tav_rows14))
+    _n_tavfix14 = [0]
+
+    def _fix_tav_conn14(tag):
+        tag = tag.group(0) if hasattr(tag, 'group') else tag
+        _pts14 = re.search(r'points="([^"]+)"', tag).group(1)
+        _n14 = [float(v) for v in _pts14.replace(',', ' ').split()]
+        if len(_n14) < 4 or abs(_n14[0] - _n14[2]) >= 1:
+            return tag
+        _col14 = re.search(r'stroke="([^"]+)"', tag)
+        if not _col14 or _col14.group(1) in ('#000000', 'black'):
+            return tag
+        _y1, _y2 = sorted((_n14[1], _n14[3]))
+        # la riga tavola sotto il top del connettore, stessa colonna X
+        _cand14 = [ry for ry in _tav_rows14 if ry > _y1 + 100 and ry < _y2 - 5]
+        if not _cand14:
+            return tag
+        _ry14 = min(_cand14)
+        # la cella tavola in quel punto X esiste? (colonna della nota)
+        _cell14 = None
+        for _m14 in re.finditer(r'<rect[^>]*height="175"[^>]*>', modified):
+            _t14 = _m14.group(0)
+            _x14 = float(re.search(r'x="([\d.]+)"', _t14).group(1))
+            _y14 = float(re.search(r'y="([\d.]+)"', _t14).group(1))
+            if abs(_y14 - _ry14) < 5 and _x14 - 70 <= _n14[0] <= _x14 + 190:
+                _cell14 = _y14 + 175
+                break
+        if _cell14 is None or _y2 <= _cell14 + 5:
+            return tag
+        # sostituisce SOLO l'endpoint oltre il bottom cella, mantenendo
+        # l'ordine originale dei punti
+        _p14 = list(_n14)
+        for _i14 in (1, 3):
+            if abs(_p14[_i14] - _y2) < 0.01:
+                _p14[_i14] = _cell14 + 5
+        _new14 = f'{_p14[0]:.2f},{_p14[1]:.2f} {_p14[2]:.2f},{_p14[3]:.2f}'
+        _n_tavfix14[0] += 1
+        return tag.replace(_pts14, _new14)
+
+    if _tav_rows14:
+        modified = re.sub(r'<polyline class="Stem" [^>]*?points="([^"]+)"',
+                          _fix_tav_conn14, modified)
+    print(f'[PASS14] connettori tavola accorciati: {_n_tavfix14[0]}')
+
+    # Pass 15: beam secondaria full-width spuria su gruppi UNIFORMI.
+    # Nel rhythm equalizzato i gruppi di sole crome (tutte r58) non
+    # devono avere la secondaria (la sec serve solo a durate miste).
+    # Inoltre estende la primaria al primo/ultimo gambo del gruppo
+    # quando le teste esterne stanno oltre (beams troncate).
+    _beams15 = []
+    for _m15 in re.finditer(r'<path class="Beam"[^>]*d="([^"]+)"', modified):
+        _n15 = [float(v) for v in re.findall(r'-?[\d.]+(?:e-?\d+)?', _m15.group(1))]
+        if len(_n15) >= 8:
+            _beams15.append([min(_n15[0::2]), min(_n15[1::2]),
+                             max(_n15[0::2]), max(_n15[1::2]), _m15.group(1)])
+    _n_rm15 = [0]
+    _n_ext15 = [0]
+    _spuria15 = []
+    _fuse15 = []
+    for _b15 in _beams15:
+        # partner full-width stesso sistema
+        for _c15 in _beams15:
+            if _c15 is _b15 or abs(_c15[0]-_b15[0]) >= 5 or abs(_c15[2]-_b15[2]) >= 5:
+                continue
+            _gap15 = _c15[1] - _b15[3]
+            if not (30 < _gap15 < 200):
+                continue
+            # teste del gruppo: sotto entrambe le beams, X range esteso
+            _h15 = [(float(_m.group(1)), float(_m.group(2)), _m.group(3))
+                    for _m in re.finditer(r'<circle cx="([\d.]+)" cy="([\d.]+)" r="([\d.]+)"', modified)
+                    if _b15[0] - 200 <= float(_m.group(1)) <= _b15[2] + 200
+                    and _c15[3] < float(_m.group(2)) < _c15[3] + 700
+                    and float(_m.group(3)) in (58, 72, 88)]
+            # il gruppo attraversa una barline? allora le beams
+            # fonde sono il layout del gruppo: NON rimuovere la sec
+            _cross15 = False
+            for _m15b in re.finditer(r'<polyline class="BarLine"[^>]*points="([^"]+)"', modified):
+                _nn15b = [float(v) for v in _m15b.group(1).replace(',', ' ').split()]
+                if len(_nn15b) >= 4 and abs(_nn15b[0]-_nn15b[2]) < 1 \
+                   and _b15[0] < _nn15b[0] < _b15[2]:
+                    _cross15 = True
+                    break
+            if _cross15:
+                # gruppo fuse che attraversa la barline: ricostruzione
+                # per battuta (ramo c, piu avanti, dopo il loop)
+                _fuse15.append((_b15, _c15))
+                break
+            if len(_h15) < 3 or len(set(h[2] for h in _h15)) != 1:
+                continue
+            # gruppo uniforme di >= 3 note: la sec full-width = spuria.
+            # rimuovo il path della secondaria (quello PIU BASSO = gap
+            # sotto la prim per stems-up; per stems-down la sec e sopra).
+            if _c15[1] > _b15[1]:
+                _sec_d15 = _c15[4]
+            else:
+                _sec_d15 = _b15[4]
+            # rimuovi SOLO il path con esattamente quel d (unico)
+            if modified.count(f'd="{_sec_d15}"') == 1:
+                modified = modified.replace(
+                    re.search(r'<path class="Beam"[^>]*d="' + re.escape(_sec_d15) + r'"[^>]*/>\s*', modified).group(0),
+                    '')
+                _n_rm15[0] += 1
+                _spuria15.append(id(_b15))
+            break
+    # (a) estende la primaria ai gambi estremi del gruppo (beams
+    # troncate: teste esterne senza travatura)
+    for _b15 in _beams15:
+        if id(_b15) not in _spuria15:
+            continue
+        _g15 = []
+        for _m15 in re.finditer(r'<polyline class="Stem"[^>]*points="([^"]+)"', modified):
+            _nn15 = [float(v) for v in _m15.group(1).replace(',', ' ').split()]
+            if len(_nn15) >= 4 and abs(_nn15[0]-_nn15[2]) < 1 \
+               and _b15[0] - 150 <= _nn15[0] <= _b15[2] + 150 \
+               and max(_nn15[1], _nn15[3]) > _b15[3]:
+                _g15.append((_nn15[0], min(_nn15[1], _nn15[3]), max(_nn15[1], _nn15[3])))
+        # solo gambi che partono DALLE teste (y in basso) e toccano
+        # o attraversano la beam: per stems-up il top del gambo = beam
+        _g15 = [g for g in _g15 if abs(g[1] - _b15[1]) < 150 or abs(g[1] - _b15[3]) < 150]
+        if not _g15:
+            continue
+        _gx15 = [g[0] for g in _g15]
+        _new_l15, _new_r15 = min(_gx15), max(_gx15)
+        if _new_l15 < _b15[0] - 40 or _new_r15 > _b15[2] + 40:
+            # teste senza beam ai lati: estendi
+            _old_d15 = _b15[4]
+            _nl15, _nt15, _nr15, _nb15 = _b15[0], _b15[1], _b15[2], _b15[3]
+            _th15 = _nb15 - _nt15
+            _nd15 = (f'M{max(_new_l15-15,0):.2f},{_nt15:.2f} '
+                     f'{_new_r15+15:.2f},{_nt15:.2f} {_new_r15+15:.2f},{_nb15:.2f} '
+                     f'{max(_new_l15-15,0):.2f},{_nb15:.2f}Z')
+            if modified.count(f'd="{_old_d15}"') == 1 and _old_d15 != _nd15:
+                modified = modified.replace(f'd="{_old_d15}"', f'd="{_nd15}"')
+                _b15[0], _b15[2], _b15[4] = max(_new_l15-15,0), _new_r15+15, _nd15
+                _n_ext15[0] += 1
+    # (b) teste interne del gruppo senza gambo: aggiungi gambo verticale
+    for _b15 in _beams15:
+        _h15 = [(float(_m.group(1)), float(_m.group(2)), _m.group(3), _m.group(0))
+                for _m in re.finditer(r'<circle cx="([\d.]+)" cy="([\d.]+)" r="([\d.]+)" fill="([^"]+)"', modified)
+                if _b15[0] - 100 <= float(_m.group(1)) <= _b15[2] + 100
+                and _b15[3] < float(_m.group(2)) < _b15[3] + 700
+                and float(_m.group(3)) in (58, 72, 88)]
+        if len(_h15) < 2:
+            continue
+        _gxs15 = []
+        for _m15 in re.finditer(r'<polyline class="Stem"[^>]*points="([^"]+)"', modified):
+            _nn15 = [float(v) for v in _m15.group(1).replace(',', ' ').split()]
+            if len(_nn15) >= 4 and abs(_nn15[0]-_nn15[2]) < 1 \
+               and _b15[0] - 150 <= _nn15[0] <= _b15[2] + 150 \
+               and max(_nn15[1], _nn15[3]) < _b15[3] + 500:
+                _gxs15.append(_nn15[0])
+        for (_hx15, _hy15, _hr15, _tag15) in _h15:
+            if any(abs(_hx15 + 64 - gx) < 40 or abs(_hx15 - 64 - gx) < 40 or abs(_hx15 - gx) < 40 for gx in _gxs15):
+                continue
+            import os as _os15
+            if _os15.environ.get('MAIDA_DBG15'):
+                print(f'[DBG15] gambo mancante testa {_hx15:.0f},{_hy15:.0f} beam {[round(v) for v in _b15[:4]]}')
+            # gambo mancante: stems-up = gambo a destra della testa
+            _sx15 = _hx15 + float(_hr15) - 8
+            _fill15 = re.search(r'fill="([^"]+)"', _tag15).group(1)
+            _new_stem15 = (f'<polyline class="Stem" fill="none" stroke="{_fill15}" '
+                           f'stroke-width="20" stroke-linecap="round" '
+                           f'points="{_sx15:.2f},{_b15[1]:.2f} {_sx15:.2f},{_hy15:.2f}" />\n    ')
+            modified = modified.replace(_tag15, _new_stem15 + _tag15, 1)
+            _gxs15.append(_sx15)
+            _n_ext15[0] += 1
+    # (c) gruppi fuse che attraversano una barline: ricostruzione
+    # per battuta. La coppia full-width (prim+sec) copre teste di
+    # DUE battute: rimuovo ENTRAMBE e ricostruisco le beams di
+    # ogni battuta dalle teste del segmento (barline = confine):
+    # prim = copre tutti i gambi del segmento; sec = sulle teste
+    # con raggio minore (semicrome) se il segmento ha durate miste.
+    import os as _os15c
+    _n_c15 = [0]
+    for (_bf15, _cf15) in _fuse15:
+        _b15 = _bf15 if _bf15[1] < _cf15[1] else _cf15
+        _bars15c = []
+        for _m15b in re.finditer(r'<polyline class="BarLine"[^>]*points="([^"]+)"', modified):
+            _nn15b = [float(v) for v in _m15b.group(1).replace(',', ' ').split()]
+            if len(_nn15b) >= 4 and abs(_nn15b[0]-_nn15b[2]) < 1 \
+               and _b15[0] < _nn15b[0] < _b15[2]:
+                _bars15c.append(_nn15b[0])
+        if not _bars15c:
+            continue
+        _h15c = [(float(_m.group(1)), float(_m.group(2)), float(_m.group(3)), _m.group(0))
+                 for _m in re.finditer(r'<circle cx="([\d.]+)" cy="([\d.]+)" r="([\d.]+)" fill="([^"]+)"', modified)
+                 if _b15[0] - 700 <= float(_m.group(1)) <= _b15[2] + 700
+                 and _b15[3] < float(_m.group(2)) < _b15[3] + 700
+                 and float(_m.group(3)) in (58, 72, 88)]
+        _gxs15c = []
+        for _m15c in re.finditer(r'<polyline class="Stem"[^>]*points="([^"]+)"', modified):
+            _nn15c = [float(v) for v in _m15c.group(1).replace(',', ' ').split()]
+            if len(_nn15c) >= 4 and abs(_nn15c[0]-_nn15c[2]) < 1 \
+               and _b15[0] - 700 <= _nn15c[0] <= _b15[2] + 700 \
+               and max(_nn15c[1], _nn15c[3]) < _b15[3] + 500 \
+               and min(_nn15c[1], _nn15c[3]) > _b15[1] - 300:
+                _gxs15c.append(_nn15c[0])
+        if len(_gxs15c) < 2 or len(_h15c) < 3:
+            continue
+        _nt15, _nb15 = _b15[1], _b15[3]
+        _bounds15 = [_b15[0] - 700] + sorted(_bars15c) + [_b15[2] + 700]
+        _rm_ds15, _new15 = [], []
+        _seg_sec15 = []
+        for _si15 in range(len(_bounds15) - 1):
+            _l15, _r15 = _bounds15[_si15], _bounds15[_si15 + 1]
+            _hs15 = [h for h in _h15c if _l15 <= h[0] <= _r15]
+            if len(_hs15) < 2:
+                _seg_sec15.append(False)
+                continue
+            _gx15s = sorted(g for g in _gxs15c if _l15 <= g <= _r15)
+            if len(_gx15s) < 2:
+                _seg_sec15.append(False)
+                continue
+            _pl15, _pr15 = min(_gx15s) - 15, max(_gx15s) + 15
+            _new15.append(
+                f'<path class="Beam" d="M{_pl15:.2f},{_nt15:.2f} '
+                f'{_pr15:.2f},{_nt15:.2f} {_pr15:.2f},{_nb15:.2f} '
+                f'{_pl15:.2f},{_nb15:.2f}Z" fill="#000000" />')
+            _maxr15 = max(h[2] for h in _hs15)
+            _minr15 = min(h[2] for h in _hs15)
+            _made_sec15 = False
+            if _maxr15 > _minr15:
+                _hsx15 = sorted(h[0] + h[2] - 8 for h in _hs15 if h[2] < _maxr15)
+                _hsx15 = [sx for sx in _hsx15 if _l15 <= sx <= _r15]
+                if len(_hsx15) >= 2:
+                    _sy15 = _nb15 + 50
+                    _sy_th15 = _nb15 - _nt15
+                    _new15.append(
+                        f'<path class="Beam" d="M{_hsx15[0]-15:.2f},{_sy15:.2f} '
+                        f'{_hsx15[-1]+15:.2f},{_sy15:.2f} {_hsx15[-1]+15:.2f},{_sy15+_sy_th15:.2f} '
+                        f'{_hsx15[0]-15:.2f},{_sy15+_sy_th15:.2f}Z" fill="#000000" />')
+                    _made_sec15 = True
+            _seg_sec15.append(_made_sec15)
+        if len(_new15) < 1:
+            continue
+        # aggiorna i gambi del segmento: le teste sotto la sec si
+        # attaccano al bottom della sec (stems-up), le altre alla prim
+        _sec_top15 = _nb15 + 50
+        _sec_bot15 = _nb15 + 50 + (_nb15 - _nt15)
+        for _si15 in range(len(_bounds15) - 1):
+            _l15, _r15 = _bounds15[_si15], _bounds15[_si15 + 1]
+            _hs15 = [h for h in _h15c if _l15 <= h[0] <= _r15]
+            if len(_hs15) < 2:
+                continue
+            _maxr15 = max(h[2] for h in _hs15)
+            _minr15 = min(h[2] for h in _hs15)
+            _has_sec = _maxr15 > _minr15 and _seg_sec15[_si15]
+            for h in _hs15:
+                # semicrome (raggio minore) si attaccano alla sec,
+                # le note con raggio maggiore alla primaria
+                _tgt15 = _sec_bot15 if (_has_sec and h[2] < _maxr15) else _nb15
+                _sx15 = h[0] + h[2] - 8
+                for _m15g in re.finditer(r'<polyline class="Stem"[^>]*points="([^"]+)"', modified):
+                    _nn15g = [float(v) for v in _m15g.group(1).replace(',', ' ').split()]
+                    if len(_nn15g) >= 4 and abs(_nn15g[0]-_nn15g[2]) < 1 \
+                       and abs(_nn15g[0] - _sx15) < 30 \
+                       and max(_nn15g[1], _nn15g[3]) < _b15[3] + 500 \
+                       and min(_nn15g[1], _nn15g[3]) > _b15[1] - 300:
+                        _old_pts15 = _m15g.group(1)
+                        if modified.count(f'points="{_old_pts15}"') == 1:
+                            _y_top15 = min(_nn15g[1], _nn15g[3])
+                            if abs(_y_top15 - _tgt15) > 30:
+                                _new_pts15 = _old_pts15.replace(
+                                    f'{_y_top15:.2f}', f'{_tgt15:.2f}', 1)
+                                _f_new = _new_pts15.rstrip()
+                                modified = modified.replace(
+                                    f'points="{_old_pts15}"', f'points="{_new_pts15}"', 1)
+        # beams pre-esistenti il cui X sta interamente in un segmento
+        # ricostruito e con Y vicina = residui: rimuovi
+        for _m15e in list(re.finditer(r'<path class="Beam"[^>]*d="([^"]+)"', modified)):
+            _n15e = [float(v) for v in re.findall(r'-?[\d.]+(?:e-?\d+)?', _m15e.group(1))]
+            if len(_n15e) < 8:
+                continue
+            _xl15, _xr15 = min(_n15e[0::2]), max(_n15e[0::2])
+            _yt15, _yb15 = min(_n15e[1::2]), max(_n15e[1::2])
+            if abs(_yt15 - _nt15) > 60:
+                continue
+            if _m15e.group(1) in _rm_ds15:
+                continue
+            for _si15 in range(len(_bounds15) - 1):
+                _l15, _r15 = _bounds15[_si15], _bounds15[_si15 + 1]
+                if _l15 + 20 < _xl15 and _xr15 < _r15 - 20:
+                    _seg_has_new = any(
+                        abs(float(re.findall(r'-?[\d.]+', _nd15.split('d="')[1])[0]) - _l15) < 900
+                        for _nd15 in _new15)
+                    if _seg_has_new:
+                        _old_d15e = _m15e.group(1)
+                        if modified.count(f'd="{_old_d15e}"') == 1:
+                            _mm15e = re.search(r'<path class="Beam"[^>]*d="' + re.escape(_old_d15e) + r'"[^>]*/>\s*', modified)
+                            if _mm15e:
+                                modified = modified.replace(_mm15e.group(0), '')
+                                _n_ext15[0] -= 0
+                    break
+        # rimuovi le 2 beams fuse (i loro d sono unici)
+        for _d15 in (_bf15[4], _cf15[4]):
+            if modified.count(f'd="{_d15}"') == 1:
+                _mm15c = re.search(r'<path class="Beam"[^>]*d="' + re.escape(_d15) + r'"[^>]*/>\s*', modified)
+                if _mm15c:
+                    modified = modified.replace(_mm15c.group(0), '')
+                    _rm_ds15.append(_d15)
+        if not _rm_ds15:
+            continue
+        _ins15 = '\n    '.join(_new15)
+        modified = modified.replace(_rm_ds15[0], f'd="{_rm_ds15[0]}"\n    ', 1)
+        # reinserisci: sostituisci il primo path rimasto con il
+        # blocco nuovo + il path originale (il path originale e
+        # stato rimosso sopra, quindi rimetterlo = ins blocco)
+        _anchor15 = _rm_ds15[0] if len(_rm_ds15) == 2 else None
+        # semplice: inserisci il blocco nuovo prima del footer marker
+        # piu vicino: cerca il primo '</g>' dopo l'ultima barline
+        _bx15 = _bars15c[-1] if len(_bars15c) else _b15[0]
+        _gpos15 = modified.find('</g>', int(_bx15) if _bx15 < len(modified) else 0)
+        # fallback: inserisci dopo l'ultimo path Beam rimasto
+        _last15 = None
+        for _m15d in re.finditer(r'<path class="Beam"[^>]*/>', modified):
+            _last15 = _m15d.group(0)
+        if _last15:
+            modified = modified.replace(_last15, _last15 + '\n    ' + _ins15, 1)
+        _n_c15[0] += 1
+        _n_ext15[0] += len(_new15)
+    print(f'[PASS15] secondarie full-width spurie rimosse: {_n_rm15[0]}, beams estese/gambi aggiunti: {_n_ext15[0]}, gruppi fuse ricostruiti: {_n_c15[0]}')
+
     
 
 
