@@ -14818,6 +14818,473 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
     if _st19[0]:
         print('[PASS19] secondarie create: ' + str(_st19[0]))
 
+    # ---------- PASS 20: allineamento beams ai gambi del gruppo (rhythm) ----------
+    # Le beams RAW di MuseScore attraversano i confini di battuta (gruppi
+    # multi-battuta); la frammentazione per-battuta del postprocessore le
+    # mappa con scale diverse per battuta = prim/sec disallineate, sec che
+    # coprono la parte sbagliata del gruppo, frammenti spaiati sovrapposti.
+    # FIX: per ogni FAMIGLIA di beams sovrapposte (stesso gruppo), riallineare
+    # gli span X ai GAMBI delle note coperte (i gambi sono posizionati bene
+    # dal flusso note): prim = [gambo prima nota .. gambo ultima nota],
+    # sec = [gambo prima 16a .. gambo ultima 16a] (solo se il gruppo ha 16a).
+    if rhythm_mode:
+        _beams20 = []
+        for _m20 in re.finditer(r'<path class="Beam"[^>]*d="([^"]+)"[^>]*/?>', modified):
+            _d20 = _m20.group(1)
+            _n20 = [float(_v20) for _v20 in re.findall(r'-?[\d.]+(?:e-?\d+)?', _d20)]
+            if len(_n20) >= 6:
+                _beams20.append({'start': _m20.start(), 'end': _m20.end(),
+                                 'd': _d20,
+                                 'xl': min(_n20[0::2]), 'yt': min(_n20[1::2]),
+                                 'xr': max(_n20[0::2]), 'yb': max(_n20[1::2])})
+        # teste e gambi del rigo corrente (stessa pagina, riconosciuti per Y)
+        _heads20 = []
+        for _m20 in re.finditer(r'<circle cx="([\d.]+)" cy="([\d.]+)" r="([\d.]+)" fill="#', modified):
+            _cx20, _cy20, _cr20 = float(_m20.group(1)), float(_m20.group(2)), float(_m20.group(3))
+            if _cr20 < 100:
+                _heads20.append((_cx20, _cy20, _cr20))
+        _stems20 = []
+        for _m20 in re.finditer(r'<polyline class="Stem"[^>]*points="([^"]+)"', modified):
+            _p20 = [float(_v20) for _v20 in _m20.group(1).replace(',', ' ').split()]
+            if len(_p20) >= 4 and abs(_p20[0] - _p20[2]) < 5:
+                _sy_t20, _sy_b20 = min(_p20[1], _p20[3]), max(_p20[1], _p20[3])
+                _stems20.append((_p20[0], _sy_t20, _sy_b20))
+        # gruppi di teste per beam: la beam copre le teste sotto di essa
+        _fams20 = []
+        for _b20 in _beams20:
+            _placed20 = False
+            for _f20 in _fams20:
+                _ox20 = min(_b20['xr'], _f20['xr']) - max(_b20['xl'], _f20['xl'])
+                if _ox20 > 0.5 * min(_b20['xr'] - _b20['xl'], _f20['xr'] - _f20['xl']) \
+                        and abs(_b20['yt'] - _f20['yt']) < 400:
+                    _f20['beams'].append(_b20)
+                    _f20['xl'] = min(_f20['xl'], _b20['xl'])
+                    _f20['xr'] = max(_f20['xr'], _b20['xr'])
+                    _f20['yt'] = min(_f20['yt'], _b20['yt'])
+                    _f20['yb'] = max(_f20['yb'], _b20['yb'])
+                    _placed20 = True
+                    break
+            if not _placed20:
+                _fams20.append({'xl': _b20['xl'], 'xr': _b20['xr'], 'yt': _b20['yt'], 'yb': _b20['yb'], 'beams': [_b20]})
+        _fixed20 = [0]
+        for _f20 in _fams20:
+            _cnt20 = len(_f20['beams'])
+            if _cnt20 < 1:
+                continue
+            # teste sotto la famiglia (beam sotto le teste in rhythm: teste y > beam yb)
+            _ts20 = sorted([h for h in _heads20
+                            if _f20['xl'] - 120 <= h[0] <= _f20['xr'] + 120
+                            and _f20['yb'] + 40 < h[1] < _f20['yb'] + 900
+                            and h[2] < 100])
+            if not _ts20:
+                continue
+            # gambi delle teste (x del gambo: stems-up in rhythm = hx + r - 8)
+            _gxs20 = []
+            for _h20 in _ts20:
+                _gx20 = _h20[0] + _h20[2] - 8
+                # verifica che esista un gambo vicino
+                if any(abs(_sp20[0] - _gx20) < 25 and abs(_sp20[1] - (_f20['yb'] + 10)) < 120 for _sp20 in _stems20):
+                    _gxs20.append(_gx20)
+            if not _gxs20:
+                continue
+            _six20 = sorted([h for h in _ts20 if round(h[2]) == 58])
+            # gambi che raggiungono la PRIM (attaccati al suo fondo): la prim si
+            # estende solo sulle note che vi si attaccano davvero
+            _prim20 = max(_f20['beams'], key=lambda b: b['xr'] - b['xl'])
+            # REGOLA D: le teste del gruppo = quelle i cui gambi NON si attaccano a
+            # beam di ALTRE famiglie (beam fuori dalla famiglia corrente). I gambi che
+            # raggiungono una beam esterna appartengono a un gruppo diverso: la prim
+            # va troncata prima di loro.
+            _fam_ids20 = set(id(_bb20) for _bb20 in _f20['beams'])
+            _other_beams20 = [_ob20 for _ob20 in _beams20 if id(_ob20) not in _fam_ids20]
+            _pgxs20 = []
+            # REGOLA D SOLO per famiglie mono-beam: nelle coppie impilate i gambi
+            # delle 16a si attaccano alla sec (beam più vicina) e la prim copre
+            # comunque il gruppo intero (troncarla la distruggerebbe)
+            _mono20 = (len(_f20['beams']) == 1)
+            for _h20 in _ts20 if _mono20 else []:
+                if True:
+                    _gx20 = _h20[0] + _h20[2] - 8
+                    _sp20 = None
+                    for _spc20 in _stems20:
+                        if abs(_spc20[0] - _gx20) < 25:
+                            _sp20 = _spc20
+                            break
+                    if _sp20 is None:
+                        continue
+                    # il gambo si attacca a una beam di un'altra famiglia? (più vicina della prim)
+                    _goes_elsewhere20 = False
+                    _dprim20 = abs(_sp20[1] - _prim20['yb'])
+                    if _dprim20 < 65:
+                        for _ob20 in _other_beams20:
+                            if _ob20['xl'] - 40 <= _gx20 <= _ob20['xr'] + 40 \
+                                    and abs(_sp20[1] - _ob20['yb']) < _dprim20:
+                                _goes_elsewhere20 = True
+                                break
+                    else:
+                        # il gambo non raggiunge la prim: conta solo se raggiunge una beam esterna
+                        for _ob20 in _other_beams20:
+                            if _ob20['xl'] - 40 <= _gx20 <= _ob20['xr'] + 40 \
+                                    and abs(_sp20[1] - _ob20['yb']) < 30:
+                                _goes_elsewhere20 = True
+                                break
+                    if not _goes_elsewhere20:
+                        _pgxs20.append(_gx20)
+            if _pgxs20:
+                _prim_xl20 = min(_pgxs20)
+                _prim_xr20 = max(_pgxs20)
+            else:
+                _prim_xl20 = min(_gxs20)
+                _prim_xr20 = max(_gxs20)
+            _beams_sorted20 = sorted(_f20['beams'], key=lambda b: b['yt'])
+            if _six20 and _cnt20 >= 2:
+                _sec_xl20 = min(_six20, key=lambda h: h[0])[0] + 50
+                _sec_xr20 = max(_six20, key=lambda h: h[0])[0] + 50
+            for _b20 in _f20['beams']:
+                _is_prim20 = _b20 is _prim20
+                _nl20 = _prim_xl20 if _is_prim20 else _sec_xl20
+                _nr20 = _prim_xr20 if _is_prim20 else _sec_xr20
+                if _nl20 is None:
+                    continue
+                _new_d20 = _b20['d']
+                _new_d20 = re.sub(r'(-?[\d.]+)(?=,| L|[ \"]|$)',
+                                  lambda _mm20: ('%.1f' % _nl20) if _mm20.group(1) == ('%.1f' % _b20['xl']) or abs(float(_mm20.group(1)) - _b20['xl']) < 0.05 else _mm20.group(1), _new_d20)
+                _new_d20 = re.sub(r'(-?[\d.]+)',
+                                  lambda _mm20: ('%.1f' % _nr20) if abs(float(_mm20.group(1)) - _b20['xr']) < 0.05 else _mm20.group(1), _new_d20)
+                if _new_d20 != _b20['d']:
+                    _old_tag20 = modified[_b20['start']:_b20['end']]
+                    _new_tag20 = _old_tag20.replace('d="%s"' % _b20['d'], 'd="%s"' % _new_d20)
+                    modified = modified[:_b20['start']] + _new_tag20 + modified[_b20['end']:]
+                    _fixed20[0] += 1
+                    # offset shift per le beams successive già raccolte
+                    _shift20 = len(_new_tag20) - len(_old_tag20)
+                    for _f220 in _fams20:
+                        for _b220 in _f220['beams']:
+                            if _b220['start'] > _b20['start']:
+                                _b220['start'] += _shift20
+                                _b220['end'] += _shift20
+        if _fixed20[0]:
+            print('[PASS20] beams riallineate: ' + str(_fixed20[0]))
+
+    # ---------- PASS 20b: pulizia beams volanti e copertura crome scoperte (rhythm) ----------
+    # Dopo l'allineamento del Pass 20 una beam può restare orfana (nessun gambo
+    # la raggiunge): se copre crome (r72) non coperte da altre beam → RIDIMENSIONALA
+    # alle crome scoperte (prim del gruppo [c c]); altrimenti, se sovrannumeraria
+    # (3ª linea impilata / frammento spaiato) → RIMUOVILA. Loop a riscansione
+    # completa: ogni modifica invalida gli offset, quindi si riscansiona finché
+    # non ci sono più beam volanti (max 15 iterazioni).
+    if rhythm_mode:
+        _fixed20b_tot = [0]
+        for _iter20b in range(60):
+            _beams20b = []
+            for _m20b in re.finditer(r'<path class="Beam"[^>]*d="([^"]+)"[^>]*/?>', modified):
+                _d20b = _m20b.group(1)
+                _n20b = [float(_v20b) for _v20b in re.findall(r'-?[\d.]+(?:e-?\d+)?', _d20b)]
+                if len(_n20b) >= 6:
+                    _beams20b.append({'start': _m20b.start(), 'end': _m20b.end(), 'd': _d20b,
+                                      'xl': min(_n20b[0::2]), 'yt': min(_n20b[1::2]),
+                                      'xr': max(_n20b[0::2]), 'yb': max(_n20b[1::2])})
+            if not _beams20b:
+                break
+            _heads20b = []
+            for _m20b in re.finditer(r'<circle cx="([\d.]+)" cy="([\d.]+)" r="([\d.]+)" fill="#', modified):
+                _cx20b, _cy20b, _cr20b = float(_m20b.group(1)), float(_m20b.group(2)), float(_m20b.group(3))
+                if _cr20b < 100:
+                    _heads20b.append((_cx20b, _cy20b, _cr20b))
+            _stems20b = []
+            for _m20b in re.finditer(r'<polyline class="Stem"[^>]*points="([^"]+)"', modified):
+                _p20b = [float(_v20b) for _v20b in _m20b.group(1).replace(',', ' ').split()]
+                if len(_p20b) >= 4 and abs(_p20b[0] - _p20b[2]) < 5:
+                    _stems20b.append((_p20b[0], min(_p20b[1], _p20b[3]), max(_p20b[1], _p20b[3])))
+
+            def _reached_by20b(_b):
+                # il gambo si attacca alla beam il cui FONDO è il più vicino al top
+                # del gambo TRA le beams che lo coprono in X (le coppie impilate:
+                # i gambi partono dalla beam più vicina, l'altra è volante)
+                for _sp in _stems20b:
+                    if not (_b['xl'] - 40 <= _sp[0] <= _b['xr'] + 40):
+                        continue
+                    _cands = [_o for _o in _beams20b
+                              if _o is not _b
+                              and _o['xl'] - 40 <= _sp[0] <= _o['xr'] + 40
+                              and abs(_o['yb'] - _sp[1]) < 250
+                              and abs(_o['yt'] - _b['yt']) < 250]
+                    _db = abs(_b['yb'] - _sp[1])
+                    if _db < 30 and all(_db <= abs(_o['yb'] - _sp[1]) for _o in _cands):
+                        return True
+                return False
+
+            def _covering_beam20b(_h, _exclude):
+                # beam (≠ exclude) raggiunta da un gambo che parte dalla testa h
+                _gx = _h[0] + _h[2] - 8
+                for _b in _beams20b:
+                    if _b is _exclude or not (_b['xl'] - 40 <= _gx <= _b['xr'] + 40):
+                        continue
+                    for _sp in _stems20b:
+                        if abs(_sp[0] - _gx) < 25 and abs(_sp[1] - _b['yb']) < 30:
+                            _cands2 = [_o for _o in _beams20b
+                                       if _o is not _b
+                                       and _o['xl'] - 40 <= _gx <= _o['xr'] + 40
+                                       and abs(_o['yb'] - _sp[1]) < abs(_sp[1] - _b['yb'])]
+                            if not _cands2:
+                                return _b
+                return None
+
+            def _is_valid_sec_excl20b(_prim, _self):
+                # la prim ha GIÀ una sec valida (diversa da _self)?
+                for _s20b in _beams20b:
+                    if _s20b is _self or _s20b is _prim:
+                        continue
+                    _th20b = _s20b['yb'] - _s20b['yt']
+                    if abs(_s20b['yt'] - (_prim['yt'] - _th20b - 15)) < 25 \
+                            and _prim['xl'] - 80 <= _s20b['xl'] and _s20b['xr'] <= _prim['xr'] + 80 \
+                            and abs(_prim['yt'] - _s20b['yt']) < 300:
+                        return True
+                return False
+
+            def _is_valid_sec20b(_b):
+                # sec valida = a gap ~15 sopra una prim raggiunta, ed è la candidata
+                # PIÙ ALTA (yt minimo) per quella prim: una prim ha UNA sola sec
+                _th = _b['yb'] - _b['yt']
+                for _o in _beams20b:
+                    if _o is _b or not _reached_by20b(_o):
+                        continue
+                    if abs(_b['yt'] - (_o['yt'] - _th - 15)) < 25 \
+                            and _o['xl'] - 80 <= _b['xl'] and _b['xr'] <= _o['xr'] + 80 \
+                            and abs(_o['yt'] - _b['yt']) < 300:
+                        # esiste una candidata più alta per la stessa prim? → questa non è la sec
+                        for _s2 in _beams20b:
+                            if _s2 is _b or _s2 is _o:
+                                continue
+                            _th2 = _s2['yb'] - _s2['yt']
+                            if abs(_s2['yt'] - (_o['yt'] - _th2 - 15)) < 25 \
+                                    and _o['xl'] - 80 <= _s2['xl'] and _s2['xr'] <= _o['xr'] + 80 \
+                                    and abs(_o['yt'] - _s2['yt']) < 300 \
+                                    and _s2['yt'] < _b['yt']:
+                                return False
+                        return True
+                return False
+
+            _did20b = False
+            for _b20b in _beams20b:
+                if _reached_by20b(_b20b) or _is_valid_sec20b(_b20b):
+                    continue
+                # volante: crome r72 coperte SOLO da questa beam?
+                _cs20b = sorted([h for h in _heads20b
+                                 if round(h[2]) == 72
+                                 and _b20b['xl'] - 60 <= h[0] + h[2] - 8 <= _b20b['xr'] + 60
+                                 and _b20b['yb'] + 40 < h[1] < _b20b['yb'] + 900])
+                _uncovered20b = [h for h in _cs20b if _covering_beam20b(h, _b20b) is None]
+                if len(_uncovered20b) >= 2:
+                    _gxs20b = [h[0] + h[2] - 8 for h in _uncovered20b]
+                    _nl20b, _nr20b = min(_gxs20b), max(_gxs20b)
+                    _new_d20b = re.sub(r'-?[\d.]+(?:e-?\d+)?',
+                                       lambda _mm, _b=_b20b, _nl=_nl20b, _nr=_nr20b:
+                                       ('%.1f' % _nl) if abs(float(_mm.group(0)) - _b['xl']) < 0.05
+                                       else (('%.1f' % _nr) if abs(float(_mm.group(0)) - _b['xr']) < 0.05
+                                             else _mm.group(0)), _b20b['d'])
+                    if _new_d20b != _b20b['d']:
+                        _ot20b = modified[_b20b['start']:_b20b['end']]
+                        _nt20b = _ot20b.replace('d="%s"' % _b20b['d'], 'd="%s"' % _new_d20b)
+                        modified = modified[:_b20b['start']] + _nt20b + modified[_b20b['end']:]
+                        _fixed20b_tot[0] += 1
+                        _did20b = True
+                        break
+                # volante che copre >=2 semicrome (r58) già coperte da una beam
+                # raggiunta dai gambi = la SECONDARIA del gruppo: riposizionala
+                # sulle 16a a gap 15 sopra la prim (stems-up), NON rimuoverla
+                _sixs20b = sorted([h for h in _heads20b
+                                   if round(h[2]) == 58
+                                   and _b20b['xl'] - 60 <= h[0] + 50 <= _b20b['xr'] + 60
+                                   and _b20b['yb'] + 40 < h[1] < _b20b['yb'] + 900])
+                _sec_done20b = False
+                if len(_sixs20b) >= 2:
+                    _prim_cand20b = None
+                    for _o20b in _beams20b:
+                        if _o20b is _b20b or not _reached_by20b(_o20b):
+                            continue
+                        if _o20b['xl'] - 60 <= _sixs20b[0][0] and _sixs20b[-1][0] <= _o20b['xr'] + 60 \
+                                and abs(_o20b['yt'] - _b20b['yt']) < 300:
+                            _prim_cand20b = _o20b
+                            break
+                    if _prim_cand20b is not None and not _is_valid_sec_excl20b(_prim_cand20b, _b20b):
+                        _sgxs20b = [h[0] + 50 for h in _sixs20b]
+                        _nl20b, _nr20b = min(_sgxs20b), max(_sgxs20b)
+                        # gap 15 sopra la prim (stems-up: prim sotto, sec sopra)
+                        _th20b = _b20b['yb'] - _b20b['yt']  # spessore della sec stessa
+                        _dy20b = (_prim_cand20b['yt'] - _th20b - 15) - _b20b['yt']
+                        _new_d20b = re.sub(r'-?[\d.]+(?:e-?\d+)?',
+                                            lambda _mm, _b=_b20b, _nl=_nl20b, _nr=_nr20b, _dy=_dy20b:
+                                            (('%.1f' % _nl) if abs(float(_mm.group(0)) - _b['xl']) < 0.05
+                                             else ('%.1f' % _nr) if abs(float(_mm.group(0)) - _b['xr']) < 0.05
+                                             else ('%.1f' % (float(_mm.group(0)) + _dy))), _b20b['d'])
+                        if _new_d20b != _b20b['d']:
+                            _ot20b = modified[_b20b['start']:_b20b['end']]
+                            _nt20b = _ot20b.replace('d="%s"' % _b20b['d'], 'd="%s"' % _new_d20b)
+                            modified = modified[:_b20b['start']] + _nt20b + modified[_b20b['end']:]
+                            _fixed20b_tot[0] += 1
+                            _did20b = True
+                            _sec_done20b = True
+                if _sec_done20b:
+                    break
+                # crome r72 scoperte (>=2 contigue, gambi che non raggiungono NESSUNA
+                # beam) = gruppo [c c] senza prim: ridimensiona la volante su di loro
+                else:
+                    # sovrannumeraria: rimuovi solo se un'altra beam vicina resta a coprire
+                    _has_near20b = any(_o is not _b20b
+                                      and abs(_o['yt'] - _b20b['yt']) < 250
+                                      and min(_o['xr'], _b20b['xr']) - max(_o['xl'], _b20b['xl']) > 0
+                                      for _o in _beams20b)
+                    if _has_near20b:
+                        modified = modified[:_b20b['start']] + modified[_b20b['end']:]
+                        _fixed20b_tot[0] += 1
+                        _did20b = True
+                        break
+            if not _did20b:
+                break
+        # ---------- PASS 20d: prim lunghe spurie (raggiunte per coincidenza) ----------
+        # Nel gruppo [16a 16a | quarter] del pattern m57/58, la prim full-width si
+        # estende fino al gambo del QUARTER (top a 4px dal bordo beam = "raggiunta"
+        # per coincidenza geometrica) mentre la prim VERA corta copre solo le 16a.
+        # Regola: due beams alla stessa Y (±5) con X-left uguale (±15), una corta
+        # (w<250) e una lunga (w>250): se la lunga copre teste non-16a (r89/90) e
+        # la corta è raggiunta dai gambi 16a → la LUNGA è spuria, rimuovila.
+        _removed20d = [0]
+        for _iter20d in range(40):
+            _beams20d = []
+            for _m20d in re.finditer(r'<path class="Beam"[^>]*d="([^"]+)"[^>]*/?>', modified):
+                _n20d = [float(_v20d) for _v20d in re.findall(r'-?[\d.]+(?:e-?\d+)?', _m20d.group(1))]
+                if len(_n20d) >= 6:
+                    _beams20d.append({'xl': min(_n20d[0::2]), 'yt': min(_n20d[1::2]),
+                                      'xr': max(_n20d[0::2]), 'yb': max(_n20d[1::2]),
+                                      'd': _m20d.group(1), 'start': _m20d.start(), 'end': _m20d.end()})
+            _heads20d = []
+            for _m20d in re.finditer(r'<circle cx="([\d.]+)" cy="([\d.]+)" r="([\d.]+)" fill="#', modified):
+                _cx20d, _cy20d, _cr20d = float(_m20d.group(1)), float(_m20d.group(2)), float(_m20d.group(3))
+                _heads20d.append((_cx20d, _cy20d, _cr20d))
+            _stems20d = []
+            for _m20d in re.finditer(r'<polyline class="Stem"[^>]*points="([^"]+)"', modified):
+                _p20d = [float(_v20d) for _v20d in _m20d.group(1).replace(',', ' ').split()]
+                if len(_p20d) >= 4 and abs(_p20d[0] - _p20d[2]) < 5:
+                    _stems20d.append((_p20d[0], min(_p20d[1], _p20d[3]), max(_p20d[1], _p20d[3])))
+            _did20d = False
+            for _i20d, _bl20d in enumerate(_beams20d):
+                if _bl20d['xr'] - _bl20d['xl'] < 250:
+                    continue
+                for _bs20d in _beams20d:
+                    if _bs20d is _bl20d:
+                        continue
+                    if _bs20d['xr'] - _bs20d['xl'] >= 250:
+                        continue
+                    if abs(_bs20d['yt'] - _bl20d['yt']) > 5:
+                        continue
+                    # la corta deve essere CONTENUTA nella lunga
+                    if not (_bl20d['xl'] - 15 <= _bs20d['xl'] and _bs20d['xr'] <= _bl20d['xr'] + 15):
+                        continue
+                    # la corta è raggiunta da >=2 gambi che la intersecano (vera prim)
+                    _sxs20d = [sp for sp in _stems20d
+                               if _bs20d['xl'] - 20 <= sp[0] <= _bs20d['xr'] + 20
+                               and sp[1] <= _bs20d['yb'] + 5 and sp[2] >= _bs20d['yt'] - 5]
+                    if len(_sxs20d) < 2:
+                        continue
+                    # la lunga copre teste non-16a (r 88/89/90) FUORI dalla corta?
+                    _bad20d = [h for h in _heads20d
+                               if (h[0] < _bs20d['xl'] - 30 or h[0] > _bs20d['xr'] + 30)
+                               and _bl20d['xl'] - 60 <= h[0] <= _bl20d['xr'] + 60
+                               and abs(h[1] - _bl20d['yt']) < 900
+                               and 85 <= round(h[2]) <= 92]
+                    if not _bad20d:
+                        continue
+                    # la corta e la lunga partono insieme ma finiscono diverso = spuria
+                    modified = modified[:_bl20d['start']] + modified[_bl20d['end']:]
+                    _removed20d[0] += 1
+                    _did20d = True
+                    break
+                if _did20d:
+                    break
+            if not _did20d:
+                break
+        if _removed20d[0]:
+            print('[PASS20d] prim spurie rimosse: ' + str(_removed20d[0]))
+        # ---------- PASS 20c: crome [c c] rimaste senza prim (rhythm) ----------
+        # Dopo le riparazioni, un gruppo [c c] può restare scoperto (la sua prim
+        # originale è stata rimossa come volante): le crome r72 contigue (>=2) i cui
+        # gambi non raggiungono NESSUNA beam → CREARE la prim [gambo1..gambo2]
+        # appena sopra i gambi (y = stem_top - 47 - 10).
+        _created20c = [0]
+        for _iter20c in range(30):
+            _beams20c = []
+            for _m20c in re.finditer(r'<path class="Beam"[^>]*d="([^"]+)"[^>]*/?>', modified):
+                _n20c = [float(_v20c) for _v20c in re.findall(r'-?[\d.]+(?:e-?\d+)?', _m20c.group(1))]
+                if len(_n20c) >= 6:
+                    _beams20c.append((min(_n20c[0::2]), min(_n20c[1::2]), max(_n20c[0::2]), max(_n20c[1::2])))
+            _heads20c = []
+            for _m20c in re.finditer(r'<circle cx="([\d.]+)" cy="([\d.]+)" r="([\d.]+)" fill="#', modified):
+                _cx20c, _cy20c, _cr20c = float(_m20c.group(1)), float(_m20c.group(2)), float(_m20c.group(3))
+                if round(_cr20c) == 72:
+                    _heads20c.append((_cx20c, _cy20c, _cr20c))
+            _stems20c = []
+            for _m20c in re.finditer(r'<polyline class="Stem"[^>]*points="([^"]+)"', modified):
+                _p20c = [float(_v20c) for _v20c in _m20c.group(1).replace(',', ' ').split()]
+                if len(_p20c) >= 4 and abs(_p20c[0] - _p20c[2]) < 5:
+                    _stems20c.append((_p20c[0], min(_p20c[1], _p20c[3]), max(_p20c[1], _p20c[3])))
+            _did20c = False
+            # raggruppa per rigo (Y): le teste gemelle dei sistemi diversi hanno la
+            # stessa X e nella lista ordinata per X la coppia adiacente sarebbe sbagliata
+            _rows20c = {}
+            for _h20c in _heads20c:
+                _rk20c = round(_h20c[1] / 400)
+                _rows20c.setdefault(_rk20c, []).append(_h20c)
+            _pairs20c = []
+            for _rk20c in sorted(_rows20c):
+                _rl20c = sorted(_rows20c[_rk20c])
+                for _i20c in range(len(_rl20c) - 1):
+                    _pairs20c.append((_rl20c[_i20c], _rl20c[_i20c + 1]))
+            for _h120c, _h220c in _pairs20c:
+                _gx120c, _gx220c = _h120c[0] + _h120c[2] - 8, _h220c[0] + _h220c[2] - 8
+                if not (0 < _gx220c - _gx120c < 400):
+                    continue
+                if abs(_h120c[1] - _h220c[1]) > 200:
+                    continue
+                # il gambo giusto = quello VICINO alla testa in Y (stesso rigo):
+                # a ogni X ci sono gambi omonimi di righi diversi
+                _sp120c = _sp220c = None
+                for _sp20c in _stems20c:
+                    if abs(_sp20c[0] - _gx120c) < 25 and abs(_sp20c[2] - _h120c[1]) < 120:
+                        _sp120c = _sp20c
+                    if abs(_sp20c[0] - _gx220c) < 25 and abs(_sp20c[2] - _h220c[1]) < 120:
+                        _sp220c = _sp20c
+                if _sp120c is None or _sp220c is None:
+                    continue
+                # gambi che non raggiungono nessuna beam
+                _covered20c = False
+                for _b20c in _beams20c:
+                    if abs(_b20c[1] - min(_sp120c[1], _sp220c[1])) > 300:
+                        continue  # beam di un altro rigo
+                    for _sp20c in (_sp120c, _sp220c):
+                        if _b20c[0] - 40 <= _sp20c[0] <= _b20c[2] + 40 and abs(_sp20c[1] - _b20c[3]) < 30:
+                            _covered20c = True
+                if _covered20c:
+                    continue
+                # crea la prim
+                _ytop20c = min(_sp120c[1], _sp220c[1]) - 47 - 10
+                _new20c = ('<path class="Beam" fill-rule="evenodd" d="M%.1f,%.1f L%.1f,%.1f '
+                           'L%.1f,%.1f L%.1f,%.1f L%.1f,%.1f "/>'
+                           % (_gx120c, _ytop20c, _gx220c, _ytop20c, _gx220c, _ytop20c + 47,
+                              _gx120c, _ytop20c + 47, _gx120c, _ytop20c))
+                _ins20c = modified.rfind('</svg>')
+                if _ins20c > 0:
+                    modified = modified[:_ins20c] + _new20c + modified[_ins20c:]
+                    _created20c[0] += 1
+                    _did20c = True
+                    break
+            if not _did20c:
+                break
+        if _created20c[0]:
+            print('[PASS20c] prim crome create: ' + str(_created20c[0]))
+        if _fixed20b_tot[0]:
+            print('[PASS20b] beams volanti riparate: ' + str(_fixed20b_tot[0]))
+
 
 
     # FOOTER COPYRIGHT su ogni pagina.
