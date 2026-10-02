@@ -14562,6 +14562,262 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     _st17[3] += 1
     print('[PASS17] beams: ' + str(_st17[0]) + ', gambi: ' + str(_st17[1]) + ', celle: ' + str(_st17[2]) + ', connettori: ' + str(_st17[3]))
 
+    # ---------- PASS 18: effetti collaterali della tavola risalita + hook sec spurie ----------
+    # Dopo il Pass 17 la tavola risale ma: (a) i NUMERI BATTUTA che stavano
+    # nella vecchia banda tavola restano dentro la riga risalita e vengono
+    # COPERTI dalle celle opache (numerazione mancante da b41); (b) i
+    # TRIANGOLI OTTAVA della tavola non erano inclusi nel Pass 17 e restano
+    # nel gap ("triangolini fuori posto"); (c) le sec corte (hook di
+    # semicroma) posizionate sulle CROME (teste tutte r58 nel range della
+    # sec, nessuna semicroma r72 coperta) = "travatura di semicroma sulle
+    # crome": rimuovi la sec spuria, o spostala sull'hook corretto se la
+    # semicroma sta dentro la prim.
+    _st18 = [0, 0, 0]
+    _tav_tops18 = []
+    for _m18 in re.finditer(r'<rect[^>]*height="175"[^>]*>', modified):
+        _ym18 = re.search(r' y="([\d.]+)"', _m18.group(0))
+        if _ym18:
+            _tav_tops18.append(float(_ym18.group(1)))
+    _tav_tops18 = sorted(set(_tav_tops18))
+    # (a) numeri battuta coperti dalle celle: y dentro [top, top+215] -> sopra
+    # la riga tavola (top - 90)
+    for _m18 in list(re.finditer(r'<text\b[^>]*>[^<]*</text>', modified)):
+        _tag18 = _m18.group(0)
+        _ym18 = re.search(r' y="([\d.]+)"', _tag18)
+        _xm18 = re.search(r' x="([\d.]+)"', _tag18)
+        if not _ym18 or not _xm18:
+            continue
+        _yv18 = float(_ym18.group(1))
+        _cont18 = re.search(r'>([0-9]{1,3})<', _m18.group(0))
+        if not _cont18:
+            continue
+        for _rt18 in _tav_tops18:
+            if _rt18 <= _yv18 <= _rt18 + 215:
+                _new_y18 = _rt18 - 90.0
+                _ntag18 = _tag18.replace(' y="' + _ym18.group(1) + '"', ' y="%.2f"' % _new_y18, 1)
+                if _ntag18 != _tag18:
+                    modified = modified.replace(_tag18, _ntag18, 1)
+                    _st18[0] += 1
+                break
+    # (b) triangoli ottava della tavola: polygon con y-top dentro la vecchia
+    # banda [top-300, top+400] -> shift della tavola (stesso dy del Pass 17)
+    for _m18 in list(re.finditer(r'<polygon\b[^>]*>', modified)):
+        _tag18 = _m18.group(0)
+        _pm18 = re.search(r'points="([^"]+)"', _tag18)
+        if not _pm18:
+            continue
+        _v18 = [float(x) for x in _pm18.group(1).replace(',', ' ').split()]
+        if len(_v18) < 6:
+            continue
+        _yt18 = min(_v18[1::2])
+        for _rt18 in _tav_tops18:
+            # dy della tavola: top attuale - vecchio top (il Pass 17 usa
+            # staff_bottom + 175): ricava il delta dalla banda: se il triangolo
+            # sta nel gap sopra la tavola attuale [top-500, top-50] e sotto il
+            # rigo precedente, risale di quanto serve per stare a top-108
+            if _rt18 + 50 <= _yt18 <= _rt18 + 950:
+                _dy18 = (_rt18 - 108.0) - _yt18
+                if abs(_dy18) < 1:
+                    break
+                _new18 = []
+                for _k18 in range(0, len(_v18), 2):
+                    _new18.append('%.2f,%.2f' % (_v18[_k18], _v18[_k18 + 1] + _dy18))
+                _npts18 = ' '.join(_new18)
+                if _npts18 != _pm18.group(1) and modified.count('points="' + _pm18.group(1) + '"') == 1:
+                    modified = modified.replace('points="' + _pm18.group(1) + '"', 'points="' + _npts18 + '"', 1)
+                    _st18[1] += 1
+                break
+    # (c) sec spurie sulle crome: sec corta (w<200) con prim contenente
+    # (gap 0-200) e NESSUNA testa r72 (semicroma) coperta dalla sec
+    _heads18 = []
+    for _m18 in re.finditer(r'<circle cx="([\d.]+)" cy="([\d.]+)" r="([\d.]+)" fill="#', modified):
+        _heads18.append((float(_m18.group(1)), float(_m18.group(2)), float(_m18.group(3))))
+    _beams18 = []
+    for _m18 in re.finditer(r'<path class="Beam"[^>]*d="([^"]+)"', modified):
+        _n18 = [float(v) for v in re.findall(r'-?[\d.]+(?:e-?\d+)?', _m18.group(1))]
+        if len(_n18) >= 6:
+            _beams18.append({'xl': min(_n18[0::2]), 'yt': min(_n18[1::2]), 'xr': max(_n18[0::2]), 'yb': max(_n18[1::2]), 'd': _m18.group(1)})
+    _sec_drop18 = []   # (d) da rimuovere
+    _sec_move18 = []   # (d_old, hx72) da spostare sull'hook della semicroma
+    for _s18 in _beams18:
+        if _s18['xr'] - _s18['xl'] >= 200:
+            continue
+        _prims18 = [b for b in _beams18 if b is not _s18 and b['xl'] <= _s18['xl'] + 10 and b['xr'] >= _s18['xr'] - 10 and (b['xr'] - b['xl']) > 250 and abs(b['yt'] - _s18['yt']) < 220]
+        if not _prims18:
+            continue
+        _p18 = _prims18[0]
+        _gap18 = max(_p18['yt'], _s18['yt']) - min(_p18['yb'], _s18['yb'])
+        if _gap18 < 0 or _gap18 > 200:
+            continue
+        # teste nel range della sec (finestra Y: sopra la beam, rigo sotto)
+        _low18 = min(_p18['yt'], _s18['yt'])
+        _in_sec18 = [h for h in _heads18 if _s18['xl'] - 30 <= h[0] <= _s18['xr'] + 30 and _low18 - 1300 < h[1] < _low18 + 900]
+        _has72_sec = any(abs(h[2] - 72) < 3 for h in _in_sec18)
+        if _has72_sec:
+            continue
+        # semicrome r72 nel range della PRIM?
+        _in_prim18 = [h for h in _heads18 if _p18['xl'] - 30 <= h[0] <= _p18['xr'] + 30 and _low18 - 1300 < h[1] < _low18 + 900]
+        _h72s18 = [h for h in _in_prim18 if abs(h[2] - 72) < 3]
+        if _h72s18:
+            # hook spostato: la sec deve coprire TUTTE le semicrome del
+            # gruppo (gruppo croma+semicrome misto: le semicrome interne
+            # richiedono la doppia travatura sulla loro estensione)
+            _hxs18 = sorted(h[0] for h in _h72s18)
+            # contiguita': raggruppa le semicrome adiacenti (gap < 260px
+            # = passo nota) e prendi il gruppo che include la semicroma
+            # piu vicina al bordo della sec spuria
+            _groups18 = [[_hxs18[0]]]
+            for _hx18b in _hxs18[1:]:
+                if _hx18b - _groups18[-1][-1] < 260:
+                    _groups18[-1].append(_hx18b)
+                else:
+                    _groups18.append([_hx18b])
+            _best18 = min(_groups18, key=lambda g: min(abs(hx - (_s18['xl'] + _s18['xr']) / 2) for hx in g))
+            _sec_move18.append((_s18['d'], min(_best18), max(_best18)))
+        else:
+            _sec_drop18.append(_s18['d'])
+    for _d18 in _sec_drop18:
+        _tag18 = 'd="' + _d18 + '"'
+        if modified.count(_tag18) == 1:
+            _start18 = modified.find(_tag18)
+            _open18 = modified.rfind('<path', 0, _start18)
+            _end18 = modified.find('>', _start18)
+            if _open18 >= 0 and _end18 > _start18:
+                modified = modified[:_open18] + modified[_end18 + 1:]
+                _st18[2] += 1
+    for (_d18, _hx18_l, _hx18_r) in _sec_move18:
+        _tag18 = 'd="' + _d18 + '"'
+        if modified.count(_tag18) != 1:
+            continue
+        _m18b = re.search(r'd="' + re.escape(_d18) + '"', modified)
+        _n18b = [float(v) for v in re.findall(r'-?[\d.]+(?:e-?\d+)?', _d18)]
+        _th18 = max(_n18b[1::2]) - min(_n18b[1::2])
+        _r72_18 = 72.0
+        _xl18 = _hx18_l - _r72_18 - 4.7
+        _xr18 = _hx18_r + _r72_18 + 4.7
+        _yt18 = min(_n18b[1::2])
+        _new_d18 = 'M%.2f,%.2f L%.2f,%.2f' % (_xl18, _yt18, _xr18, _yt18 + _th18)
+        modified = modified.replace(_tag18, 'd="' + _new_d18 + '"', 1)
+        _st18[2] += 1
+    print('[PASS18] numeri: ' + str(_st18[0]) + ', triangoli: ' + str(_st18[1]) + ', sec fix: ' + str(_st18[2]))
+
+    # ---------- PASS 19: secondaria mancante sui gruppi croma+2semicrome (rhythm) ----------
+    # Sintomo (Radetsky b31-32 e altre battute pattern A "c s s c c"):
+    # nel layout rhythm il gruppo disegna la PRIMARIA che copre solo le
+    # 2-3 note interne (la prima croma resta fuori dal range beam) e la
+    # SECONDARIA sulle 2 semicrome adiacenti MANCA: le semicrome appaiono
+    # come crome (una sola travatura). FIX: per ogni primaria media
+    # (w 250-800) con 2-3 teste sotto la beam e la prima testa FUORI dal
+    # range della beam (a sinistra), crea la secondaria che copre le due
+    # teste adiacenti piu a destra sotto la beam: [x2 - r - 4.7, x3 + r + 4.7],
+    # y = prim_y_bot + 15 (sec SOTTO la prim, regola round 10, stems-up).
+    # Non crea nulla se una sec gia copre le due teste.
+    _st19 = [0]
+    _heads19 = []
+    for _m19 in re.finditer(r'<circle cx="([\d.]+)" cy="([\d.]+)" r="([\d.]+)" fill="#', modified):
+        _heads19.append((float(_m19.group(1)), float(_m19.group(2)), float(_m19.group(3))))
+    # righi (stafflines): per escludere le TESTE DELLA TAVOLA SONORA (le
+    # teste dei blocchi tavola stanno 400-800px sotto il fondo del rigo e
+    # in notazione finivano nella finestra Y del Pass 19 = sec spurie)
+    _staffs19 = []
+    for _sm19 in re.finditer(r'<polyline[^>]*class="StaffLines"[^>]*points="([^"]+)"', modified):
+        _sy19 = float(_sm19.group(1).replace(',', ' ').split()[1])
+        _joined19 = False
+        for _g19 in _staffs19:
+            if 100 < abs(_sy19 - _g19[-1]) < 400:
+                _g19.append(_sy19); _joined19 = True; break
+        if not _joined19:
+            _staffs19.append([_sy19])
+    def _staff_of19(_y19):
+        _best19 = None
+        for _g19 in _staffs19:
+            _rt19b, _rb19b = _g19[0], _g19[-1]
+            _d19b = 0 if (_rt19b - 150 <= _y19 <= _rb19b + 150) else min(abs(_y19 - _rt19b), abs(_y19 - _rb19b))
+            if _best19 is None or _d19b < _best19[0]:
+                _best19 = (_d19b, _rt19b, _rb19b)
+        return _best19
+    _beams19 = []
+    for _m19 in re.finditer(r'<path class="Beam"[^>]*d="([^"]+)"', modified):
+        _n19 = [float(v) for v in re.findall(r'-?[\d.]+(?:e-?\d+)?', _m19.group(1))]
+        if len(_n19) >= 6:
+            _beams19.append({'xl': min(_n19[0::2]), 'yt': min(_n19[1::2]),
+                             'xr': max(_n19[0::2]), 'yb': max(_n19[1::2]), 'd': _m19.group(1)})
+    _new_secs19 = []
+    for _b19 in _beams19:
+        _w19 = _b19['xr'] - _b19['xl']
+        if _w19 < 250 or _w19 > 800:
+            continue
+        # teste sotto la beam (stems-up: teste sotto la beam, gap < 900)
+        _low19 = _b19['yt']
+        _stf19 = _staff_of19(_low19)
+        if _stf19 is not None:
+            _rt19c, _rb19c = _stf19[1], _stf19[2]
+            _ts19 = sorted([h for h in _heads19 if _b19['xl'] - 400 <= h[0] <= _b19['xr'] + 100
+                            and _rt19c - 150 <= h[1] <= _rb19c + 150])
+        else:
+            # rhythm mode: niente StaffLines (le righe = micro-celle):
+            # nessun filtro staff, finestra Y ampia (le teste tavola del
+            # rhythm stanno a Y molto diverse dalle beams: i falsi
+            # positivi notazione non si applicano)
+            _ts19 = sorted([h for h in _heads19 if _b19['xl'] - 400 <= h[0] <= _b19['xr'] + 100
+                            and _low19 < h[1] < _low19 + 900])
+        if len(_ts19) < 3:
+            continue
+        # prima testa fuori dal range beam (a sinistra del bordo)?
+        if _ts19[0][0] >= _b19['xl'] - 10:
+            continue
+        # le teste DENTRO il range beam
+        _inside19 = [h for h in _ts19 if _b19['xl'] - 10 <= h[0] <= _b19['xr'] + 10]
+        if len(_inside19) < 2:
+            continue
+        # le due piu a destra sotto la beam = le semicrome del gruppo A
+        _x2_19 = _inside19[-2][0]
+        _x3_19 = _inside19[-1][0]
+        # le 2 semicrome adiacenti del gruppo: gap = 1 passo nota (~156):
+        # gap 250+ = note NON adiacenti (pattern diverso) = no sec; e
+        # l'ultima deve essere semicroma/croma (r58/72), mai semiminima
+        if _x3_19 - _x2_19 > 240 or _x3_19 - _x2_19 < 60:
+            continue
+        if round(_inside19[-1][2]) not in (58, 72):
+            continue
+        # sec gia presente che copre le due teste?
+        _covered19 = False
+        for _b2_19 in _beams19:
+            if _b2_19 is _b19:
+                continue
+            # stessa zona verticale del gruppo (stesso sistema): |dy| < 300
+            # (il check yt >= prim yt alone matcha beams di RIGHI DIVERSI
+            # con la stessa X: falso "covered")
+            _xl_c19 = _x2_19 + max(_inside19[-2][2], _inside19[-1][2]) - 8
+            _xr_c19 = _x3_19 + max(_inside19[-2][2], _inside19[-1][2]) + 4.7
+            if (abs(_b2_19['xl'] - _xl_c19) < 60 and abs(_b2_19['xr'] - _xr_c19) < 60
+                    and abs(_b2_19['yt'] - _b19['yt']) < 300):
+                _covered19 = True
+                break
+        if _covered19:
+            continue
+        _r19 = max(_inside19[-2][2], _inside19[-1][2])
+        # il gambo della prima semicroma (stems-up: a destra della testa,
+        # hx + r - 8): la secondaria parte dal gambo e copre fino al bordo
+        # dell'ultima semicroma + over 4.7
+        _xl19 = _x2_19 + _r19 - 8
+        _xr19 = _x3_19 + _r19 + 4.7
+        _yt19 = _b19['yb'] + 15.0
+        _th19 = 31.0
+        _new_secs19.append((_xl19, _yt19, _xr19, _yt19 + _th19))
+    for (_xl19, _yt19, _xr19, _yb19) in _new_secs19:
+        _new_d19 = ('<path class="Beam" fill="#000000" fill-rule="evenodd" '
+                    'd="M%.2f,%.2f L%.2f,%.2f L%.2f,%.2f L%.2f,%.2f L%.2f,%.2f "/>'
+                    % (_xl19, _yt19, _xr19, _yt19, _xr19, _yb19, _xl19, _yb19, _xl19, _yt19))
+        # inserire PRIMA del tag di chiusura SVG (append fuori dal <svg>
+        # = XML malformato "junk after document element")
+        _ins19 = modified.rfind('</svg>')
+        if _ins19 > 0:
+            modified = modified[:_ins19] + _new_d19 + modified[_ins19:]
+            _st19[0] += 1
+    if _st19[0]:
+        print('[PASS19] secondarie create: ' + str(_st19[0]))
+
 
 
     # FOOTER COPYRIGHT su ogni pagina.
