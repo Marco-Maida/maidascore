@@ -14311,6 +14311,258 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 _n_d16[0] += 1
     print('[PASS16d] beams estese sui gambi del gruppo: ' + str(_n_d16[0]))
 
+    # ---------- PASS 17: tavole spinte nel gap + coppie parcheggiate sovrapposte ----------
+    # Sintomo: la riga-celle di alcune tavole resta ~886px sotto il fondo del
+    # proprio rigo (invece di ~175) e finisce DENTRO le beams delle coppie
+    # parcheggiate nel gap; i connettori nota->tavola diventano linee lunghe
+    # h~1100 che attraversano tutto il gap ("linee verticali a casaccio").
+    # FIX coordinato per ogni sistema affetto:
+    #  (1) i cluster di beams parcheggiate nel gap salgono al loro posto
+    #      standard: stems-down (teste sopra la beam) -> dentro il rigo
+    #      (cluster top = staff_bottom - 20 - spessore); stems-up (teste
+    #      sotto la beam) -> appena sopra il rigo (cluster bottom =
+    #      staff_top - 20); gap interni del cluster preservati (shift unico);
+    #  (2) ogni gambo con endpoint sul bordo di una beam del cluster segue
+    #      lo shift di quel cluster;
+    #  (3) la riga tavola risale al delta standard (staff_bottom + 175);
+    #  (4) i connettori che finivano nella vecchia riga vengono riancorati al
+    #      nuovo fondo cella (+5).
+    _st17 = [0, 0, 0, 0]
+    _bars17 = []
+    for _m17 in re.finditer(r'<polyline class="BarLine"[^>]*points="([^"]+)"', modified):
+        _p17 = [float(v) for v in _m17.group(1).replace(',', ' ').split()]
+        if len(_p17) >= 4 and abs(_p17[0] - _p17[2]) < 1 and (_p17[3] - _p17[1]) > 350:
+            _bars17.append((round(min(_p17[1], _p17[3])), round(max(_p17[1], _p17[3]))))
+    _staffs17 = sorted(set(_bars17))
+    _tav_tops17 = []
+    for _m17 in re.finditer(r'<rect[^>]*height="175"[^>]*>', modified):
+        _ym17 = re.search(r' y="([\d.]+)"', _m17.group(0))
+        if _ym17:
+            _tav_tops17.append(float(_ym17.group(1)))
+    _tav_tops17 = sorted(set(_tav_tops17))
+    for _tr17 in _tav_tops17:
+        _sbs17 = [_b17 for _b17 in _staffs17 if _b17[1] <= _tr17]
+        if not _sbs17:
+            continue
+        _sb17 = max(_b17[1] for _b17 in _sbs17)
+        _st17_top = None
+        for _b17 in _staffs17:
+            if _b17[0] >= _tr17:
+                _st17_top = _b17[0]
+                break
+        if _tr17 - _sb17 <= 500:
+            continue
+        _zone_lo17, _zone_hi17 = _sb17 + 50, _tr17 + 400
+        # beams della zona, con banda (yt, yb, xl, xr, d):
+        _zb17 = []
+        for _m17 in re.finditer(r'<path class="Beam"[^>]*d="([^"]+)"', modified):
+            _n17 = [float(v) for v in re.findall(r'-?[\d.]+(?:e-?\d+)?', _m17.group(1))]
+            if len(_n17) >= 6:
+                _yt17, _yb17 = min(_n17[1::2]), max(_n17[1::2])
+                _xl17, _xr17 = min(_n17[0::2]), max(_n17[0::2])
+                if _zone_lo17 <= _yt17 <= _zone_hi17:
+                    _zb17.append({'yt': _yt17, 'yb': _yb17, 'xl': _xl17, 'xr': _xr17, 'd': _m17.group(1)})
+        if not _zb17:
+            continue
+        # cluster: beams ordinate per yt, fuse se le bande Y si toccano (±30)
+        _zb17.sort(key=lambda b: (b['yt'], b['xl']))
+        _clusters17 = []
+        for _b17 in _zb17:
+            _fused17 = False
+            for _c17 in _clusters17:
+                if _b17['yt'] - _c17['yb'] <= 30:
+                    _c_xl17 = min(b['xl'] for b in _c17['beams'])
+                    _c_xr17 = max(b['xr'] for b in _c17['beams'])
+                    _c_w17 = max(b['xr'] - b['xl'] for b in _c17['beams'])
+                    _ovl17 = min(_b17['xr'], _c_xr17) - max(_b17['xl'], _c_xl17)
+                    if _ovl17 > 0.2 * min(_b17['xr'] - _b17['xl'], _c_w17):
+                        _c17['yb'] = max(_c17['yb'], _b17['yt'] + 47.0)
+                        _c17['beams'].append(_b17)
+                        _fused17 = True
+                        break
+            if not _fused17:
+                _clusters17.append({'yt': _b17['yt'], 'yb': _b17['yt'] + 47.0, 'beams': [_b17]})
+        # per ogni cluster: direzione dal gambo attaccato (endpoint sul bordo
+        # della beam, testa sopra -> stems-down; testa sotto -> stems-up)
+        _heads17 = []
+        for _m17 in re.finditer(r'<circle cx="([\d.]+)" cy="([\d.]+)" r="([\d.]+)" fill="#', modified):
+            if float(_m17.group(3)) <= 115:
+                _heads17.append((float(_m17.group(1)), float(_m17.group(2)), float(_m17.group(3))))
+        _stems17 = []
+        for _m17 in re.finditer(r'<polyline class="Stem"[^>]*points="([^"]+)"', modified):
+            _p17 = [float(v) for v in _m17.group(1).replace(',', ' ').split()]
+            if len(_p17) >= 4 and abs(_p17[0] - _p17[2]) < 1:
+                _stems17.append((_p17[0], min(_p17[1], _p17[3]), max(_p17[1], _p17[3])))
+        _c_dys17 = []
+        for _c17 in _clusters17:
+            _dir17 = None
+            for _b17 in _c17['beams']:
+                for _s17 in _stems17:
+                    if not (_b17['xl'] - 30 <= _s17[0] <= _b17['xr'] + 30):
+                        continue
+                    # endpoint sul bordo della beam?
+                    _eps17 = []
+                    if abs(_s17[2] - _b17['yb']) <= 25 or abs(_s17[2] - _b17['yt']) <= 25:
+                        _eps17.append((_s17[2], 'bot'))
+                    if abs(_s17[1] - _b17['yt']) <= 25 or abs(_s17[1] - _b17['yb']) <= 25:
+                        _eps17.append((_s17[1], 'top'))
+                    for _ev17, _el17 in _eps17:
+                        for _h17 in _heads17:
+                            _tol17 = _h17[2] * 0.5
+                            if abs(_h17[0] - _s17[0]) < 115 and abs(_h17[1] - _s17[1]) <= _tol17:
+                                _dir17 = 'down'
+                                break
+                            if abs(_h17[0] - _s17[0]) < 115 and abs(_h17[1] - _s17[2]) <= _tol17:
+                                _dir17 = 'up'
+                                break
+                        if _dir17:
+                            break
+                    if _dir17:
+                        break
+                if _dir17:
+                    break
+            if _dir17 is None:
+                # fallback: testa piu vicina al cluster (sotto = stems-up,
+                # sopra = stems-down); 16a/16d gambi con endpoint oltre la
+                # testa non matchano la tolleranza
+                _cx17 = sum(_b17['xl'] + _b17['xr'] for _b17 in _c17['beams']) / (2.0 * len(_c17['beams']))
+                _below17 = [_h17[1] for _h17 in _heads17 if abs(_h17[0] - _cx17) < 400 and _h17[1] > _c17['yb']]
+                _above17 = [_h17[1] for _h17 in _heads17 if abs(_h17[0] - _cx17) < 400 and _h17[1] < _c17['yt']]
+                _dbelow17 = min(_below17) if _below17 else None
+                _dabove17 = max(_above17) if _above17 else None
+                if _dbelow17 is not None and (_dabove17 is None or (_dbelow17 - _c17['yb']) < (_c17['yt'] - _dabove17)):
+                    _dir17 = 'up'
+                else:
+                    _dir17 = 'down'
+            if _dir17 == 'down':
+                _dy17 = (_sb17 - 20 - 47.0) - _c17['yt']
+            elif _dir17 == 'up':
+                _clh17 = _c17['yb'] - _c17['yt']
+                _dy17 = ((_st17_top - 20 - _clh17) - _c17['yt']) if _st17_top else 0.0
+            else:
+                _dy17 = (_sb17 - 20 - 47.0) - _c17['yt']
+            _c_dys17.append((_c17, _dy17))
+            if abs(_dy17) < 1:
+                continue
+            for _b17 in _c17['beams']:
+                _pts17 = _b17['d'].split()
+                _out17 = []
+                for _pt17 in _pts17:
+                    _cm17 = ''
+                    _core17 = _pt17
+                    if len(_core17) > 1 and _core17[0].isalpha():
+                        _cm17 = _core17[0]
+                        _core17 = _core17[1:]
+                    _xy17 = _core17.split(',')
+                    _xy17[1] = '%.2f' % (float(_xy17[1]) + _dy17)
+                    _out17.append((_cm17 if _cm17 else '') + _xy17[0] + ',' + _xy17[1])
+                _new_d17 = ' '.join(_out17)
+                if _new_d17 != _b17['d'] and modified.count('d="' + _b17['d'] + '"') == 1:
+                    modified = modified.replace('d="' + _b17['d'] + '"', 'd="' + _new_d17 + '"', 1)
+                    _st17[0] += 1
+        # (2) gambi: per ogni endpoint, se esisteva una beam del cluster che
+        # conteneva l'endpoint (±5) con X coprente -> applica il dy del cluster
+        _map17 = []
+        for _c17, _dy17 in _c_dys17:
+            for _b17 in _c17['beams']:
+                _map17.append((_b17['yt'], _b17['yb'], _b17['xl'], _b17['xr'], _dy17))
+        def _shift_stem17(m17):
+            tag17 = m17.group(0)
+            pm17 = re.search(r'points="([^"]+)"', tag17)
+            if not pm17:
+                return tag17
+            pts17 = pm17.group(1)
+            vals17 = [float(v) for v in pts17.replace(',', ' ').split()]
+            if len(vals17) < 4 or abs(vals17[0] - vals17[2]) >= 1:
+                return tag17
+            new17 = pts17
+            _chg17 = False
+            for _i17 in (1, 3):
+                for (_yt17, _yb17, _xl17, _xr17, _dy17) in _map17:
+                    if _yt17 - 15 <= vals17[_i17] <= _yb17 + 15 and _xl17 - 30 <= vals17[0] <= _xr17 + 30 and abs(_dy17) >= 1:
+                        _cur17 = '%.2f' % vals17[_i17]
+                        _tgt17 = '%.2f' % (vals17[_i17] + _dy17)
+                        _new17 = re.sub(r'(?<![\d.])' + re.escape(_cur17) + r'(?![\d])', _tgt17, new17, count=1)
+                        if _new17 != new17:
+                            new17 = _new17
+                            vals17[_i17] += _dy17
+                            _chg17 = True
+                        break
+            if _chg17:
+                _st17[1] += 1
+                tag17 = tag17.replace('points="' + pts17 + '"', 'points="' + new17 + '"', 1)
+            return tag17
+        modified = re.sub(r'<polyline class="Stem"[^>]*points="[^"]+"[^>]*/?>', _shift_stem17, modified)
+        # (3) riga tavola risale al delta standard
+        _dy_t17 = (_sb17 + 175) - _tr17
+        for _m17 in list(re.finditer(r'<rect[^>]*height="175"[^>]*>', modified)):
+            _tag17 = _m17.group(0)
+            _ym17 = re.search(r' y="([\d.]+)"', _tag17)
+            if not _ym17 or abs(float(_ym17.group(1)) - _tr17) > 2:
+                continue
+            _ntag17 = _tag17.replace(' y="' + _ym17.group(1) + '"', ' y="%.2f"' % (float(_ym17.group(1)) + _dy_t17), 1)
+            if _ntag17 != _tag17:
+                modified = modified.replace(_tag17, _ntag17, 1)
+                _st17[2] += 1
+        for _m17 in list(re.finditer(r'<text\b[^>]*>', modified)):
+            _tag17 = _m17.group(0)
+            _ym17 = re.search(r' y="([\d.]+)"', _tag17)
+            if not _ym17 or not (_tr17 <= float(_ym17.group(1)) <= _tr17 + 215):
+                continue
+            _ntag17 = _tag17.replace(' y="' + _ym17.group(1) + '"', ' y="%.2f"' % (float(_ym17.group(1)) + _dy_t17), 1)
+            if _ntag17 != _tag17:
+                modified = modified.replace(_tag17, _ntag17, 1)
+        for _m17 in list(re.finditer(r'<circle\b[^>]*>', modified)):
+            _tag17 = _m17.group(0)
+            _ym17 = re.search(r'cy="([\d.]+)"', _tag17)
+            if not _ym17 or not (_tr17 <= float(_ym17.group(1)) <= _tr17 + 175):
+                continue
+            _ntag17 = _tag17.replace('cy="' + _ym17.group(1) + '"', 'cy="%.2f"' % (float(_ym17.group(1)) + _dy_t17), 1)
+            if _ntag17 != _tag17:
+                modified = modified.replace(_tag17, _ntag17, 1)
+        # (4) connettori riancorati al nuovo fondo cella
+        _new_row_bot17 = _tr17 + _dy_t17 + 175
+        for _m17 in list(re.finditer(r'<polyline class="Stem"[^>]*/?>', modified)):
+            _tag17 = _m17.group(0)
+            if 'stroke="#000000"' in _tag17 or 'stroke="#000"' in _tag17:
+                continue
+            _pm17 = re.search(r'points="([^"]+)"', _tag17)
+            if not _pm17:
+                continue
+            _pts17 = _pm17.group(1)
+            _v17 = [float(x) for x in _pts17.replace(',', ' ').split()]
+            if len(_v17) < 4 or abs(_v17[0] - _v17[2]) >= 1:
+                continue
+            # skip i gambi-nota: un endpoint tocca una testa (tolleranza
+            # raggio*0.5, come nel detector di direzione) = gambo, non
+            # connettore tavola
+            _skip17 = False
+            for _h17b in _heads17:
+                _tol17b = max(_h17b[2] * 0.5, 60.0)
+                if abs(_h17b[0] - _v17[0]) < 115 and (abs(_h17b[1] - _v17[1]) <= _tol17b or abs(_h17b[1] - _v17[3]) <= _tol17b):
+                    _skip17 = True
+                    break
+            if _skip17:
+                continue
+            _chg17 = False
+            _new17 = _pts17
+            for _i17 in (1, 3):
+                if _tr17 <= _v17[_i17] <= _tr17 + 250:
+                    # il re-anchor non deve MAI allungare il connettore:
+                    # confronta la distanza dall'endpoint opposto
+                    _other17 = _v17[3] if _i17 == 1 else _v17[1]
+                    if abs(_new_row_bot17 - _other17) >= abs(_v17[_i17] - _other17):
+                        continue
+                    _new17 = re.sub(r'(?<![\d.])' + re.escape('%.2f' % _v17[_i17]) + r'(?![\d])', '%.2f' % _new_row_bot17, _new17, count=1)
+                    _chg17 = True
+            if _chg17:
+                _nt17 = _tag17.replace('points="' + _pts17 + '"', 'points="' + _new17 + '"', 1)
+                if _nt17 != _tag17:
+                    modified = modified.replace(_tag17, _nt17, 1)
+                    _st17[3] += 1
+    print('[PASS17] beams: ' + str(_st17[0]) + ', gambi: ' + str(_st17[1]) + ', celle: ' + str(_st17[2]) + ', connettori: ' + str(_st17[3]))
+
+
 
     # FOOTER COPYRIGHT su ogni pagina.
     # Testo in basso al CENTRO: "generated by MaidaScore — © 2026 Marco Maida"
