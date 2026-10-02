@@ -15343,6 +15343,160 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 _moved20f[0] += 1
         if _moved20f[0]:
             print('[PASS20f] dots sovrapposti riposizionati: ' + str(_moved20f[0]))
+        # ---------- PASS 20g: regola direzionale croma (gambo su = linea più alta, gambo giù = più bassa) ----------
+        # Nelle famiglie impilate (prim+sec) di gruppi misti croma+semicrome: con i gambi
+        # IN SU la beam della croma deve essere la linea PIÙ ALTA della famiglia; con i
+        # gambi IN GIÙ la PIÙ BASSA. Se è sull'ordine opposto, scambia le bande Y delle due
+        # beams e riancora i gambi della croma al nuovo bordo.
+        _swapped20g = [0]
+        for _iter20g in range(30):
+            _beams20g = []
+            for _m20g in re.finditer(r'<path class="Beam"[^>]*d="([^"]+)"[^>]*/?>', modified):
+                _n20g = [float(_v20g) for _v20g in re.findall(r'-?[\d.]+(?:e-?\d+)?', _m20g.group(1))]
+                if len(_n20g) >= 6:
+                    _beams20g.append({'xl': min(_n20g[0::2]), 'yt': min(_n20g[1::2]),
+                                      'xr': max(_n20g[0::2]), 'yb': max(_n20g[1::2]),
+                                      'd': _m20g.group(1), 'start': _m20g.start(), 'end': _m20g.end()})
+            _heads20g = []
+            for _m20g in re.finditer(r'<circle cx="([\d.]+)" cy="([\d.]+)" r="([\d.]+)"', modified):
+                _cx20g, _cy20g, _cr20g = float(_m20g.group(1)), float(_m20g.group(2)), float(_m20g.group(3))
+                if _cr20g in (58.0, 72.0):
+                    _heads20g.append((_cx20g, _cy20g, _cr20g))
+            _stems20g = []
+            for _m20g in re.finditer(r'<polyline class="Stem"[^>]*points="([^"]+)"', modified):
+                _p20g = [float(_v20g) for _v20g in _m20g.group(1).replace(',', ' ').split()]
+                if len(_p20g) >= 4 and abs(_p20g[0] - _p20g[2]) < 5:
+                    _stems20g.append((_p20g[0], min(_p20g[1], _p20g[3]), max(_p20g[1], _p20g[3])))
+            _did20g = False
+            _done20g = set()
+            for _bi20g, _b20g in enumerate(_beams20g):
+                _fam20g = [_b20g]
+                for _bj20g, _o20g in enumerate(_beams20g):
+                    if _bj20g == _bi20g:
+                        continue
+                    _ov20g = min(_b20g['xr'], _o20g['xr']) - max(_b20g['xl'], _o20g['xl'])
+                    if _ov20g > 0.5 * min(_b20g['xr'] - _b20g['xl'], _o20g['xr'] - _o20g['xl']) \
+                            and _ov20g > 50 and abs(_b20g['yt'] - _o20g['yt']) < 250:
+                        _fam20g.append(_o20g)
+                if len(_fam20g) < 2:
+                    continue
+                _fkey20g = (round(min(f['xl'] for f in _fam20g)), round(min(f['yt'] for f in _fam20g)))
+                if _fkey20g in _done20g:
+                    continue
+                _done20g.add(_fkey20g)
+                _ftop20g = min(f['yt'] for f in _fam20g)
+                _fbot20g = max(f['yb'] for f in _fam20g)
+                _fx020g = min(f['xl'] for f in _fam20g)
+                _fx120g = max(f['xr'] for f in _fam20g)
+                _gh20g = [h for h in _heads20g if _fx020g - 150 < h[0] < _fx120g + 150
+                          and _ftop20g - 1100 < h[1] < _fbot20g + 1100]
+                _r72_20g = [h for h in _gh20g if h[2] == 72.0]
+                _r58_20g = [h for h in _gh20g if h[2] == 58.0]
+                if not _r72_20g or not _r58_20g:
+                    continue
+                _mid20g = (_ftop20g + _fbot20g) / 2
+                _hy20g = sum(h[1] for h in _gh20g) / len(_gh20g)
+                _up20g = _hy20g > _mid20g
+                # beam della croma = beam della famiglia toccata dal gambo di UNA croma r72
+                _cb20g = None
+                for _h20g in _r72_20g:
+                    _near20g = [(abs(_s20g[0] - _h20g[0]), _s20g) for _s20g in _stems20g
+                                if abs(_s20g[0] - _h20g[0]) < 130
+                                and min(abs(_s20g[1] - _h20g[1]), abs(_s20g[2] - _h20g[1])) < 200]
+                    if not _near20g:
+                        continue
+                    _near20g.sort()
+                    _st20g = _near20g[0][1]
+                    _cand20g = [f for f in _fam20g if f['xl'] - 30 <= _st20g[0] <= f['xr'] + 30
+                                and _st20g[1] <= f['yb'] + 25 and _st20g[2] >= f['yt'] - 25]
+                    if not _cand20g:
+                        continue
+                    if _up20g:
+                        _pick20g = min(_cand20g, key=lambda f: f['yt'])
+                    else:
+                        _pick20g = max(_cand20g, key=lambda f: f['yb'])
+                    if _cb20g is None or abs(_pick20g['yt'] - _cb20g['yt']) < 300:
+                        _cb20g = _pick20g
+                if _cb20g is None:
+                    continue
+                if _up20g and abs(_cb20g['yt'] - _ftop20g) <= 30:
+                    continue
+                if (not _up20g) and abs(_cb20g['yb'] - _fbot20g) <= 30:
+                    continue
+                # beam estrema della famiglia (target della croma)
+                if _up20g:
+                    _tgt20g = min(_fam20g, key=lambda f: f['yt'])
+                else:
+                    _tgt20g = max(_fam20g, key=lambda f: f['yb'])
+                if _tgt20g is _cb20g or abs(_tgt20g['yt'] - _cb20g['yt']) < 5:
+                    continue
+                # SWAP bande Y: _cb20g prende la banda di _tgt20g e viceversa
+                _d20g = _cb20g['yb'] - _cb20g['yt']
+                _dt20g = _tgt20g['yb'] - _tgt20g['yt']
+                _new_cb20g = (_tgt20g['yt'], _tgt20g['yt'] + _d20g)
+                _new_tg20g = (_cb20g['yt'], _cb20g['yt'] + _dt20g)
+
+                def _rebeam20g(be, ny1, ny2):
+                    _pts20g = list(zip([float(v) for v in re.findall(r'-?[\d.]+(?:e-?\d+)?', be['d'])][0::2],
+                                       [float(v) for v in re.findall(r'-?[\d.]+(?:e-?\d+)?', be['d'])][1::2]))
+                    _th20g = be['yb'] - be['yt']
+                    _out20g = []
+                    for _px20g, _py20g in _pts20g:
+                        _rel20g = (_py20g - be['yt']) / _th20g if _th20g > 0 else 0
+                        _out20g.append((_px20g, ny1 + _rel20g * (ny2 - ny1)))
+                    return 'M ' + ' L '.join('%.2f,%.2f' % (_x20g, _y20g) for _x20g, _y20g in _out20g) + ' Z'
+
+                _seg20g = modified[_cb20g['start']:_cb20g['end']]
+                _newseg20g = re.sub(r'd="[^"]+"', 'd="' + _rebeam20g(_cb20g, *_new_cb20g) + '"', _seg20g)
+                modified = modified[:_cb20g['start']] + _newseg20g + modified[_cb20g['end']:]
+                _off20g = len(_newseg20g) - len(_seg20g)
+                _ts20g = _tgt20g['start'] + _off20g
+                _te20g = _tgt20g['end'] + _off20g
+                _seg20g2 = modified[_ts20g:_te20g]
+                _newseg20g2 = re.sub(r'd="[^"]+"', 'd="' + _rebeam20g(_tgt20g, *_new_tg20g) + '"', _seg20g2)
+                modified = modified[:_ts20g] + _newseg20g2 + modified[_te20g:]
+                _off20g += len(_newseg20g2) - len(_seg20g2)
+                # riancora i gambi della croma al nuovo bordo della sua beam
+                for _m20g2 in list(re.finditer(r'<polyline class="Stem"[^>]*points="([^"]+)"[^>]*/?>', modified)):
+                    _pts20g2 = [float(v) for v in _m20g2.group(1).replace(',', ' ').split()]
+                    if len(_pts20g2) < 4 or abs(_pts20g2[0] - _pts20g2[2]) >= 5:
+                        continue
+                    _sx20g = _pts20g2[0]
+                    if not (_cb20g['xl'] - 30 <= _sx20g <= _cb20g['xr'] + 30):
+                        continue
+                    _yt20g2 = min(_pts20g2[1], _pts20g2[3])
+                    _yb20g2 = max(_pts20g2[1], _pts20g2[3])
+                    # solo i gambi della croma: testa r72 vicino in X e interseca il gambo
+                    _is_croma20g = False
+                    for _h20g2 in _r72_20g:
+                        if abs(_h20g2[0] - _sx20g) < 130 and _h20g2[1] - 67 <= _yb20g2 and _h20g2[1] + 67 >= _yt20g2:
+                            _is_croma20g = True
+                            break
+                    if not _is_croma20g:
+                        continue
+                    _pts_list20g = [_pts20g2[0], _pts20g2[1], _pts20g2[2], _pts20g2[3]]
+                    if _up20g:
+                        _newtop20g = _new_cb20g[0] + _d20g
+                        for _i20g2 in (1, 3):
+                            if _pts_list20g[_i20g2] == _yt20g2:
+                                _pts_list20g[_i20g2] = _newtop20g
+                    else:
+                        _newbot20g = _new_cb20g[1]
+                        for _i20g2 in (1, 3):
+                            if _pts_list20g[_i20g2] == _yb20g2:
+                                _pts_list20g[_i20g2] = _newbot20g
+                    _newpts20g = ' '.join('%.2f,%.2f' % (_pts_list20g[_i20g2], _pts_list20g[_i20g2 + 1]) for _i20g2 in (0, 2))
+                    _seg20g3 = _m20g2.group(0)
+                    _newseg20g3 = _seg20g3.replace(_m20g2.group(1), _newpts20g)
+                    if _newseg20g3 != _seg20g3:
+                        modified = modified[:_m20g2.start()] + _newseg20g3 + modified[_m20g2.end():]
+                _swapped20g[0] += 1
+                _did20g = True
+                break
+            if not _did20g:
+                break
+        if _swapped20g[0]:
+            print('[PASS20g] famiglie riordinate croma-al-lato-giusto: ' + str(_swapped20g[0]))
 
         # ---------- PASS 20c: crome [c c] rimaste senza prim (rhythm) ----------
         # Dopo le riparazioni, un gruppo [c c] può restare scoperto (la sua prim
