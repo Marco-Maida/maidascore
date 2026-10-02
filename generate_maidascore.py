@@ -14085,7 +14085,231 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         _n_ext15[0] += len(_new15)
     print(f'[PASS15] secondarie full-width spurie rimosse: {_n_rm15[0]}, beams estese/gambi aggiunti: {_n_ext15[0]}, gruppi fuse ricostruiti: {_n_c15[0]}')
 
-    
+
+    # Pass 16 (coordinate definitive, entrambe le modalita):
+    # 16a: testa orfana (nessun gambo entro +/-85) davanti a una COPPIA di
+    # beams (stesso xl, gap 30..80: primaria+secondaria) che inizia entro
+    # 130px a destra: gambo aggiunto dal bordo della testa al bottom della
+    # beam piu bassa della coppia (bug nota-per-nota dei gruppi frammentati).
+    # 16b: connettore tavola il cui top sta sopra la propria testa: il top
+    # viene abbassato al bordo inferiore della testa (la testa deve stare
+    # fra il top attuale e la riga tavola sotto: niente teste di altri
+    # sistemi).
+    # 16c: gambi che si fermano a 20..300px prima di una beam che copre la
+    # loro X (beams parcheggiate nel gap): l'endpoint esterno viene esteso
+    # al bordo della beam (linecap round, offset 10).
+    _heads16 = []
+    for _m16h in re.finditer(r'<circle cx="([\d.]+)" cy="([\d.]+)" r="([\d.]+)" fill="(#[0-9A-Fa-f]{6})"', modified):
+        _r16h = float(_m16h.group(3))
+        if 55 <= _r16h <= 115:
+            _heads16.append({'cx': float(_m16h.group(1)), 'cy': float(_m16h.group(2)), 'r': _r16h, 'fill': _m16h.group(4)})
+    _stems16 = []
+    for _m16s in re.finditer(r'<polyline class="Stem"[^>]*points="([^"]+)"', modified):
+        _p16s = [float(v) for v in _m16s.group(1).replace(',', ' ').split()]
+        if len(_p16s) >= 4 and abs(_p16s[0] - _p16s[2]) < 1:
+            _stems16.append({'x': _p16s[0], 'top': min(_p16s[1], _p16s[3]), 'bot': max(_p16s[1], _p16s[3])})
+    _beams16 = []
+    for _m16b in re.finditer(r'<path class="Beam"[^>]*d="([^"]+)"', modified):
+        _n16b = [float(v) for v in re.findall(r'-?[\d.]+(?:e-?\d+)?', _m16b.group(1))]
+        if len(_n16b) >= 6:
+            _beams16.append({'xl': min(_n16b[0::2]), 'yt': min(_n16b[1::2]), 'xr': max(_n16b[0::2]), 'yb': max(_n16b[1::2])})
+    _n_a16, _n_b16, _n_c16 = [0], [0], [0]
+    for _h16 in _heads16:
+        _has16 = any(abs(_s16['x'] - _h16['cx']) < 85 and _s16['top'] - 15 <= _h16['cy'] <= _s16['bot'] + 15 for _s16 in _stems16)
+        if _has16:
+            continue
+        _pair16 = None
+        for _b16 in _beams16:
+            _dx16 = _b16['xl'] - _h16['cx']
+            if not (-20 <= _dx16 <= 130):
+                continue
+            if not (_b16['yt'] < _h16['cy'] and _h16['cy'] - _b16['yb'] < 700):
+                continue
+            _mate16 = None
+            for _o16 in _beams16:
+                if _o16 is _b16:
+                    continue
+                if abs(_o16['xl'] - _b16['xl']) < 40 and abs(_o16['xr'] - _b16['xr']) < 40 and 30 <= (_o16['yt'] - _b16['yb']) <= 80:
+                    _mate16 = _o16
+                    break
+            if _mate16 is not None:
+                _lo16 = _b16 if _b16['yb'] > _mate16['yb'] else _mate16
+                _hi16 = _mate16 if _lo16 is _b16 else _b16
+                _pair16 = _lo16 if _h16['r'] <= 60 else _hi16
+                break
+        if _pair16 is None:
+            continue
+        _sx16 = _h16['cx'] + _h16['r'] - 8
+        _sy16 = _h16['cy'] + _h16['r'] - 10
+        _ty16 = _pair16['yb']
+        if _sy16 - _ty16 < 100:
+            continue
+        _stem16 = '<polyline class="Stem" fill="none" stroke="' + _h16['fill'] + '" stroke-width="20" stroke-linecap="round" points="' + ('%.2f' % _sx16) + ',' + ('%.2f' % _sy16) + ' ' + ('%.2f' % _sx16) + ',' + ('%.2f' % _ty16) + '" />'
+        _anchor16 = None
+        for _m16a in re.finditer(r'<path class="Beam"[^>]*/>', modified):
+            _d16a = re.search(r'd="([^"]+)"', _m16a.group(0)).group(1)
+            _n16a = [float(v) for v in re.findall(r'-?[\d.]+(?:e-?\d+)?', _d16a)]
+            if len(_n16a) >= 6 and abs(min(_n16a[0::2]) - _pair16['xl']) < 1 and abs(min(_n16a[1::2]) - _pair16['yt']) < 1:
+                _anchor16 = _m16a.group(0)
+                break
+        if _anchor16 is None or modified.count(_anchor16) != 1:
+            continue
+        modified = modified.replace(_anchor16, _anchor16 + '\n    ' + _stem16, 1)
+        _stems16.append({'x': _sx16, 'top': _ty16, 'bot': _sy16})
+        _n_a16[0] += 1
+    for _m16c in list(re.finditer(r'<polyline class="Stem"[^>]*points="([^"]+)"[^>]*/>', modified)):
+        _tag16 = _m16c.group(0)
+        _col16 = re.search(r'stroke="([^"]+)"', _tag16)
+        if not _col16 or _col16.group(1) in ('#000000', 'black'):
+            continue
+        _p16c = [float(v) for v in _m16c.group(1).replace(',', ' ').split()]
+        if len(_p16c) < 4 or abs(_p16c[0] - _p16c[2]) >= 1:
+            continue
+        _ytop16, _ybot16 = min(_p16c[1], _p16c[3]), max(_p16c[1], _p16c[3])
+        if _ybot16 - _ytop16 < 500:
+            continue
+        _tav16 = None
+        for _m14 in re.finditer(r'<rect[^>]*height="175"[^>]*>', modified):
+            _t14 = _m14.group(0)
+            _x14 = float(re.search(r'x="([\d.]+)"', _t14).group(1))
+            _y14 = float(re.search(r'y="([\d.]+)"', _t14).group(1))
+            if _y14 > _ytop16 + 100 and _x14 - 70 <= _p16c[0] <= _x14 + 190:
+                if _tav16 is None or _y14 < _tav16:
+                    _tav16 = _y14
+        _own16 = None
+        for _h16c in _heads16:
+            if abs(_h16c['cx'] - _p16c[0]) >= 120:
+                continue
+            if _ytop16 - 5 <= _h16c['cy'] and (_tav16 is None or _h16c['cy'] < _tav16):
+                if _own16 is None or abs(_h16c['cx'] - _p16c[0]) < abs(_own16['cx'] - _p16c[0]):
+                    _own16 = _h16c
+        if _own16 is None:
+            continue
+        _newtop16 = _own16['cy'] + _own16['r'] + 5
+        if _newtop16 <= _ytop16 or _newtop16 >= _ybot16 - 100:
+            continue
+        _old_pts16 = _m16c.group(1)
+        _new_pts16 = _old_pts16.replace(('%.2f' % _ytop16), ('%.2f' % _newtop16), 1)
+        if modified.count('points="' + _old_pts16 + '"') == 1 and _new_pts16 != _old_pts16:
+            modified = modified.replace('points="' + _old_pts16 + '"', 'points="' + _new_pts16 + '"', 1)
+            _n_b16[0] += 1
+    _tav_rows16 = []
+    for _m16t in re.finditer(r'<rect[^>]*height=\"175\"[^>]*>', modified):
+        _t16t = re.search(r'y=\"([\d.]+)\"', _m16t.group(0))
+        if _t16t:
+            _tav_rows16.append(float(_t16t.group(1)))
+    _tav_rows16 = sorted(set(_tav_rows16))
+    for _m16e in re.finditer(r'<polyline class=\"Stem\"[^>]*points=\"([^\"]+)\"[^>]*/>', modified):
+        _tag16e = _m16e.group(0)
+        _p16e = [float(v) for v in _m16e.group(1).replace(',', ' ').split()]
+        if len(_p16e) < 4 or abs(_p16e[0] - _p16e[2]) >= 1:
+            continue
+        _x16e = _p16e[0]
+        _t16e, _b16e = min(_p16e[1], _p16e[3]), max(_p16e[1], _p16e[3])
+        if _b16e - _t16e < 150:
+            continue
+        _in_tav16 = any(_ry16 - 10 <= _b16e <= _ry16 + 185 for _ry16 in _tav_rows16)
+        if _in_tav16:
+            continue
+        _cands16 = [_bb16 for _bb16 in _beams16 if _bb16['xl'] - 30 <= _x16e <= _bb16['xr'] + 30]
+        if not _cands16:
+            continue
+        if any(_bb16['yt'] - 20 <= _t16e <= _bb16['yb'] + 20 for _bb16 in _cands16):
+            continue
+        if any(_bb16['yt'] - 20 <= _b16e <= _bb16['yb'] + 20 for _bb16 in _cands16):
+            continue
+        _gap_top16 = None
+        for _bb16 in _cands16:
+            _g16 = _t16e - _bb16['yb']
+            if 20 <= _g16 <= 300 and (_gap_top16 is None or _bb16['yb'] > _gap_top16):
+                _gap_top16 = _bb16['yb']
+        _gap_bot16 = None
+        for _bb16 in _cands16:
+            _g16 = _bb16['yt'] - _b16e
+            if 20 <= _g16 <= 300 and (_gap_bot16 is None or _bb16['yt'] < _gap_bot16):
+                _gap_bot16 = _bb16['yt']
+        if _gap_top16 is None and _gap_bot16 is None:
+            continue
+        _pairs16 = _m16e.group(1).split()
+        _out16 = []
+        _changed16 = False
+        for _pi16, _pt16 in enumerate(_pairs16):
+            _xy16 = _pt16.split(',')
+            _fv16 = float(_xy16[1])
+            if abs(_fv16 - _t16e) < 0.05 and _gap_top16 is not None:
+                _xy16[1] = '%.2f' % (_gap_top16 - 10)
+                _changed16 = True
+            elif abs(_fv16 - _b16e) < 0.05 and _gap_bot16 is not None:
+                _xy16[1] = '%.2f' % (_gap_bot16 + 10)
+                _changed16 = True
+            _out16.append(_xy16[0] + ',' + _xy16[1])
+        if not _changed16:
+            continue
+        _new16e = ' '.join(_out16)
+        if _new16e != _m16e.group(1) and modified.count('points=\"' + _m16e.group(1) + '\"') == 1:
+            modified = modified.replace('points=\"' + _m16e.group(1) + '\"', 'points=\"' + _new16e + '\"', 1)
+            _n_c16[0] += 1
+    print('[PASS16] gambi-orfani coppia: ' + str(_n_a16[0]) + ', connettori riallineati: ' + str(_n_b16[0]) + ', gambi estesi alla beam: ' + str(_n_c16[0]))
+    _n_d16 = [0]
+    _pairs16d = []
+    for _i16d in range(len(_beams16)):
+        for _j16d in range(_i16d + 1, len(_beams16)):
+            _p16d, _q16d = _beams16[_i16d], _beams16[_j16d]
+            if abs(_p16d['xl'] - _q16d['xl']) < 40 and abs(_p16d['xr'] - _q16d['xr']) < 40 and 30 <= abs(_q16d['yt'] - _p16d['yb']) <= 80:
+                _pairs16d.append((_p16d, _q16d))
+    for _pr16 in _pairs16d:
+        _newxl16 = None
+        _newxr16 = None
+        for _s16d in _stems16:
+            if _s16d['bot'] - _s16d['top'] < 150:
+                continue
+            if not (_pr16[0]['yt'] - 60 <= _s16d['top'] <= _pr16[0]['yb'] + 80):
+                continue
+            if -600 <= _s16d['x'] - _pr16[0]['xl'] <= -30:
+                _cand16 = _s16d['x'] + 15
+                if _newxl16 is None or _cand16 < _newxl16:
+                    _newxl16 = _cand16
+            if 30 <= _s16d['x'] - _pr16[0]['xr'] <= 600:
+                _cand16 = _s16d['x'] + 15
+                if _newxr16 is None or _cand16 > _newxr16:
+                    _newxr16 = _cand16
+        if _newxl16 is None and _newxr16 is None:
+            continue
+        for _b16d in _pr16:
+            _old_d16 = None
+            for _m16d in re.finditer(r'<path class=\"Beam\"[^>]*d=\"([^\"]+)\"', modified):
+                _n16d = [float(v) for v in re.findall(r'-?[\d.]+(?:e-?\d+)?', _m16d.group(1))]
+                if len(_n16d) >= 6 and abs(min(_n16d[0::2]) - _b16d['xl']) < 1 and abs(min(_n16d[1::2]) - _b16d['yt']) < 1:
+                    _old_d16 = _m16d.group(1)
+                    break
+            if _old_d16 is None:
+                continue
+            _pts16d = _old_d16.split()
+            _lead16 = ''
+            if _pts16d and _pts16d[0].startswith('M'):
+                _lead16 = _pts16d[0]
+                _pts16d = _pts16d[1:]
+            _out16d = []
+            if _lead16:
+                _out16d.append(_lead16)
+            for _pt16d in _pts16d:
+                _cm16d = ''
+                _core16d = _pt16d
+                if len(_core16d) > 1 and _core16d[0].isalpha():
+                    _cm16d = _core16d[0]
+                    _core16d = _core16d[1:]
+                _xy16d = _core16d.split(',')
+                _xv16d = float(_xy16d[0])
+                if _newxl16 is not None and abs(_xv16d - _b16d['xl']) < 1:
+                    _xy16d[0] = '%.2f' % _newxl16
+                elif _newxr16 is not None and abs(_xv16d - _b16d['xr']) < 1:
+                    _xy16d[0] = '%.2f' % _newxr16
+                _out16d.append((_cm16d if _cm16d else '') + _xy16d[0] + ',' + _xy16d[1])
+            _new_d16 = ' '.join(_out16d)
+            if _new_d16 != _old_d16 and modified.count('d=\"' + _old_d16 + '\"') == 1:
+                modified = modified.replace('d=\"' + _old_d16 + '\"', 'd=\"' + _new_d16 + '\"', 1)
+                _n_d16[0] += 1
+    print('[PASS16d] beams estese sui gambi del gruppo: ' + str(_n_d16[0]))
 
 
     # FOOTER COPYRIGHT su ogni pagina.
