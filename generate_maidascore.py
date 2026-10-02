@@ -15206,6 +15206,144 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 break
         if _removed20d[0]:
             print('[PASS20d] prim spurie rimosse: ' + str(_removed20d[0]))
+        # ---------- PASS 20e: prim fusa multi-gruppo [e. 16] (rhythm) ----------
+        # Nel settore con [croma puntata + semicroma] seguito da un gruppo di semicrome
+        # con la propria prim+sec, la prim del gruppo [e. 16] si estende nel range X
+        # del gruppo successivo (fusione del flusso). Regola: beam raggiunta da >=2
+        # gambi, il cui gambo destro NON è l'ultimo dei gambi raggiunti raggiungibili
+        # prima di un'altra famiglia di beams: se esiste una beam (o famiglia) la cui
+        # x_left coincide col primo gambo DOPO l'ultimo gambo raggiunto dalla beam in
+        # esame (finestra ±60, Y adiacente < 250), la beam va troncata a
+        # [primo gambo raggiunto .. ultimo gambo raggiunto] (+4.7 over).
+        _trimmed20e = [0]
+        for _iter20e in range(40):
+            _beams20e = []
+            for _m20e in re.finditer(r'<path class="Beam"[^>]*d="([^"]+)"[^>]*/?>', modified):
+                _n20e = [float(_v20e) for _v20e in re.findall(r'-?[\d.]+(?:e-?\d+)?', _m20e.group(1))]
+                if len(_n20e) >= 6:
+                    _beams20e.append({'xl': min(_n20e[0::2]), 'yt': min(_n20e[1::2]),
+                                      'xr': max(_n20e[0::2]), 'yb': max(_n20e[1::2]),
+                                      'd': _m20e.group(1), 'start': _m20e.start(), 'end': _m20e.end()})
+            _stems20e = []
+            for _m20e in re.finditer(r'<polyline class="Stem"[^>]*points="([^"]+)"', modified):
+                _p20e = [float(_v20e) for _v20e in _m20e.group(1).replace(',', ' ').split()]
+                if len(_p20e) >= 4 and abs(_p20e[0] - _p20e[2]) < 5:
+                    _stems20e.append((_p20e[0], min(_p20e[1], _p20e[3]), max(_p20e[1], _p20e[3])))
+            _did20e = False
+            for _b20e in _beams20e:
+                _sxs20e = sorted([sp for sp in _stems20e
+                                  if _b20e['xl'] - 40 <= sp[0] <= _b20e['xr'] + 40
+                                  and sp[1] <= _b20e['yb'] + 25 and sp[2] >= _b20e['yt'] - 25],
+                                 key=lambda _s: _s[0])
+                if len(_sxs20e) < 2:
+                    continue
+                _gx_last20e = _sxs20e[-1][0]
+                if abs(_b20e['xr'] - _gx_last20e) < 20:
+                    continue  # già troncata al gambo
+                # un'altra beam inizia al primo gambo dopo l'ultimo raggiunto?
+                _next_gx20e = None
+                for _sp20e in _stems20e:
+                    if _sp20e[0] > _gx_last20e + 20 and _sp20e[0] < _gx_last20e + 260 \
+                            and abs(_sp20e[2] - _sxs20e[-1][2]) < 400:
+                        _next_gx20e = _sp20e[0]
+                        break
+                if _next_gx20e is None:
+                    continue
+                _has_fam20e = False
+                for _o20e in _beams20e:
+                    if _o20e is _b20e:
+                        continue
+                    if abs(_o20e['xl'] - _next_gx20e) < 60 \
+                            and abs(_o20e['yt'] - _b20e['yb']) < 250:
+                        _has_fam20e = True
+                        break
+                if not _has_fam20e:
+                    continue
+                # tronca: [primo gambo .. ultimo gambo] con over 4.7
+                _nx_l20e = _sxs20e[0][0]
+                _nx_r20e = _gx_last20e + 4.7
+                if _nx_r20e - _nx_l20e < 80:
+                    continue
+                _n20e2 = [float(_v20e) for _v20e in re.findall(r'-?[\d.]+(?:e-?\d+)?', _b20e['d'])]
+                _pts20e = list(zip(_n20e2[0::2], _n20e2[1::2]))
+                _th20e = _b20e['yb'] - _b20e['yt']
+                _frac_l20e = (_nx_l20e - _b20e['xl']) / (_b20e['xr'] - _b20e['xl']) if _b20e['xr'] > _b20e['xl'] else 0
+                _frac_r20e = (_nx_r20e - _b20e['xl']) / (_b20e['xr'] - _b20e['xl']) if _b20e['xr'] > _b20e['xl'] else 1
+                _out20e = []
+                for _px20e, _py20e in _pts20e:
+                    _fy20e = _py20e if _py20e <= _b20e['yt'] + 1 else _py20e - _th20e
+                    _yv20e = _b20e['yt'] + _th20e * (1 if _py20e > _b20e['yt'] + 1 else 0)
+                    _yint20e = _b20e['yt'] + (_py20e - _b20e['yt']) * 0  # base
+                    _ytop20e = _b20e['yt']
+                    _ybot20e = _b20e['yb']
+                    _rel20e = (_py20e - _b20e['yt']) / _th20e if _th20e > 0 else 0
+                    _out20e.append((_nx_l20e if _px20e <= _b20e['xl'] + 1 else _nx_r20e,
+                                    _ytop20e + _rel20e * _th20e))
+                _dnew20e = 'M ' + ' L '.join(f'{_x20e:.2f},{_y20e:.2f}' for _x20e, _y20e in _out20e) + ' Z'
+                modified = modified[:_b20e['start']] + re.sub(r'd="[^"]+"', 'd="' + _dnew20e + '"', modified[_b20e['start']:_b20e['end']]) + modified[_b20e['end']:]
+                _trimmed20e[0] += 1
+                _did20e = True
+                break
+            if not _did20e:
+                break
+        if _trimmed20e[0]:
+            print('[PASS20e] prim fuse troncate: ' + str(_trimmed20e[0]))
+        # ---------- PASS 20f: NoteDot sovrapposto alla testa successiva ----------
+        # L'equalizzatore comprime le distanze: il dot della croma puntata può
+        # oltrepassare il bordo della testa successiva. Se il bordo dx del dot
+        # supera il bordo sx della testa successiva (stesso rigo), accosta il dot
+        # alla propria testa (gap 18px dal bordo) e al limite riduci il raggio.
+        _moved20f = [0]
+        _dots20f = list(re.finditer(r'<path class="NoteDot"[^>]*transform="matrix\(([^)]+)\)"[^>]*d="([^"]+)"', modified))
+        _heads20f = []
+        for _m20f in re.finditer(r'<circle cx="([\d.]+)" cy="([\d.]+)" r="([\d.]+)"', modified):
+            _cx20f, _cy20f, _cr20f = float(_m20f.group(1)), float(_m20f.group(2)), float(_m20f.group(3))
+            if _cr20f >= 55:
+                _heads20f.append((_cx20f, _cy20f, _cr20f))
+        for _dt20f in _dots20f:
+            _vals20f = [float(_v20f) for _v20f in _dt20f.group(1).split(',')]
+            _sc20f, _dx20f, _dy20f = _vals20f[0], _vals20f[4], _vals20f[5]
+            _dr20f = 16.55 * _sc20f
+            # la testa alla SINISTRA del dot (la nota puntata)
+            _own20f = None
+            for _h20f in _heads20f:
+                if abs(_h20f[1] - _dy20f) < 120 and 0 < _dx20f - _h20f[0] < 400:
+                    if _own20f is None or _h20f[0] > _own20f[0]:
+                        _own20f = _h20f
+            if _own20f is None:
+                continue
+            # la testa alla DESTRA (stesso rigo)
+            _nxt20f = None
+            for _h20f in _heads20f:
+                if abs(_h20f[1] - _dy20f) < 120 and _h20f[0] > _own20f[0] + 10:
+                    if _nxt20f is None or _h20f[0] < _nxt20f[0]:
+                        _nxt20f = _h20f
+            if _nxt20f is None:
+                continue
+            _dot_right20f = _dx20f + _dr20f
+            _nxt_left20f = _nxt20f[0] - _nxt20f[2]
+            if _dot_right20f <= _nxt_left20f - 8:
+                continue  # gap comodo, nessun overlap
+            # accosta: nuovo centro = bordo testa + 18 + raggio dot
+            _newdx20f = _own20f[0] + _own20f[2] + 18 + _dr20f
+            _dot_right20f = _newdx20f + _dr20f
+            _sc_new20f = _sc20f
+            if _dot_right20f > _nxt_left20f - 4:
+                # non basta: riduci il raggio del dot a 0.75x
+                _sc_new20f = _sc20f * 0.75
+                _dr2_20f = 16.55 * _sc_new20f
+                _newdx20f = _own20f[0] + _own20f[2] + 12 + _dr2_20f
+            _mm20f = re.search(r'transform="matrix\(([^)]+)\)"', _dt20f.group(0))
+            _old_mat20f = 'matrix(' + _mm20f.group(1) + ')'
+            _vals_new20f = [_sc_new20f] + _vals20f[1:4] + [_newdx20f, _vals20f[5]]
+            _new_mat20f = 'matrix(' + ','.join(('%.2f' % _v20f) if _i20f >= 4 else ('%.6g' % _v20f) for _i20f, _v20f in enumerate(_vals_new20f)) + ')'
+            _tnew20f = _dt20f.group(0).replace(_old_mat20f, _new_mat20f)
+            if _tnew20f != _dt20f.group(0):
+                modified = modified[:_dt20f.start()] + _tnew20f + modified[_dt20f.end():]
+                _moved20f[0] += 1
+        if _moved20f[0]:
+            print('[PASS20f] dots sovrapposti riposizionati: ' + str(_moved20f[0]))
+
         # ---------- PASS 20c: crome [c c] rimaste senza prim (rhythm) ----------
         # Dopo le riparazioni, un gruppo [c c] può restare scoperto (la sua prim
         # originale è stata rimossa come volante): le crome r72 contigue (>=2) i cui
