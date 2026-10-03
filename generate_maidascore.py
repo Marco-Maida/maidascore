@@ -11581,6 +11581,137 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             print(f"  [BEAMSYNTH][VALIDATE] ATTENZIONE: {_bs_prob} beams fuori dai sistemi")
         modified = modified.replace('</svg>', _bs_paths_to_svg(_bs_paths) + '</svg>')
 
+        # 3 Ott 2026 (bug b13-15 Marco: travature sospese nel gap): la y_prim
+        # della synth eredita il tip del gambo RAW, che nel layout affiancato
+        # di MuseScore e' parcheggiato NEL GAP tra i sistemi. La beam
+        # sintetizzata restava quindi sospesa sopra il rigo (es. y5395 vs rigo
+        # top 5753). FIX (consulto Fable, formula Gould): la famiglia di beams
+        # del gruppo (prim + sec, stesso shift, gap interno intatto) viene
+        # riportata presso il rigo:
+        #   stems-up:   y_prim = max(testa_piu_alta - 3.5*space, staff_top - 1.0*space)
+        #   stems-down: y_prim = min(testa_piu_bassa + 3.5*space, staff_bottom + 1.0*space)
+        # space = 280px (staff height 1120 / 4). Poi i gambi del gruppo vengono
+        # estesi/accorciati alla nuova y della beam.
+        _bs_sys_rows = list(_bs_sys_bounds)
+        _SPACE = (_bs_sys_rows[0][1] - _bs_sys_rows[0][0]) / 4.0 if _bs_sys_rows else 280.0
+
+        def _bs_reposition_beams(_svg):
+            _beams = []
+            for _bm in re.finditer(
+                    r'<path class="Beam" fill="#000000" d="M\s*([\d.\-]+),([\d.\-]+) '
+                    r'L\s*([\d.\-]+),([\d.\-]+) L\s*([\d.\-]+),([\d.\-]+) '
+                    r'L\s*([\d.\-]+),([\d.\-]+)', _svg):
+                _p = [float(_bm.group(i)) for i in range(1, 9)]
+                _beams.append({'x1': min(_p[0], _p[4]), 'x2': max(_p[0], _p[4]),
+                               'y': min(_p[1], _p[5]), 'tag': _bm.group(0),
+                               'start': _bm.start(), 'end': _bm.end()})
+            if not _beams:
+                return _svg, 0
+            _heads = [(float(_hm.group(1)), float(_hm.group(2)), float(_hm.group(3)))
+                      for _hm in re.finditer(
+                          r'<circle cx="([\d.]+)" cy="([\d.]+)" r="([\d.]+)"', _svg)
+                      if float(_hm.group(3)) < 120]
+            _stems = []
+            for _sm in re.finditer(
+                    r'<polyline class="Stem"[^>]*points="([\d.\-]+),([\d.\-]+) '
+                    r'([\d.\-]+),([\d.\-]+)"[^>]*>', _svg):
+                _sv = [float(_sm.group(i)) for i in range(1, 5)]
+                _stems.append({'x': _sv[0], 'y1': _sv[1], 'y2': _sv[3], 'tag': _sm.group(0)})
+            _n_rep = 0
+            _used = [False] * len(_beams)
+            for _bi, _b in enumerate(_beams):
+                if _used[_bi]:
+                    continue
+                _fam = [_b]
+                _used[_bi] = True
+                for _bj in range(_bi + 1, len(_beams)):
+                    if _used[_bj]:
+                        continue
+                    _b2 = _beams[_bj]
+                    _ov = min(_b['x2'], _b2['x2']) - max(_b['x1'], _b2['x1'])
+                    if _ov > 0.2 * min(_b['x2'] - _b['x1'], _b2['x2'] - _b2['x1'])                             and abs(_b2['y'] - _b['y']) < 250:
+                        _fam.append(_b2)
+                        _used[_bj] = True
+                _y_top = min(_f['y'] for _f in _fam)
+                _y_bot = max(_f['y'] for _f in _fam) + 47.0
+                # rigo di riferimento: il PIU' VICINO alla famiglia (non il
+                # primo nel margine: una famiglia nel gap sopra il rigo 3
+                # veniva catturata dal rigo 2)
+                _rig = None
+                _rig_d = None
+                for _rt, _rb in _bs_sys_rows:
+                    if _rt - 1200 <= _y_top <= _rb + 1200:
+                        _d = min(abs(_y_top - _rt), abs(_y_top - _rb),
+                                 abs(_y_bot - _rt), abs(_y_bot - _rb))
+                        if _rig_d is None or _d < _rig_d:
+                            _rig_d = _d
+                            _rig = (_rt, _rb)
+                if _rig is None:
+                    continue
+                # gia' presso il rigo? (beam dentro il rigo o max 1 space oltre)
+                if _y_top >= _rig[0] - _SPACE - 40 and _y_bot <= _rig[1] + _SPACE + 40:
+                    continue
+                _xl = min(_f['x1'] for _f in _fam) - 100
+                _xr = max(_f['x2'] for _f in _fam) + 100
+                _gh = [(_hx, _hy) for _hx, _hy, _hr in _heads
+                       if _xl <= _hx <= _xr and _y_top - 1600 <= _hy <= _y_bot + 1600]
+                if not _gh:
+                    continue
+                _hy_mean = sum(_hy for _, _hy in _gh) / len(_gh)
+                if _hy_mean > (_y_top + _y_bot) / 2:
+                    _dir = +1   # stems-up: beam sopra le teste
+                    _head_ext = min(_hy for _, _hy in _gh)
+                    _y_new = max(_head_ext - 3.5 * _SPACE, _rig[0] - _SPACE)
+                else:
+                    _dir = -1   # stems-down: beam sotto le teste
+                    _head_ext = max(_hy for _, _hy in _gh)
+                    _y_new = min(_head_ext + 3.5 * _SPACE, _rig[1] + _SPACE)
+                _shift = _y_new - _y_top
+                if abs(_shift) < 30:
+                    continue
+                # applica shift alla famiglia (slice per offset, dal fondo per
+                # non invalidare gli start delle successive). NB: il tag
+                # matchato FINISCE all'ultimo numero della d: ricostruiamo il
+                # d e sostituiamo i SOLI 8 numeri dentro il tag.
+                for _f in sorted(_fam, key=lambda z: -z['start']):
+                    _ntag = _f['tag']
+                    _nt = re.findall(r'[\d.\-]+', _ntag.split('d="')[1])
+                    _ns = [float(_v) for _v in _nt[:8]]
+                    _nd = ('M %.2f,%.2f L %.2f,%.2f L %.2f,%.2f L %.2f,%.2f'
+                           % (_ns[0], _ns[1] + _shift, _ns[2], _ns[3] + _shift,
+                              _ns[4], _ns[5] + _shift, _ns[6], _ns[7] + _shift))
+                    _pre = _ntag[:_ntag.index('d="') + 3]
+                    _ntag2 = _pre + _nd
+                    if _ntag2 != _ntag:
+                        _svg = _svg[:_f['start']] + _ntag2 + _svg[_f['end']:]
+                        _n_rep += 1
+                # gambi del gruppo: endpoint lato beam segue lo shift.
+                # NB: i points del gambo hanno formattazione %.2f fissa:
+                # match ESATTO (rstrip('0') su 2359.00 -> "2359" = replace muto)
+                for _st in _stems:
+                    if not (_xl <= _st['x'] <= _xr):
+                        continue
+                    _hit = any(
+                        (abs(_st['y1'] - _f['y']) < 60 or abs(_st['y2'] - _f['y']) < 60
+                         or abs(_st['y1'] - (_f['y'] + 47)) < 60
+                         or abs(_st['y2'] - (_f['y'] + 47)) < 60)
+                        for _f in _fam)
+                    if not _hit:
+                        continue
+                    _ny1, _ny2 = _st['y1'] + _shift, _st['y2'] + _shift
+                    _new_st_tag = _st['tag'].replace(
+                        'points="%.2f,%.2f %.2f,%.2f"' % (
+                            _st['x'], _st['y1'], _st['x'], _st['y2']),
+                        'points="%.2f,%.2f %.2f,%.2f"' % (
+                            _st['x'], _ny1, _st['x'], _ny2), 1)
+                    if _new_st_tag != _st['tag']:
+                        _svg = _svg.replace(_st['tag'], _new_st_tag, 1)
+            return _svg, _n_rep
+
+        modified, _n_rep_bs = _bs_reposition_beams(modified)
+        if _n_rep_bs:
+            print(f"  [BEAMSYNTH] famiglie beams riposizionate presso il rigo: {_n_rep_bs}")
+
         # 3 Ott 2026 (bug ledger oblique + gambi-monstro + tavole basse,
         # segnalazione Marco b1/b31-35/b37-48): i pass di LAYOUT del flusso
         # legacy (9c ledger, 13 gambi, cap tavola) sono indipendenti dalle
@@ -11617,12 +11748,17 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         # Il rigo di appartenenza = quello della TESTA attaccata (gambo-up =
         # testa al bottom). I CONNETTORI tavola (stroke NON nero) e i gambi
         # con endpoint su una BEAM sintetizzata sono esenti.
+        # 3 Ott 2026: regex tollerante allo SPAZIO dopo M e L (la synth scrive
+        # 'M %.2f,%.2f L %.2f,%.2f'; senza \s* l'esenzione on_beam non matchava
+        # MAI = i gambi attaccati alle beams sintetizzate venivano accorciati
+        # dal clamp = travature sospese, segnalazione Marco b13-15)
         _bs_beams_geo = []
         for _bm in re.finditer(
-                r'<path class="Beam"[^>]*d="M([\d.\-]+),([\d.\-]+) '
-                r'L([\d.\-]+),([\d.\-]+)', modified):
+                r'<path class="Beam"[^>]*d="M\s*([\d.\-]+),([\d.\-]+) '
+                r'L\s*([\d.\-]+),([\d.\-]+)', modified):
             _bs_beams_geo.append((float(_bm.group(1)), float(_bm.group(2)),
-                                  float(_bm.group(3)), float(_bm.group(4))))
+                                  max(float(_bm.group(1)), float(_bm.group(3))),
+                                  float(_bm.group(4))))
         _bs_heads_geo = [(float(_hm.group(1)), float(_hm.group(2)), float(_hm.group(3)))
                          for _hm in re.finditer(
                              r'<circle cx="([\d.]+)" cy="([\d.]+)" r="([\d.]+)"', modified)]
@@ -11649,10 +11785,15 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     if _d <= 60 and (_head_dist is None or _d < _head_dist):
                         _my_head = (_hx, _hy, _hr)
                         _head_dist = _d
-            # beam sintetizzata raggiunta da un endpoint
-            _on_beam = any(abs(_bx - _x) < 30 and
-                           (abs(_by - _yt) < 60 or abs(_by - _yb) < 60)
-                           for _bx, _by, _, _ in _bs_beams_geo)
+            # beam sintetizzata raggiunta da un endpoint (range X = INTERA
+            # beam x1..x2: i gambi interni del gruppo non matchavano il vecchio
+            # |bx-x|<30; banda Y completa top..bottom per i gambi stems-up che
+            # finiscono al BOTTOM della beam)
+            _on_beam = any(_bx - 30 <= _x <= _bx2 + 30 and
+                           (abs(_by - _yt) < 60 or abs(_by - _yb) < 60
+                            or abs(_by + 47 - _yt) < 60
+                            or abs(_by + 47 - _yb) < 60)
+                           for _bx, _by, _bx2, _ in _bs_beams_geo)
             if _my_head is None or _on_beam:
                 return _tag
             # rigo della testa
@@ -11690,6 +11831,40 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             _fix_stem_bs, modified)
         if _n_stem_fix[0]:
             print(f"  [BEAMSYNTH] gambi clamp rigo: {_n_stem_fix[0]}")
+
+        # 3 Ott 2026 (bug stanghette b13-15 Marco): nel rigo 3 le BarLine sono
+        # SPEZZATE in due tratti: frammento orfano h~181 SOPRA il rigo (nel
+        # gap, residuo della barline raw del layout affiancato spezzata dal
+        # y-stretch) + tratto principale che copre il rigo. FIX: rimuovi i
+        # frammenti BarLine ORFANI (che non intersecano alcuna banda rigo e
+        # non collegano bottom del rigo sopra al top del rigo sotto = le
+        # barline accollatura legittime restano escluse).
+        _n_bl_rm = [0]
+
+        def _rm_orphan_barlines(_bmm):
+            _tag = _bmm.group(0)
+            _pv = [float(_z) for _z in _bmm.group(1).replace(',', ' ').split()]
+            if len(_pv) < 4:
+                return _tag
+            _bt = min(_pv[1], _pv[3])
+            _bb = max(_pv[1], _pv[3])
+            # interseca una banda rigo? (con margine 60)
+            for _rt, _rb in _bs_sys_rows:
+                if _bb >= _rt - 60 and _bt <= _rb + 60:
+                    return _tag   # tocca un rigo: legittima
+            # collega due righi adiacenti (accollatura)?
+            for _i in range(len(_bs_sys_rows) - 1):
+                if abs(_bt - _bs_sys_rows[_i][1]) <= 60 and \
+                        abs(_bb - _bs_sys_rows[_i + 1][0]) <= 60:
+                    return _tag
+            _n_bl_rm[0] += 1
+            return ''
+
+        modified = re.sub(
+            r'<polyline class="BarLine"[^>]*points="([^"]+)"[^>]*/?>',
+            _rm_orphan_barlines, modified)
+        if _n_bl_rm[0]:
+            print(f"  [BEAMSYNTH] frammenti barline orfani rimossi: {_n_bl_rm[0]}")
 
         # La TAVOLA SONORA (e i nomi nota in essa) va comunque disegnata:
         # usa le posizioni definitive (gambi/beams sintetizzati sono nei sistemi).
@@ -16127,11 +16302,21 @@ def _bs_bind(svg_content, groups, note_info, systems_bounds, meas_x=None, sys_fo
         note_stems = []
         ok = True
         used_here = set()
+        _rt_w, _rb_w = systems_bounds[_sys_i]
         for n_idx, hi in enumerate(win):
             hx, hy, hr = heads[hi][0], heads[hi][1], heads[hi][2]
             cand_s = []
             for si, (sx, sy1, sy2) in enumerate(stems):
                 if abs(sx - hx) < 130 and min(abs(sy1 - hy), abs(sy2 - hy)) < hr + 60:
+                    # 3 Ott 2026: il gambo deve appartenere allo stesso SISTEMA
+                    # della testa (l'endpoint lontano, tip, entro la banda del
+                    # rigo con lo stesso margine del pool teste) — senza questo
+                    # check il bind agganciava gambi cross-rigo (m=46: gambo
+                    # con tip nel rigo 2 per una testa del rigo 3) e la synth
+                    # estendeva i gambi attraverso il gap = mostri
+                    _tip_far = sy1 if abs(sy2 - hy) < abs(sy1 - hy) else sy2
+                    if not (_rt_w - _mrg <= _tip_far <= _rb_w + _mrg):
+                        continue
                     cand_s.append((abs(sx - hx), si))
             if not cand_s:
                 ok = False
