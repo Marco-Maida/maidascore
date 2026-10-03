@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.3.0] - 3 Ott 2026
+### Added
+- Beam synthesizer universale (--beam-synth, default ON): generazione delle travature direttamente dai gruppi beam_mode del .mscx (catene begin→mid→end), con bind greedy gruppi↔gambi e sintesi geometrica pura (beam rette orizzontali, y = punta del gambo estremo, spessore 47 verso le teste, livelli secondari y_off = dir*(lvl-1)*15, runs massimali, hook per run=1, accordi dedup). Sostituisce il flusso patchwork dei Pass legacy per le beams.
+### Fixed
+- Travature sospese nel gap b13-15 notazione: la synth ereditava le y parcheggiate del layout affiancato grezzo di MuseScore; le famiglie (prim+sec, shift unico) vengono ora riposizionate presso il rigo (formula Gould: max 1 spazio oltre), gambi del gruppo a seguire.
+- Stanghette spezzate in due tratti: frammenti barline orfani (residui y-stretch non collegati ad alcun rigo) rimossi.
+- Bind cross-sistema: un gambo col tip nel rigo successivo non viene più agganciato a una testa di un altro sistema (gambi-monstro b37-48).
+- Crash cairosvg in modalità rhythm: gli edit a offset stali (edit inline durante il loop invalidavano gli start/end successivi) producevano XML malformato; tutti gli edit (beam path + stem polyline) vengono ora raccolti e applicati in ordine di start decrescente globale.
+- Regressione rhythm: il reposition delle famiglie beams era pensato per la notazione e spostava 306 famiglie legittime in rhythm; confinato alla sola modalità notazione.
+### Gotchas
+- (1) il tag matchato dalle regex finisce all'ultimo numero: ricostruire sostituendo i SOLI valori numerici, mai _pre+nuovo+tail (tronca il tag = XML rotto); (2) i points dei gambi hanno formattazione %.2f fissa: rstrip('0') produce '2359' ≠ '2359.00' = replace muto; (3) il rigo di una famiglia nel gap va scelto per VICINITÀ; (4) ogni fix di layout va valutato PER MODALITÀ (notazione vs rhythm hanno layout diversi: un fix per l'uno è spesso una regressione per l'altro), verificando entrambe con diff pixel.
+### Audit
+- 0 beams orfane su Radetsky (5 pagine, entrambe le modalità); 0 gambi-monstro nuovi; validatore TUTTO OK 5/5 pagine; rhythm diff-pixel vs versione approvata: 0.03-0.16% (solo correzioni mirate b2-4).
+
 ## [1.2.30] - 1 Ott 2026
 ### Fixed
 - fix: gambo mancante sull'ultima semicroma della battuta 3 (Marco con immagine: la Sol semicroma b3 rigo 1 senza gambo). CAUSA: il blocco "attraversa" introdotto in v1.2.28 nel ramo BEAM SINGOLE del Pass 9 classificava falsamente come attraversante il gambo che si attacca al BORDO ESTERNO della beam (il test attraversamento st_top < y_min AND st_bot > y_max matcha anche il gambo che termina ESATTAMENTE al bordo: st_bot == y_max > y_min): il gambo della Sol (testa fuori rigo con ledger a y560, gambo dalla testa alla beam a 1704) veniva accorciato al bordo della beam PRIMA dello shift e orfanato (risultato: frammento 21px al rigo successivo).
