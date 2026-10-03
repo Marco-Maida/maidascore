@@ -11736,9 +11736,14 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 _n_rep += 1
             return _svg, _n_rep
 
-        modified, _n_rep_bs = _bs_reposition_beams(modified)
-        if _n_rep_bs:
-            print(f"  [BEAMSYNTH] famiglie beams riposizionate presso il rigo: {_n_rep_bs}")
+        # 3 Ott 2026: il reposition delle famiglie è SOLO per la NOTAZIONE —
+        # in rhythm il layout è già corretto (beams sulle micro-celle): il
+        # reposition qui spostava 306 famiglie legittime (regressione vs v3,
+        # segnalazione Marco)
+        if not rhythm_mode:
+            modified, _n_rep_bs = _bs_reposition_beams(modified)
+            if _n_rep_bs:
+                print(f"  [BEAMSYNTH] famiglie beams riposizionate presso il rigo: {_n_rep_bs}")
 
         # 3 Ott 2026 (bug ledger oblique + gambi-monstro + tavole basse,
         # segnalazione Marco b1/b31-35/b37-48): i pass di LAYOUT del flusso
