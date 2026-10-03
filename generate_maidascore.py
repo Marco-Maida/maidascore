@@ -11569,6 +11569,17 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         modified = modified.replace('</svg>', _bs_paths_to_svg(_bs_paths) + '</svg>')
         # i gambi SONO già corretti (equalizzati); il clip/appiattimento legacy
         # non gira. Salta direttamente al footer: niente pass 8-20g.
+        # La TAVOLA SONORA (e i nomi nota in essa) va comunque disegnata:
+        # usa le posizioni definitive (gambi/beams sintetizzati sono nei sistemi).
+        modified = draw_tavola_sonora(modified, systems_post, equalized_measures,
+                                       note_info, note_offset,
+                                       tavola_row_height=TAVOLA_ROW_HEIGHT,
+                                       tavola_gap=TAVOLA_GAP,
+                                       processed_notes=notes,
+                                       initial_rest_measures=initial_rest_measures,
+                                       measure_offset=measure_offset,
+                                       mmrest_groups=mmrest_groups,
+                                       system_layout=_system_layout)
         _vbs = re.search(r'viewBox="([\d.\-]+) ([\d.\-]+) ([\d.\-]+) ([\d.\-]+)"', modified)
         if _vbs:
             _fvb_x = float(_vbs.group(1)); _fvb_y = float(_vbs.group(2))
@@ -15797,7 +15808,8 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
 # ==============================================================================
 
 BEAM_SYNTH_THICKNESS = 47.0
-BEAM_SYNTH_LEVEL_PITCH = 15.0
+BEAM_SYNTH_LEVEL_GAP = 50.0   # gap visivo prim-sec (leggibilita', direttiva)
+BEAM_SYNTH_LEVEL_PITCH = BEAM_SYNTH_THICKNESS + BEAM_SYNTH_LEVEL_GAP
 BEAM_SYNTH_OVERHANG = 4.7
 BEAM_SYNTH_HOOK_MIN = 90.0
 BEAM_SYNTH_HOOK_MAX = 130.0
