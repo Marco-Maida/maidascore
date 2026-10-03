@@ -11616,8 +11616,11 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     r'<polyline class="Stem"[^>]*points="([\d.\-]+),([\d.\-]+) '
                     r'([\d.\-]+),([\d.\-]+)"[^>]*>', _svg):
                 _sv = [float(_sm.group(i)) for i in range(1, 5)]
-                _stems.append({'x': _sv[0], 'y1': _sv[1], 'y2': _sv[3], 'tag': _sm.group(0)})
+                _stems.append({'x': _sv[0], 'y1': _sv[1], 'y2': _sv[3],
+                               'tag': _sm.group(0),
+                               'start': _sm.start(), 'end': _sm.end()})
             _n_rep = 0
+            _p_edits = []
             _used = [False] * len(_beams)
             for _bi, _b in enumerate(_beams):
                 if _used[_bi]:
@@ -11669,11 +11672,23 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 _shift = _y_new - _y_top
                 if abs(_shift) < 30:
                     continue
-                # applica shift alla famiglia (slice per offset, dal fondo per
-                # non invalidare gli start delle successive). NB: il tag
-                # matchato FINISCE all'ultimo numero della d: ricostruiamo il
-                # d e sostituiamo i SOLI 8 numeri dentro il tag.
-                for _f in sorted(_fam, key=lambda z: -z['start']):
+                # raccoglie la sostituzione della famiglia (applicata DOPO il
+                # loop, in ordine di start decrescente GLOBALE: editare durante
+                # il loop invalida gli start delle famiglie successive — in
+                # notation gli shift erano same-length e mascheravano il bug,
+                # in rhythm una lunghezza cambia = tag troncato = XML rotto)
+                pass
+                if True:
+                    _pre_dummy = None
+                # raccoglie le sostituzioni; applicate DOPO il loop in ordine
+                # di start DECRESCENTE (editare inline invalida gli start
+                # delle famiglie successive: in notation gli shift erano
+                # same-length e mascheravano il bug; in rhythm cambia la
+                # lunghezza = tag troncato = XML malformato = crash cairosvg).
+                # NB: il match regex FINISCE all'ultimo numero della d: la coda
+                # (' Z"/>') resta nell'SVG dopo _svg[_f['end']:] (slice
+                # replacement = tail-preserving, mai truncation)
+                for _f in _fam:
                     _ntag = _f['tag']
                     _nt = re.findall(r'[\d.\-]+', _ntag.split('d="')[1])
                     _ns = [float(_v) for _v in _nt[:8]]
@@ -11681,10 +11696,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                            % (_ns[0], _ns[1] + _shift, _ns[2], _ns[3] + _shift,
                               _ns[4], _ns[5] + _shift, _ns[6], _ns[7] + _shift))
                     _pre = _ntag[:_ntag.index('d="') + 3]
-                    _ntag2 = _pre + _nd
-                    if _ntag2 != _ntag:
-                        _svg = _svg[:_f['start']] + _ntag2 + _svg[_f['end']:]
-                        _n_rep += 1
+                    _p_edits.append((_f['start'], _f['end'], _pre + _nd))
                 # gambi del gruppo: endpoint lato beam segue lo shift.
                 # NB: i points del gambo hanno formattazione %.2f fissa:
                 # match ESATTO (rstrip('0') su 2359.00 -> "2359" = replace muto)
@@ -11705,7 +11717,23 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         'points="%.2f,%.2f %.2f,%.2f"' % (
                             _st['x'], _ny1, _st['x'], _ny2), 1)
                     if _new_st_tag != _st['tag']:
-                        _svg = _svg.replace(_st['tag'], _new_st_tag, 1)
+                        # anche il gambo: edit raccolto, MAI replace inline
+                        # (cambia la lunghezza e invalida gli offset dei
+                        # _p_edits già raccolti = XML malformato)
+                        _pre_st = _st['tag'][:_st['tag'].index('points="') + 8]
+                        _post_st = _st['tag'][len(_pre_st) + len(
+                            '%.2f,%.2f %.2f,%.2f' % (_st['x'], _st['y1'],
+                                                     _st['x'], _st['y2'])):]
+                        _p_edits.append((_st['start'], _st['end'],
+                                         _pre_st + '%.2f,%.2f %.2f,%.2f' % (
+                                             _st['x'], _ny1, _st['x'], _ny2)
+                                         + _post_st))
+            # applica le sostituzioni dei path beam dal FONDO all'inizio:
+            # gli start/end di ogni edit restano validi perché i punti
+            # precedenti non sono mai toccati da edit successivi
+            for _st_e, _en_e, _tag_e in sorted(_p_edits, key=lambda z: -z[0]):
+                _svg = _svg[:_st_e] + _tag_e + _svg[_en_e:]
+                _n_rep += 1
             return _svg, _n_rep
 
         modified, _n_rep_bs = _bs_reposition_beams(modified)
