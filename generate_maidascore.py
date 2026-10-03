@@ -11580,10 +11580,122 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         if _bs_prob:
             print(f"  [BEAMSYNTH][VALIDATE] ATTENZIONE: {_bs_prob} beams fuori dai sistemi")
         modified = modified.replace('</svg>', _bs_paths_to_svg(_bs_paths) + '</svg>')
-        # i gambi SONO già corretti (equalizzati); il clip/appiattimento legacy
-        # non gira. Salta direttamente al footer: niente pass 8-20g.
+
+        # 3 Ott 2026 (bug ledger oblique + gambi-monstro + tavole basse,
+        # segnalazione Marco b1/b31-35/b37-48): i pass di LAYOUT del flusso
+        # legacy (9c ledger, 13 gambi, cap tavola) sono indipendenti dalle
+        # travature e vanno eseguiti ANCHE nel flusso synth (consulto Fable:
+        # l'early-return li saltava tutti). Tre pass, coordinate definitive:
+
+        # PASS 9c-BIS — ledger lines SEMPRE orizzontali: il remap y-stretch
+        # rimappa i 2 endpoint indipendentemente; se finiscono in zone di
+        # sistemi diversi la ledger diventa diagonale (attraversa il rigo).
+        _n_led_fix = [0]
+
+        def _fix_ledger_bs(_lm):
+            _tag = _lm.group(0)
+            _pts = _lm.group(1)
+            _v = [float(_pv) for _pv in _pts.replace(',', ' ').split()]
+            if len(_v) < 4 or abs(_v[1] - _v[3]) < 3:
+                return _tag
+            _y = min(_v[1], _v[3])   # y della nota (la ledger sta alla sua Y)
+            _new_pts = ('%.2f,%.2f %.2f,%.2f' % (_v[0], _y, _v[2], _y))
+            _n_led_fix[0] += 1
+            return _tag.replace(_pts, _new_pts, 1)
+
+        modified = re.sub(
+            r'<polyline class="LedgerLine"[^>]*points="([^"]+)"',
+            _fix_ledger_bs, modified)
+        if _n_led_fix[0]:
+            print(f"  [BEAMSYNTH] ledger orizzontalizzate: {_n_led_fix[0]}")
+
+        # PASS 13-BIS — gambi: (a) NESSUN gambo attraversa il gap tra i
+        # sistemi (i mostri h>1300 nascono qui: la synth estende il gambo
+        # alla beam anche quando la beam sintetizzata è finita nel gap);
+        # (b) gambo che sporge oltre il proprio rigo senza beam nè testa
+        # all'endpoint esterno → accorciato al limite del rigo (+20).
+        # Il rigo di appartenenza = quello della TESTA attaccata (gambo-up =
+        # testa al bottom). I CONNETTORI tavola (stroke NON nero) e i gambi
+        # con endpoint su una BEAM sintetizzata sono esenti.
+        _bs_beams_geo = []
+        for _bm in re.finditer(
+                r'<path class="Beam"[^>]*d="M([\d.\-]+),([\d.\-]+) '
+                r'L([\d.\-]+),([\d.\-]+)', modified):
+            _bs_beams_geo.append((float(_bm.group(1)), float(_bm.group(2)),
+                                  float(_bm.group(3)), float(_bm.group(4))))
+        _bs_heads_geo = [(float(_hm.group(1)), float(_hm.group(2)), float(_hm.group(3)))
+                         for _hm in re.finditer(
+                             r'<circle cx="([\d.]+)" cy="([\d.]+)" r="([\d.]+)"', modified)]
+        _n_stem_fix = [0]
+
+        def _fix_stem_bs(_sm):
+            # I gambi-nota in MaidaScore sono COLORATI (stroke = colore della
+            # nota) COME i connettori tavola: il discriminante è la distanza
+            # testa-endpoint (gambo parte dalla testa, connettore a ~77px).
+            _tag = _sm.group(0)
+            _pts = _sm.group(1)
+            _v = [float(_pv) for _pv in _pts.replace(',', ' ').split()]
+            if len(_v) < 4 or abs(_v[0] - _v[2]) >= 2:
+                return _tag   # solo verticali
+            _x, _yt, _yb = _v[0], min(_v[1], _v[3]), max(_v[1], _v[3])
+            # testa attaccata (interseca il cerchio): determina il rigo.
+            # GAMBO: l'endpoint vicino alla testa dista < 60px dal bordo
+            # (il connettore tavola parte a ~77px: fuori).
+            _my_head = None
+            _head_dist = None
+            for _hx, _hy, _hr in _bs_heads_geo:
+                if abs(_hx - _x) <= 115 and _yt - 67 <= _hy <= _yb + 67:
+                    _d = min(abs(_hy - _yt), abs(_hy - _yb)) - _hr
+                    if _d <= 60 and (_head_dist is None or _d < _head_dist):
+                        _my_head = (_hx, _hy, _hr)
+                        _head_dist = _d
+            # beam sintetizzata raggiunta da un endpoint
+            _on_beam = any(abs(_bx - _x) < 30 and
+                           (abs(_by - _yt) < 60 or abs(_by - _yb) < 60)
+                           for _bx, _by, _, _ in _bs_beams_geo)
+            if _my_head is None or _on_beam:
+                return _tag
+            # rigo della testa
+            _rig = None
+            for _rt, _rb in _bs_sys_bounds:
+                if _rt - 150 <= _my_head[1] <= _rb + 150:
+                    _rig = (_rt, _rb)
+                    break
+            if _rig is None:
+                return _tag
+            # (a) gap-crossing: endpoint oltre il rigo verso il sistema vicino
+            _new_v = list(_v)
+            _changed = False
+            if _yt < _rig[0] - 10:
+                _new_yt = _rig[0] + 20
+                for _i in (1, 3):
+                    if abs(_v[_i] - _yt) < 0.01:
+                        _new_v[_i] = _new_yt
+                _changed = True
+            if _yb > _rig[1] + 10:
+                _new_yb = _rig[1] - 20
+                for _i in (1, 3):
+                    if abs(_v[_i] - _yb) < 0.01:
+                        _new_v[_i] = _new_yb
+                _changed = True
+            if not _changed:
+                return _tag
+            _new_pts = ('%.2f,%.2f %.2f,%.2f' % (_new_v[0], _new_v[1],
+                                                 _new_v[2], _new_v[3]))
+            _n_stem_fix[0] += 1
+            return _tag.replace(_pts, _new_pts, 1)
+
+        modified = re.sub(
+            r'<polyline class="Stem"[^>]*points="([^"]+)"[^>]*/?>',
+            _fix_stem_bs, modified)
+        if _n_stem_fix[0]:
+            print(f"  [BEAMSYNTH] gambi clamp rigo: {_n_stem_fix[0]}")
+
         # La TAVOLA SONORA (e i nomi nota in essa) va comunque disegnata:
         # usa le posizioni definitive (gambi/beams sintetizzati sono nei sistemi).
+        # draw_tavola_sonora ha già il cap anti-sovrapposizione col rigo
+        # successivo (1 Ott 2026) e legge max_stem_y DOPO il clamp sopra =
+        # le tavole non scappano più in fondo al gap (bug b37-48).
         modified = draw_tavola_sonora(modified, systems_post, equalized_measures,
                                        note_info, note_offset,
                                        tavola_row_height=TAVOLA_ROW_HEIGHT,
