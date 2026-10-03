@@ -520,6 +520,30 @@ def extract_notes_via_music21(mscz_path, part_index=0):
                 # dotted = ql = base * 1.5
                 dur_type = n.duration.type
                 dots = n.duration.dots
+                # BeamSynthesizer (3 Ott 2026): livelli di beam + BeamMode
+                # per la nota. I beams music21 valgono 1:1 con i gruppi
+                # MuseScore (l'injection 1:1 dai BeamMode del .mscx gira
+                # PRIMA dell'export e produce gli stessi gruppi).
+                _bt_all = {}
+                try:
+                    if n.beams is not None:
+                        _bt_all = {b.number: b.type for b in n.beams.beamsList
+                                   if b.type is not None}
+                except (AttributeError, Exception):
+                    _bt_all = {}
+                _n_levels = 0
+                for _bl in (1, 2, 3, 4):
+                    if _bt_all.get(_bl) in ('start', 'continue', 'stop'):
+                        _n_levels = max(_n_levels, _bl)
+                _bm1 = _bt_all.get(1)  # 'start'/'continue'/'stop'/None
+                if _bm1 == 'start':
+                    _beam_mode = 'begin'
+                elif _bm1 in ('continue', 'stop'):
+                    _beam_mode = 'mid'
+                elif _n_levels == 0:
+                    _beam_mode = 'none'
+                else:
+                    _beam_mode = None  # nota interna con beam2+ ma senza beam1
                 
                 if n.isRest:
                     # Verifica se è un measure rest (riempie l'intera battuta)
@@ -607,6 +631,9 @@ def extract_notes_via_music21(mscz_path, part_index=0):
                         'ql': float(ql),  # 10 Set 2026: durata esatta (triplet = 1/6, non 0.25)
                         'measure_idx': m_idx,
                         'n_chord_notes': 1,
+                        'beam_levels': _n_levels,
+                        'beam_mode': _beam_mode,
+                        'beam_types': _bt_all,
                     })
         
         return {'notes': notes, 'rests': rests, 'time_sig': time_sig,
@@ -4095,7 +4122,7 @@ def _note_final_x(n, all_notes_in_sys, current_measure_idx, new_m_start, new_m_w
     return center_x
 
 
-def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False, title_text=None, part_text=None, measure_offset=0, initial_rest_measures=0, mmrest_groups=None, rhythm_mode=False, key_sig_changes_dict=None, expected_system_plan=None):
+def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False, title_text=None, part_text=None, measure_offset=0, initial_rest_measures=0, mmrest_groups=None, rhythm_mode=False, key_sig_changes_dict=None, expected_system_plan=None, beam_synth=False):
     parsed = parse_svg(svg_content)
     systems = parsed['systems']
     barlines = parsed['barlines_by_system']
@@ -11410,9 +11437,161 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             modified = modified.replace(vb_match_t.group(0), new_vb)
             modified = modified.replace('</svg>', texts_svg + '</svg>')
 
+    # ===== BEAMSYNTHESIZER (3 Ott 2026, flag --beam-synth, default OFF) =====
+    # Se attivo: TUTTA la pipeline legacy delle travature (da qui fino alla
+    # fine dei pass 20*, ~4000 righe) viene SALTATA; le beams raw vengono
+    # rimosse e RIDISEGNATE da zero (group→bind→synthesize, vedi modulo in
+    # testa al file e docs/beam-synthesis-redesign.md). I gambi esistenti
+    # (già corretti) NON vengono toccati. Con il flag OFF il flusso è
+    # byte-identico alla pipeline legacy.
+    if beam_synth:
+        # strip di TUTTE le beams raw (le class="Beam" create da noi sono
+        # aggiunte DOPO, in questo stesso blocco: nessun conflitto)
+        _n_strip = len(re.findall(r'<path class="Beam"', modified))
+        # bounds dei sistemi della pagina (da _system_layout, già calcolato)
+        _bs_sys_bounds = []
+        if _system_layout:
+            for _bs_sk in sorted(_system_layout, key=lambda k: _system_layout[k].get('top', 0)):
+                _bs_sl = _system_layout[_bs_sk]
+                if 'top' in _bs_sl and 'bottom' in _bs_sl:
+                    _bs_sys_bounds.append((_bs_sl['top'], _bs_sl['bottom']))
+        if not _bs_sys_bounds:
+            # fallback 1: StaffLines (notazione: class="StaffLines", una
+            # polyline per riga del pentagramma, 5 righe per sistema)
+            _bs_rows = {}
+            for _bs_m in re.finditer(r'<polyline class="StaffLines"[^>]*points="([^"]+)"', modified):
+                _bs_pts = [float(v) for v in _bs_m.group(1).replace(',', ' ').split()]
+                for _bs_k in range(0, len(_bs_pts) - 1, 2):
+                    _bs_y = _bs_pts[_bs_k + 1]
+                    _bs_rows.setdefault(round(_bs_y / 50) * 50, []).append(_bs_y)
+            if _bs_rows:
+                # raggruppa le righe per sistema (gap > 500 = sistema nuovo)
+                _bs_sorted = sorted((min(v), max(v)) for v in _bs_rows.values())
+                _bs_cur = None
+                for _bs_rt, _bs_rb in _bs_sorted:
+                    if _bs_cur is None or _bs_rt - _bs_cur[1] > 500:
+                        if _bs_cur:
+                            _bs_sys_bounds.append(_bs_cur)
+                        _bs_cur = (_bs_rt, _bs_rb)
+                    else:
+                        _bs_cur = (_bs_cur[0], max(_bs_cur[1], _bs_rb))
+                if _bs_cur:
+                    _bs_sys_bounds.append(_bs_cur)
+            else:
+                # fallback 2: micro-celle rhythm (rect h ~392)
+                _bs_rows2 = {}
+                for _bs_m in re.finditer(r'<rect[^>]*y="([\d.]+)"[^>]*height="([\d.]+)"', modified):
+                    _bs_y, _bs_h = float(_bs_m.group(1)), float(_bs_m.group(2))
+                    if 380 < _bs_h < 400:
+                        _bs_rows2[round(_bs_y / 400) * 400] = (_bs_y, _bs_y + _bs_h)
+                _bs_sys_bounds = sorted(_bs_rows2.values())
+        # slice note_info alle battute della pagina: i gruppi vengono
+        # ricostruiti SOLO con le note della pagina (cross-page → split)
+        _bs_page_info = {}
+        if note_info:
+            _bs_all = note_info.get('notes', [])
+            _bs_pg = [n for n in _bs_all
+                      if measure_offset <= n.get('measure_idx', -1)
+                      < measure_offset + total_meas_in_page]
+            _bs_page_info = dict(note_info)
+            _bs_page_info['notes'] = _bs_pg
+        _bs_groups = _bs_group(_bs_page_info)
+        # bounds X per battuta logica: da _system_layout (battute per sistema)
+        # + equalized_measures (bounds X delle battute nello stesso ordine)
+        _bs_meas_x = {}   # measure_idx → (x0, x1)
+        _bs_sys_for_m = {}  # measure_idx → indice sistema (ordine Y dei bounds)
+        if _system_layout:
+            _bs_layout_sorted = sorted(_system_layout.items(),
+                                       key=lambda kv: kv[1].get('top', 0))
+            for _bs_si, (_bs_sk, _bs_sl) in enumerate(_bs_layout_sorted):
+                _bs_ms = _bs_sl.get('measures', [])
+                # chiave _system_layout = "x_start_topY"; equalized_measures
+                # è indicizzata per x_start (parte prima del '_')
+                _bs_xk = str(_bs_sk).split('_')[0]
+                _bs_ems = equalized_measures.get(_bs_xk) if equalized_measures else None
+                if _bs_ems is None and equalized_measures and str(_bs_sk) in equalized_measures:
+                    _bs_ems = equalized_measures[str(_bs_sk)]
+                for _bs_m in _bs_ms:
+                    _bs_sys_for_m[_bs_m] = _bs_si
+                if _bs_ems:
+                    for _bs_i, _bs_m in enumerate(_bs_ms):
+                        if _bs_i < len(_bs_ems):
+                            _bs_meas_x[_bs_m] = tuple(_bs_ems[_bs_i])
+        modified = re.sub(r'<path class="Beam"[^>]*/?>', '', modified)
+        if os.environ.get('MAIDA_DEBUG_BS'):
+            print(f"  [BS-DBG] meas_x keys: {len(_bs_meas_x)} sample: "
+                  f"{list(_bs_meas_x.items())[:3]}")
+            print(f"  [BS-DBG] sys_bounds: {[(round(a),round(b)) for a,b in _bs_sys_bounds][:5]}")
+        _bs_bound = _bs_bind(modified, _bs_groups, _bs_page_info,
+                             _bs_sys_bounds, _bs_meas_x, _bs_sys_for_m)
+        _bs_paths, _bs_fixes = _bs_synthesize(_bs_bound)
+        # estendi i gambi corti alla beam sintetizzata (l'endpoint lato beam del
+        # gambo con punta != y_prim viene portato a y_prim)
+        _n_fix = 0
+        for _fx, _old_tip, _new_tip in _bs_fixes:
+            _fpat = ('%.2f' % _old_tip).rstrip('0').rstrip('.')
+            _tpat = ('%.2f' % _new_tip).rstrip('0').rstrip('.')
+            _m_fx = re.search(
+                r'<polyline class="Stem"[^>]*points="([^"]*)"[^>]*/?>',
+                modified)
+            for _m_fx in list(re.finditer(
+                    r'<polyline class="Stem"([^>]*)points="([^"]+)"([^>]*/?)>', modified)):
+                _fx_attr = _m_fx.group(2)
+                _fx_pts = [float(v) for v in _fx_attr.replace(',', ' ').split()]
+                if len(_fx_pts) < 4 or abs(_fx_pts[0] - _fx_pts[2]) >= 5:
+                    continue
+                if abs(_fx_pts[0] - _fx) > 0.5:
+                    continue
+                # endpoint lato beam: il valore == old_tip (in y1 o y2)
+                _new_pts = list(_fx_pts)
+                _hit = False
+                for _fi in (1, 3):
+                    if abs(_fx_pts[_fi] - _old_tip) < 0.5:
+                        _new_pts[_fi] = _new_tip
+                        _hit = True
+                if not _hit:
+                    continue
+                _fx_new = ('%.2f,%.2f %.2f,%.2f' % (_new_pts[0], _new_pts[1],
+                                                    _new_pts[2], _new_pts[3]))
+                _seg_fx = _m_fx.group(0)
+                _seg_new = _seg_fx.replace(_fx_attr, _fx_new, 1)
+                if _seg_new != _seg_fx and _fx_attr in modified:
+                    modified = modified.replace(_seg_fx, _seg_new, 1)
+                    _n_fix += 1
+        if _bs_fixes:
+            print(f"  [BEAMSYNTH] gambi estesi alla beam: {_n_fix}/{len(_bs_fixes)}")
+        _n_fail = sum(1 for _g, _st, _e in _bs_bound if _st is None)
+        print(f"  [BEAMSYNTH] gruppi={len(_bs_groups)} falliti_bind={_n_fail} "
+              f"beams_sintetizzate={len(_bs_paths)} (strip raw: {_n_strip})")
+        _bs_prob = _bs_validate(modified, _bs_sys_bounds)
+        if _bs_prob:
+            print(f"  [BEAMSYNTH][VALIDATE] ATTENZIONE: {_bs_prob} beams fuori dai sistemi")
+        modified = modified.replace('</svg>', _bs_paths_to_svg(_bs_paths) + '</svg>')
+        # i gambi SONO già corretti (equalizzati); il clip/appiattimento legacy
+        # non gira. Salta direttamente al footer: niente pass 8-20g.
+        _vbs = re.search(r'viewBox="([\d.\-]+) ([\d.\-]+) ([\d.\-]+) ([\d.\-]+)"', modified)
+        if _vbs:
+            _fvb_x = float(_vbs.group(1)); _fvb_y = float(_vbs.group(2))
+            _fvb_w = float(_vbs.group(3)); _fvb_h = float(_vbs.group(4))
+        else:
+            _fvb_x, _fvb_y = 0.0, 0.0
+            _fvb_w = (_max_x_val if '_max_x_val' in dir() else 9924.0)
+            _fvb_h = (_max_y_val if '_max_y_val' in dir() else 14031.0)
+        _footer_x = _fvb_x + _fvb_w / 2
+        _footer_y = _fvb_y + _fvb_h - 120
+        _footer_text = "generated by MaidaScore — © 2026 Marco Maida"
+        _footer_svg = (
+            f'<text x="{_footer_x:.1f}" y="{_footer_y:.1f}" '
+            f'font-family="Atkinson Hyperlegible,Carlito,DejaVu Sans,sans-serif" '
+            f'font-size="110" font-weight="400" fill="#888888" '
+            f'text-anchor="middle">{_footer_text}</text>\n'
+        )
+        modified = modified.replace('</svg>', _footer_svg + '</svg>')
+        return modified, total_meas_in_page
+
     # 29 Set 2026 (travature sempre dritte): le beams PRIMARIE di MuseScore
     # sono oblique (seguono la direzione melodica) e i gambi spesso fuoriescono
-    # dal bordo. Pass FINALE in coda a process_svg, coordinate definitive:
+    # dal bordo. Pass FINALE in coda a process_svg, coordinate definite:
     # (1) ogni quadrilatero Beam (esattamente 5 vertici con chiusura sul punto
     #     iniziale) viene APPATTATO: bordo superiore y = min(y1,y2) se la beam
     #     sta SOTTO i gambi (stems-down, si allontana dalle note), max(y1,y2)
@@ -15607,6 +15786,269 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
     return modified, total_meas_in_page
 
 
+# ==============================================================================
+# BEAMSYNTHESIZER — sintesi deterministica delle travature (3 Ott 2026)
+# Design: docs/beam-synthesis-redesign.md (consulto Fable 5, commit 269c365).
+# Le beams sono OUTPUT, non stato: la geometria delle beams raw di MuseScore,
+# dopo equalizzazione X e y-stretch, è rumore. I gruppi vengono dal contesto
+# note_info (BeamMode per nota), la geometria dai gambi equalizzati (già
+# corretti: non si toccano). Tre fasi: group() → bind() → synthesize(),
+# poi validate() di sola verifica (fallisce rumorosamente, mai auto-fix).
+# ==============================================================================
+
+BEAM_SYNTH_THICKNESS = 47.0
+BEAM_SYNTH_LEVEL_PITCH = 15.0
+BEAM_SYNTH_OVERHANG = 4.7
+BEAM_SYNTH_HOOK_MIN = 90.0
+BEAM_SYNTH_HOOK_MAX = 130.0
+
+
+def _bs_group(note_info):
+    """Fase 1 GROUP: note_info['notes'] → lista di gruppi (liste di note).
+    Catene beam_mode: 'begin' apre, 'mid' continua, nota senza beam1 CHIUDE.
+    Ogni gruppo è una lista di dict-note (con measure_idx per il bind).
+    """
+    groups = []
+    cur = []
+    for n in note_info.get('notes', []):
+        bm = n.get('beam_mode')
+        if bm == 'begin':
+            if cur:
+                groups.append(cur)
+            cur = [n]
+        elif bm == 'mid':
+            if cur:
+                cur.append(n)
+            else:
+                # orphan mid: tratta come begin (log, non fatale)
+                cur = [n]
+        else:
+            # 'none' / None / end implicito del gruppo
+            if bm is None and cur and n.get('beam_levels', 0) > 1:
+                # nota interna con beam2+ ma senza beam1: prosegue il gruppo
+                cur.append(n)
+                continue
+            if cur:
+                # la nota con beam_mode None CHEIUDE il gruppo SOLO se non ha
+                # alcun beam; le note di fine gruppo hanno 'mid' (la music21
+                # 'stop' è mappata a 'mid': la chiusura avviene qui)
+                if n.get('beam_levels', 0) == 0:
+                    groups.append(cur)
+                    cur = []
+                else:
+                    cur.append(n)
+    if cur:
+        groups.append(cur)
+    return [g for g in groups if len(g) >= 2]
+
+
+def _bs_bind(svg_content, groups, note_info, systems_bounds, meas_x=None, sys_for_m=None):
+    """Fase 2 BIND (globale per pagina, greedy): matcha i gruppi (in ordine
+    temporale) con finestre di teste SVG, una volta sola per testa.
+    Le X si ripetono per colonna in ogni rigo → il bind è PER SISTEMA: per
+    ogni gruppo si prova ogni sistema; la finestra contigua di len(g) teste
+    DISPONIBILI (non ancora usate) con span minimo; vincolo: la finestra
+    deve contenere teste di UN solo sistema e il gruppo NON può saltare a un
+    sistema con finestra già esausta. Greedy in ordine di gruppo = le teste
+    vengono consumate da sinistra a destra come i gruppi procedono nel tempo.
+    Ritorna lista di (group, stems_list, err).
+    """
+    heads = []
+    for m in re.finditer(r'<circle cx="([\d.]+)" cy="([\d.]+)" r="([\d.]+)"', svg_content):
+        cx, cy, r = float(m.group(1)), float(m.group(2)), float(m.group(3))
+        if 55.0 <= r <= 115.0:
+            heads.append([cx, cy, r, False])   # [x, y, r, used]
+    stems = []
+    for m in re.finditer(r'<polyline class="Stem"[^>]*points="([^"]+)"[^>]*/?>', svg_content):
+        p = [float(v) for v in m.group(1).replace(',', ' ').split()]
+        if len(p) >= 4 and abs(p[0] - p[2]) < 5:
+            stems.append((p[0], min(p[1], p[3]), max(p[1], p[3])))
+    # raggi disco per durata (misurati su Radetsky):
+    # rhythm: 16th=r58, eighth=r72; notazione: 16th=r72, eighth=r88.
+    rad_by_dur = {'eighth': (72.0, 88.0), 'eighth_dotted': (72.0, 88.0),
+                  '16th': (58.0, 72.0), '16th_dotted': (58.0, 72.0),
+                  '32nd': (58.0, 72.0), '32nd_dotted': (58.0, 72.0)}
+    bound = []
+    for g in groups:
+        grp_rads = set()
+        for n in g:
+            for r in rad_by_dur.get(n.get('dur_key', n.get('duration_type', '')), ()):
+                grp_rads.add(r)
+        if not grp_rads:
+            bound.append((g, None, 'rads'))
+            continue
+        # range X delle battute del gruppo (se disponibile): vincola la ricerca
+        _gx0 = _gx1 = None
+        if meas_x:
+            _xs = [meas_x.get(n.get('measure_idx')) for n in g]
+            _xs = [x for x in _xs if x]
+            if _xs:
+                _gx0 = min(x[0] for x in _xs) - 150
+                _gx1 = max(x[1] for x in _xs) + 150
+        best = None   # (score, sys_idx, [head_idx...])
+        _allowed_sys = None
+        if sys_for_m:
+            _sm = {sys_for_m.get(n.get('measure_idx')) for n in g}
+            _sm.discard(None)
+            if _sm:
+                _allowed_sys = _sm
+        for sys_i, (rt, rb) in enumerate(systems_bounds):
+            if _allowed_sys is not None and sys_i not in _allowed_sys:
+                continue
+            # margine verticale: copre ledger/beams sopra-sotto il rigo, MA non
+            # invade la zona del sistema adiacente (gap/2 - 20 di rispetto)
+            _mrg = 900.0
+            if sys_i > 0:
+                _mrg = min(_mrg, (rt - systems_bounds[sys_i - 1][1]) / 2 - 20)
+            if sys_i < len(systems_bounds) - 1:
+                _mrg = min(_mrg, (systems_bounds[sys_i + 1][0] - rb) / 2 - 20)
+            _mrg = max(_mrg, 200.0)
+            pool = [hi for hi, h in enumerate(heads)
+                    if (not h[3]) and h[2] in grp_rads and rt - _mrg <= h[1] <= rb + _mrg
+                    and (_gx0 is None or _gx0 <= h[0] <= _gx1)]
+            if len(pool) < len(g):
+                continue
+            pool.sort(key=lambda hi: heads[hi][0])
+            for i0 in range(len(pool) - len(g) + 1):
+                win = pool[i0:i0 + len(g)]
+                span = heads[win[-1]][0] - heads[win[0]][0]
+                if best is None or span < best[0]:
+                    best = (span, sys_i, win)
+        if best is None:
+            bound.append((g, None, 'sys'))
+            continue
+        _span, _sys_i, win = best
+        note_stems = []
+        ok = True
+        used_here = set()
+        for n_idx, hi in enumerate(win):
+            hx, hy, hr = heads[hi][0], heads[hi][1], heads[hi][2]
+            cand_s = []
+            for si, (sx, sy1, sy2) in enumerate(stems):
+                if abs(sx - hx) < 130 and min(abs(sy1 - hy), abs(sy2 - hy)) < hr + 60:
+                    cand_s.append((abs(sx - hx), si))
+            if not cand_s:
+                ok = False
+                break
+            cand_s.sort()
+            si = cand_s[0][1]
+            if si in used_here:
+                ok = False
+                break
+            used_here.add(si)
+            sx, sy1, sy2 = stems[si]
+            if abs(sy1 - hy) < abs(sy2 - hy):
+                # top vicino alla testa → gambo in giù
+                note_stems.append({'x': sx, 'tip_y': sy2, 'dir': -1, 'head': (hx, hy, hr)})
+            else:
+                note_stems.append({'x': sx, 'tip_y': sy1, 'dir': +1, 'head': (hx, hy, hr)})
+        if not ok or len(note_stems) != len(g):
+            bound.append((g, None, 'stems'))
+            continue
+        for hi in win:
+            heads[hi][3] = True   # consuma le teste
+        bound.append((g, note_stems, None))
+    return bound
+
+
+def _bs_synthesize(bound):
+    """Fase 3 SYNTHESIZE: (group, stems) → (lista path d, lista correzioni gambi).
+    Beam RETTA e ORIZZONTALE. y_prim = tip del gambo estremo (per gruppo con
+    direzione uniforme). I gambi con punta diversa da y_prim (notazione: teste
+    a Y diverse → gambi di lunghezza diversa) vengono ESTESI alla beam:
+    correzione = (stem_x, old_tip, new_tip) applicata dal chiamante.
+    Livelli: y_off = dir*(lvl-1)*LEVEL_PITCH (impilano verso le teste).
+    Runs massimali per livello; run=1 → hook.
+    """
+    paths = []
+    stem_fixes = []   # (x, old_tip, new_tip)
+    for g, stems, err in bound:
+        if stems is None:
+            continue
+        dirs = {s['dir'] for s in stems}
+        if len(dirs) != 1:
+            continue  # direzioni miste: skip con log
+        d = dirs.pop()
+        tips = [s['tip_y'] for s in stems]
+        if d == +1:
+            y_prim = min(tips)   # la punta più alta
+        else:
+            y_prim = max(tips)   # la punta più bassa
+        # estendi i gambi corti alla beam (endpoint lato beam = y_prim)
+        for st in stems:
+            if abs(st['tip_y'] - y_prim) > 2:
+                stem_fixes.append((st['x'], st['tip_y'], y_prim))
+        max_lvl = max(n.get('beam_levels', 0) for n in g)
+        for lvl in range(1, max_lvl + 1):
+            # runs massimali di note con beam_levels >= lvl
+            runs = []
+            cur = []
+            for i, n in enumerate(g):
+                if n.get('beam_levels', 0) >= lvl:
+                    cur.append(i)
+                else:
+                    if cur:
+                        runs.append(cur)
+                    cur = []
+            if cur:
+                runs.append(cur)
+            for run in runs:
+                if len(run) >= 2:
+                    x1 = stems[run[0]]['x'] - BEAM_SYNTH_OVERHANG
+                    x2 = stems[run[-1]]['x'] + BEAM_SYNTH_OVERHANG
+                else:
+                    # hook: direzione orizzontale dal contesto
+                    i = run[0]
+                    if i == 0:
+                        hdir = +1
+                    elif i == len(g) - 1:
+                        hdir = -1
+                    else:
+                        # interna: punta alla nota che completa la suddivisione
+                        hdir = -1 if (g[i - 1].get('ql', 0) >= g[i].get('ql', 0)) else +1
+                    dx = 130.0  # default passo nota
+                    if 0 < i < len(stems) and hdir < 0:
+                        dx = max(30.0, stems[i]['x'] - stems[i - 1]['x'])
+                    elif 0 <= i < len(stems) - 1 and hdir > 0:
+                        dx = max(30.0, stems[i + 1]['x'] - stems[i]['x'])
+                    hl = min(max(0.6 * dx, BEAM_SYNTH_HOOK_MIN), BEAM_SYNTH_HOOK_MAX)
+                    x1 = stems[i]['x'] - (hl if hdir < 0 else 0.0)
+                    x2 = stems[i]['x'] + (hl if hdir > 0 else 0.0)
+                # y del livello: dal lato primario verso le teste
+                y = y_prim + d * (lvl - 1) * BEAM_SYNTH_LEVEL_PITCH
+                # path rettangolo (thickness verso le teste per d=+1: la beam
+                # sta SOPRA le teste → spessore verso il basso; per d=-1 la
+                # beam sta SOTTO → spessore verso l'alto dal tip)
+                if d == +1:
+                    ya, yb = y, y + BEAM_SYNTH_THICKNESS
+                else:
+                    ya, yb = y - BEAM_SYNTH_THICKNESS, y
+                paths.append((x1, x2, ya, yb))
+    return paths, stem_fixes
+
+
+def _bs_paths_to_svg(paths):
+    out = []
+    for x1, x2, ya, yb in paths:
+        out.append('<path class="Beam" fill="#000000" d="M %.2f,%.2f L %.2f,%.2f '
+                   'L %.2f,%.2f L %.2f,%.2f Z"/>' % (x1, ya, x2, ya, x2, yb, x1, yb))
+    return ''.join(out)
+
+
+def _bs_validate(modified, systems_bounds):
+    """Fase 4 VALIDATE (sola verifica, fail loudly con print, mai auto-fix)."""
+    problems = 0
+    for m in re.finditer(r'<path class="Beam"[^>]*d="([^"]+)"', modified):
+        n = [float(v) for v in re.findall(r'-?[\d.]+(?:e-?\d+)?', m.group(1))]
+        if len(n) >= 6:
+            yt, yb = min(n[1::2]), max(n[1::2])
+            inside = any(rt - 60 <= yt and yb <= rb + 60 for rt, rb in systems_bounds)
+            if not inside:
+                problems += 1
+                print(f"  [BEAMSYNTH][VALIDATE] beam fuori da ogni sistema: y {yt:.0f}-{yb:.0f}")
+    return problems
+
+
 def _read_input_xml(input_path):
     """Legge il primo XML utile dentro il container (.mscz/.mxl). None se fallisce."""
     import zipfile as _zf
@@ -15719,6 +16161,12 @@ def main():
     rhythm_mode = '--rhythm' in sys.argv
     if rhythm_mode:
         sys.argv.remove('--rhythm')
+
+    # --beam-synth: BeamSynthesizer (sintesi deterministica delle travature).
+    # Default OFF = pipeline legacy (Pass 9-20g). Flag di migrazione.
+    beam_synth = '--beam-synth' in sys.argv
+    if beam_synth:
+        sys.argv.remove('--beam-synth')
 
     # --lang <lang>: select note-name language (it=Italian Do Re Mi, en=English C D E).
     lang = 'it'  # default
@@ -16047,7 +16495,8 @@ def main():
                                 initial_rest_measures=initial_rest_measures if i == 0 else 0,
                                 mmrest_groups=mmrest_groups,
                                 rhythm_mode=rhythm_mode,
-                                key_sig_changes_dict=key_sig_changes_dict)
+                                key_sig_changes_dict=key_sig_changes_dict,
+                                beam_synth=beam_synth)
         
         # aggiorna measure_offset dal count ritornato
         measure_offset += meas_count
