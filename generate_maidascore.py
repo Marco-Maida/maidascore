@@ -535,6 +535,18 @@ def extract_notes_via_music21(mscz_path, part_index=0):
                 for _bl in (1, 2, 3, 4):
                     if _bt_all.get(_bl) in ('start', 'continue', 'stop'):
                         _n_levels = max(_n_levels, _bl)
+                # 3 Ott 2026: i livelli potenziali della FIGURA (16th=2 beam,
+                # 32nd=3): una 16th isolata in gruppo misto croma+16th ha
+                # beamsList [beam1 stop] da music21 ma visivamente ha 2 beam
+                # (la sec = hook). Senza questo la croma puntata+16th resta
+                # senza hook (bug b2 Radetsky rhythm).
+                _dur_lvls = {'whole': 0, 'half': 0, 'quarter': 0,
+                             'eighth': 1, 'eighth_dotted': 1,
+                             '16th': 2, '16th_dotted': 2,
+                             '32nd': 3, '32nd_dotted': 3, '64th': 4}
+                if _n_levels >= 1:
+                    _dk_here = f"{dur_type}_dotted" if dots > 0 else dur_type
+                    _n_levels = max(_n_levels, _dur_lvls.get(_dk_here, _n_levels))
                 _bm1 = _bt_all.get(1)  # 'start'/'continue'/'stop'/None
                 if _bm1 == 'start':
                     _beam_mode = 'begin'
@@ -11523,7 +11535,8 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                   f"{list(_bs_meas_x.items())[:3]}")
             print(f"  [BS-DBG] sys_bounds: {[(round(a),round(b)) for a,b in _bs_sys_bounds][:5]}")
         _bs_bound = _bs_bind(modified, _bs_groups, _bs_page_info,
-                             _bs_sys_bounds, _bs_meas_x, _bs_sys_for_m)
+                             _bs_sys_bounds, _bs_meas_x, _bs_sys_for_m,
+                             rhythm_mode=rhythm_mode)
         _bs_paths, _bs_fixes = _bs_synthesize(_bs_bound)
         # estendi i gambi corti alla beam sintetizzata (l'endpoint lato beam del
         # gambo con punta != y_prim viene portato a y_prim)
@@ -11580,6 +11593,50 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                                        measure_offset=measure_offset,
                                        mmrest_groups=mmrest_groups,
                                        system_layout=_system_layout)
+
+        # 3 Ott 2026: dot clamp — il punto della croma puntata non deve
+        # sovrapporre la testa successiva (rhythm: teste r58/72 vicine).
+        # dot raggio = 16.55*scala(2.77) ≈ 46px. Regole engraving (Gould):
+        # il punto fa parte dell'ingombro della nota; clearance minima dalla
+        # testa successiva = 0.35*r della testa. Clamp orizzontale only.
+        _dc_heads = [(float(_hm.group(1)), float(_hm.group(2)), float(_hm.group(3)))
+                     for _hm in re.finditer(
+                         r'<circle cx="([\d.]+)" cy="([\d.]+)" r="([\d.]+)"', modified)]
+        _dot_pat_bs = re.compile(
+            r'(<path class="NoteDot"[^>]*transform="matrix\()'
+            r'([\d.\-]+),0\.0,0\.0,([\d.\-]+),([\d.\-]+),([\d.\-]+)\)"')
+        _n_dots_clamped = [0]
+
+        def _clamp_dot_bs(_dm):
+            _tag = _dm.group(0)
+            _sc = float(_dm.group(2))
+            _tx, _ty = float(_dm.group(4)), float(_dm.group(5))
+            _dr = 16.55 * _sc
+            _next = None
+            for _hx, _hy, _hr in _dc_heads:
+                if _hy == _ty and _hx > _tx + _dr:
+                    if _next is None or _hx < _next[0]:
+                        _next = (_hx, _hr)
+            if _next is not None:
+                _nx, _nr = _next
+                _max_right = _nx - _nr - 0.35 * _nr
+                if _tx + _dr > _max_right:
+                    _own = [(_hx, _hr) for _hx, _hy, _hr in _dc_heads
+                            if _hy == _ty and _hx < _tx]
+                    _own_right = max((_hx + _hr) for _hx, _hr in _own) if _own else 0.0
+                    _new_tx = max(_own_right + 0.15 * 72.0, _max_right - _dr)
+                    if abs(_new_tx - _tx) > 0.5:
+                        _new_tag = _tag.replace(
+                            f'{_dm.group(4)},{_dm.group(5)})',
+                            f'{_new_tx:.2f},{_dm.group(5)})')
+                        _n_dots_clamped[0] += 1
+                        return _new_tag
+            return _tag
+
+        modified = _dot_pat_bs.sub(_clamp_dot_bs, modified)
+        if _n_dots_clamped[0]:
+            print(f"  [BEAMSYNTH] dot clamp: {_n_dots_clamped[0]}")
+
         _vbs = re.search(r'viewBox="([\d.\-]+) ([\d.\-]+) ([\d.\-]+) ([\d.\-]+)"', modified)
         if _vbs:
             _fvb_x = float(_vbs.group(1)); _fvb_y = float(_vbs.group(2))
@@ -15820,41 +15877,44 @@ def _bs_group(note_info):
     Catene beam_mode: 'begin' apre, 'mid' continua, nota senza beam1 CHIUDE.
     Ogni gruppo è una lista di dict-note (con measure_idx per il bind).
     """
+    # State machine (consulto engraving 3 Ott 2026, direttiva: beam mai
+    # attraverso la stanghetta, gruppi chiusi da begin successivo/battuta):
+    # - 'begin' chiude il gruppo corrente e apre il nuovo
+    # - 'mid' o None (AUTO) su nota beamabile (beam_levels>=1) PROSEGUE
+    # - nota con beam_levels==0 (semiminima+) CHIUDE
+    # - confine di battuta CHIUDE sempre (split incondizionato)
+    # - BeamMode 'no' CHIUDE (nota con flag)
+    # La vecchia regola "beam_levels>1 senza beam1 prosegue" fondeva gruppi
+    # attraverso le battute (bug b2+b3 Radetsky rhythm).
     groups = []
     cur = []
+
+    def _flush():
+        nonlocal cur
+        if cur:
+            groups.append(cur)
+        cur = []
+
     for n in note_info.get('notes', []):
         bm = n.get('beam_mode')
-        if bm == 'begin':
-            if cur:
-                groups.append(cur)
+        lvls = n.get('beam_levels', 0)
+        if lvls == 0 or bm == 'no':
+            _flush()
+            continue
+        # confine di battuta: split incondizionato (mai beam cross-barline)
+        if cur and n.get('measure_idx') != cur[-1].get('measure_idx'):
+            _flush()
+        if bm == 'begin' or not cur:
+            _flush()
             cur = [n]
-        elif bm == 'mid':
-            if cur:
-                cur.append(n)
-            else:
-                # orphan mid: tratta come begin (log, non fatale)
-                cur = [n]
         else:
-            # 'none' / None / end implicito del gruppo
-            if bm is None and cur and n.get('beam_levels', 0) > 1:
-                # nota interna con beam2+ ma senza beam1: prosegue il gruppo
-                cur.append(n)
-                continue
-            if cur:
-                # la nota con beam_mode None CHEIUDE il gruppo SOLO se non ha
-                # alcun beam; le note di fine gruppo hanno 'mid' (la music21
-                # 'stop' è mappata a 'mid': la chiusura avviene qui)
-                if n.get('beam_levels', 0) == 0:
-                    groups.append(cur)
-                    cur = []
-                else:
-                    cur.append(n)
-    if cur:
-        groups.append(cur)
+            # 'mid' o AUTO (None) su nota beamabile: prosegue
+            cur.append(n)
+    _flush()
     return [g for g in groups if len(g) >= 2]
 
 
-def _bs_bind(svg_content, groups, note_info, systems_bounds, meas_x=None, sys_for_m=None):
+def _bs_bind(svg_content, groups, note_info, systems_bounds, meas_x=None, sys_for_m=None, rhythm_mode=False):
     """Fase 2 BIND (globale per pagina, greedy): matcha i gruppi (in ordine
     temporale) con finestre di teste SVG, una volta sola per testa.
     Le X si ripetono per colonna in ogni rigo → il bind è PER SISTEMA: per
@@ -15875,20 +15935,38 @@ def _bs_bind(svg_content, groups, note_info, systems_bounds, meas_x=None, sys_fo
         p = [float(v) for v in m.group(1).replace(',', ' ').split()]
         if len(p) >= 4 and abs(p[0] - p[2]) < 5:
             stems.append((p[0], min(p[1], p[3]), max(p[1], p[3])))
-    # raggi disco per durata (misurati su Radetsky):
+    # raggi disco per durata (misurati su Radetsky, 3 Ott 2026: raggio UNICO
+    # per modalità — la coppia (rhythm, notation) permette al greedy di
+    # matchare la finestra SBAGLIATA: eighth=(72,88) accetta anche le teste
+    # r72 delle semicrome in notazione = gruppi bindati su note errate).
     # rhythm: 16th=r58, eighth=r72; notazione: 16th=r72, eighth=r88.
-    rad_by_dur = {'eighth': (72.0, 88.0), 'eighth_dotted': (72.0, 88.0),
-                  '16th': (58.0, 72.0), '16th_dotted': (58.0, 72.0),
-                  '32nd': (58.0, 72.0), '32nd_dotted': (58.0, 72.0)}
+    if rhythm_mode:
+        rad_by_dur = {'eighth': (72.0,), 'eighth_dotted': (72.0,),
+                      '16th': (58.0,), '16th_dotted': (58.0,),
+                      '32nd': (58.0,), '32nd_dotted': (58.0,)}
+    else:
+        rad_by_dur = {'eighth': (88.0,), 'eighth_dotted': (88.0,),
+                      '16th': (72.0,), '16th_dotted': (72.0,),
+                      '32nd': (58.0,), '32nd_dotted': (58.0,)}
     bound = []
     for g in groups:
-        grp_rads = set()
+        # 3 Ott 2026: sequenza dei raggi attesi nota-per-nota (rhythm: il
+        # raggio codifica la durata). La finestra candidata deve matchare
+        # la SEQUENZA, non solo l'insieme — altrimenti il greedy span-min
+        # matcha la coppia sbagliata (bug b2 Radetsky: croma+semicroma
+        # bindata su due semicrome di battute diverse = beam cross-barline).
+        _exp_seq = []
+        _seq_ok = True
         for n in g:
-            for r in rad_by_dur.get(n.get('dur_key', n.get('duration_type', '')), ()):
-                grp_rads.add(r)
-        if not grp_rads:
+            _rr = rad_by_dur.get(n.get('dur_key', n.get('duration_type', '')), ())
+            if not _rr:
+                _seq_ok = False
+                break
+            _exp_seq.append(_rr)
+        if not _seq_ok:
             bound.append((g, None, 'rads'))
             continue
+        grp_rads = set(r for rr in _exp_seq for r in rr)
         # range X delle battute del gruppo (se disponibile): vincola la ricerca
         _gx0 = _gx1 = None
         if meas_x:
@@ -15923,6 +16001,10 @@ def _bs_bind(svg_content, groups, note_info, systems_bounds, meas_x=None, sys_fo
             pool.sort(key=lambda hi: heads[hi][0])
             for i0 in range(len(pool) - len(g) + 1):
                 win = pool[i0:i0 + len(g)]
+                # la finestra deve matchare la SEQUENZA dei raggi attesi
+                _pat_ok = all(heads[hi][2] in _exp_seq[k] for k, hi in enumerate(win))
+                if not _pat_ok:
+                    continue
                 span = heads[win[-1]][0] - heads[win[0]][0]
                 if best is None or span < best[0]:
                     best = (span, sys_i, win)
