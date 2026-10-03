@@ -15466,6 +15466,11 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         continue
                     _yt20g2 = min(_pts20g2[1], _pts20g2[3])
                     _yb20g2 = max(_pts20g2[1], _pts20g2[3])
+                    # SOLO gambi di QUESTA famiglia: il gambo deve intersecare la banda
+                    # Y della famiglia (altrimenti gambi di righi diversi con X sovrapposta
+                    # vengono riscritti alla Y della beam di un altro sistema)
+                    if _yt20g2 > _fbot20g + 60 or _yb20g2 < _ftop20g - 60:
+                        continue
                     # solo i gambi della croma: testa r72 vicino in X e interseca il gambo
                     _is_croma20g = False
                     for _h20g2 in _r72_20g:
