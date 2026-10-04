@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.4.0] - 4 Ott 2026
+### Changed
+- BeamSynthesizer attivo di DEFAULT in entrambe le modalità (ritmo e notazione): la pipeline legacy delle travature (Pass 9-20g) è disattivata; rollback con --legacy-beams. La notazione ora usa lo stesso motore deterministico del ritmo (group→bind→synthesize).
+
+### Fixed
+- Notazione: tavole sonore troppo basse e travature/gambi corrotti (b67-78 e altri) — originate dalla pipeline legacy, eliminati dal passaggio al beamsynth.
+- Bind: gambi stems-down legittimi scartati dal filtro anti-corrotti (err=stems su gruppi m5/6/12/14).
+- Gambi verticali orfani (senza testa, spazzatura raw amplificata dallo y-stretch) rimossi.
+- Numeri di battuta: non più spinti fuori pagina dai gambi corrotti (33-35) e lift limitato al top del sistema.
+
 ## [1.3.3] - 4 Ott 2026
 ### Fixed
 - Numeri di battuta sempre a inizio battuta: l'anti-collisione con note alte/gambi spostava il numero a sinistra (dentro la battuta precedente, sovrapposto alle travature di fine battuta); ora lo sposta in alto, restando a inizio battuta.
