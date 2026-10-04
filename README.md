@@ -126,13 +126,13 @@ python3 generate_maidascore.py input.mscz output_prefix 0 --rhythm --lang en
 
 | Note | Color | Text |
 |---|---|---|
-| Do | 🔴 `#E53935` red | white |
-| Re | 🟠 `#FB8C00` orange | black |
-| Mi | 🟡 `#FDD835` yellow | black |
-| Fa | 🟢 `#A8DB78` light green | black |
-| Sol | 🩵 `#00695C` dark teal | white |
-| La | 🔵 `#1E88E5` blue | white |
-| Si | 🟣 `#8E24AA` purple | white |
+| Do | ![#E53935](https://img.shields.io/badge/-E53935?style=flat&label=Do&labelColor=E53935) `#E53935` red | white |
+| Re | ![#FB8C00](https://img.shields.io/badge/-FB8C00?style=flat&label=Re&labelColor=FB8C00) `#FB8C00` orange | black |
+| Mi | ![#FDD835](https://img.shields.io/badge/-FDD835?style=flat&label=Mi&labelColor=FDD835) `#FDD835` yellow | black |
+| Fa | ![#A8DB78](https://img.shields.io/badge/-A8DB78?style=flat&label=Fa&labelColor=A8DB78) `#A8DB78` light green | black |
+| Sol | ![#00695C](https://img.shields.io/badge/-00695C?style=flat&label=Sol&labelColor=00695C) `#00695C` dark teal | white |
+| La | ![#1E88E5](https://img.shields.io/badge/-1E88E5?style=flat&label=La&labelColor=1E88E5) `#1E88E5` blue | white |
+| Si | ![#8E24AA](https://img.shields.io/badge/-8E24AA?style=flat&label=Si&labelColor=8E24AA) `#8E24AA` purple | white |
 
 Colors and text colors are chosen for **WCAG AA contrast** (≥ 3:1 for large text).
 Open notes (whole/half notes) use white circles with darker colored borders for
