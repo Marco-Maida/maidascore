@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.3.1] - 4 Ott 2026
+### Fixed
+- Tavole sonora troppo basse + gambi-monstro sotto il sistema (b37-54 notazione): i gruppi beamati con gambi raw corrotti (punta nel gap, amplificata dallo y-stretch) o note ledger fuori banda fallivano il bind del beamsynth → beam mai sintetizzata → gambo intatto spingeva la tavola in fondo al gap. Bind ora accetta gambi col tip clampato (flag unreliable, la synth usa la formula Gould come fallback di posizione), finestre con salto + vincolo di coerenza verticale, retry a pool allargato per note ledger, drop dei gambi corrotti orfani con ripristino di quelli legittimi.
+- Linea di travatura spezzata (b81): la finestra di bind a span minimo sceglieva la coppia centrale al posto della prima per 1px di differenza → i due gruppi di crome della stessa battuta si bindavano a pettine e le travature si incrociavano. Chiave di selezione ora (x della prima testa, span): prima la finestra più a sinistra, coerente con l'ordine temporale dei gruppi.
 ## [1.3.0] - 3 Ott 2026
 ### Added
 - Beam synthesizer universale (--beam-synth, default ON): generazione delle travature direttamente dai gruppi beam_mode del .mscx (catene begin→mid→end), con bind greedy gruppi↔gambi e sintesi geometrica pura (beam rette orizzontali, y = punta del gambo estremo, spessore 47 verso le teste, livelli secondari y_off = dir*(lvl-1)*15, runs massimali, hook per run=1, accordi dedup). Sostituisce il flusso patchwork dei Pass legacy per le beams.
