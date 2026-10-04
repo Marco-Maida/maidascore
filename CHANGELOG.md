@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.3.2] - 4 Ott 2026
+### Fixed
+- Stanghette mancanti nel rhythm mode: la regex del clip-stems processava anche le stanghette come se fossero gambi (nessun filtro class) e le accorciava in base alle travature vicine; il tratto coprente-riga spariva e restava solo il frammento sopra il rigo, poi rimosso dalla pulizia. Regex limitata a class="Stem"; audit 72/72 stanghette uniformi per pagina.
+- Code delle semicrome singole verso l'alto (gambo su → coda giù): terza variante di path flag MuseScore (M12.25, doppio riccio sopra la punta) ora sostituita col flag-down di semicroma.
+- Coppie di semicrome con travature separate: causa radice = input dal corpus ricostruito, che perdeva i BeamMode; l'injection 1:1 dal .mscz originale ora preserva tutti i gruppi.
+- Coda + travatura insieme sulle 16e beamate (regola: o la coda o la travatura, mai entrambe): l'hook raw di MuseScore viene rimosso quando la nota appartiene a un gruppo beamato bindato (>=2 note); la coda resta solo sulla nota isolata.
+- Bind beamsynth cross-rigo e saltioni nel rhythm: contiguità confrontata sulle X (non sugli indici globali) e wide-retry confinato alla sola X nel rhythm (le colonne X si ripetono identiche per riga).
+
+
 ## [1.3.1] - 4 Ott 2026
 ### Fixed
 - Tavole sonora troppo basse + gambi-monstro sotto il sistema (b37-54 notazione): i gruppi beamati con gambi raw corrotti (punta nel gap, amplificata dallo y-stretch) o note ledger fuori banda fallivano il bind del beamsynth → beam mai sintetizzata → gambo intatto spingeva la tavola in fondo al gap. Bind ora accetta gambi col tip clampato (flag unreliable, la synth usa la formula Gould come fallback di posizione), finestre con salto + vincolo di coerenza verticale, retry a pool allargato per note ledger, drop dei gambi corrotti orfani con ripristino di quelli legittimi.
