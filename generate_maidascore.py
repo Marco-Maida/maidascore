@@ -11561,6 +11561,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     print(f"  [BEAMSYNTH]   ancora fallito: m="
                           f"{sorted({n.get('measure_idx') for n in g})} err={_e}")
         _bs_paths, _bs_fixes = _bs_synthesize(_bs_bound)
+
         # 4 Ott 2026: rimozione gambi CORROTTI orfani — un gambo verticale con
         # una testa DENTRO il proprio intervallo (struttura impossibile, es.
         # x2173 [8778-9586] con testa 9539 in mezzo) che NON è stato consumato
@@ -16565,9 +16566,18 @@ def _bs_bind(svg_content, groups, note_info, systems_bounds, meas_x=None, sys_fo
                     # wide): la finestra span-min mescolava la croma b49
                     # (y7854) con la testa ledger Re6 (y9539, 1685 sotto).
                     continue
-                span = heads[win[-1]][0] - heads[win[0]][0]
-                if best is None or span < best[0]:
-                    best = (span, sys_i, win)
+                # 4 Ott 2026 (b81 Radetsky, m=80): PRIMA la finestra piu'
+                # a SINISTRA, poi lo span. Lo span-minimo da solo sceglieva
+                # [Si,Do] (478px) invece di [Re,Si] (479px) per 1px: i due
+                # gruppi della battuta si bindavano A PETTINE ([Si,Do] +
+                # [Re,La]) e le due coppie di travature si INCROCIANO = linea
+                # spezzata. I gruppi sono processati in ordine temporale e le
+                # teste del pool sono X-ordinate = temporali: la finestra del
+                # gruppo N inizia dove e' finita quella del gruppo N-1.
+                _key = (heads[win[0]][0],
+                        heads[win[-1]][0] - heads[win[0]][0])
+                if best is None or _key < best[0]:
+                    best = (_key, sys_i, win)
         if best is None:
             bound.append((g, None, 'sys'))
             continue
