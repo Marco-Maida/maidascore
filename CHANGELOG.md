@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.1] - 4 Ott 2026
+### Fixed
+- Notazione: note ledger estreme (Mi6/Re6) invisibili (cy negativa dopo y-stretch) — top_margin dinamico del layout.
+- Notazione: gambi/travature mancanti su gruppi con teste ledger fuori banda Y del bind — margini verticali asimmetrici (pagina vs gap sistemi).
+- Notazione: travature attraverso la stanghetta (b19-20, b49-50) — il wide-retry ora rispetta sempre il range X della battuta.
+- Notazione: coda+travatura sulla stessa semicroma con testa ledger alta — finestra rimozione code allargata.
+
 ## [1.4.0] - 4 Ott 2026
 ### Changed
 - BeamSynthesizer attivo di DEFAULT in entrambe le modalità (ritmo e notazione): la pipeline legacy delle travature (Pass 9-20g) è disattivata; rollback con --legacy-beams. La notazione ora usa lo stesso motore deterministico del ritmo (group→bind→synthesize).
