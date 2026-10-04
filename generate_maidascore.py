@@ -16648,11 +16648,17 @@ def _bs_bind(svg_content, groups, note_info, systems_bounds, meas_x=None, sys_fo
             pool = [hi for hi, h in enumerate(heads)
                     if (not h[3]) and h[2] in grp_rads and rt - _mrg <= h[1] <= rb + _mrg
                     and (_gx0 is None or _gx0 <= h[0] <= _gx1)]
-            if wide_pool:
+            if wide_pool and not rhythm_mode:
                 # 4 Ott 2026: pool allargato ±900px oltre il margine per le teste
                 # LEDGER (note alte/basse fuori rigo). Usato SOLO nella seconda
                 # passata per i gruppi rimasti non bindati: mai in quella normale
                 # (inquina il greedy con teste ledger di altri righi).
+                # 4 Ott (rhythm cross-rigo, consulto Fable): in rhythm le X si
+                # RIPETONO identiche per ogni riga di celle e le teste stanno
+                # TUTTE dentro la riga: l'allargamento Y del retry faceva
+                # entrare le copie delle righe vicine e la chiave x-prima
+                # sceglieva il rigo SBAGLIATO (m36 bindata su y5367 invece di
+                # y6859). In rhythm il retry allarga SOLO in X, mai in Y.
                 _pool_x = set(pool)
                 for hi, h in enumerate(heads):
                     if (not h[3]) and hi not in _pool_x and h[2] in grp_rads \
@@ -16709,9 +16715,16 @@ def _bs_bind(svg_content, groups, note_info, systems_bounds, meas_x=None, sys_fo
                 # vicina (cross-barline). Il vincolo Y Δ<1300 non la esclude
                 # (stesso rigo!), quindi va esclusa per CONTIGUITA'.
                 _skipped_compat = 0
+                # 4 Ott (bug radice saltioni, consulto Fable): il confronto
+                # DEVE essere sulle X, NON sugli indici globali delle teste —
+                # pool.sort(key=X) rompe la monotonia degli indici e il check
+                # win[0] < _hi2 < win[-1] in spazio INDICI selezionava teste
+                # di ALTRO rigo/posizione → la finestra contigua perfetta
+                # risultava skipped=3 e perdeva contro finestre a saltioni.
+                _wx0 = heads[win[0]][0]
+                _wx1 = heads[win[-1]][0]
                 for _hi2 in pool:
-                    if win[0] < _hi2 < win[-1] and _hi2 not in win:
-                        _pi2 = pool.index(_hi2)
+                    if _wx0 < heads[_hi2][0] < _wx1 and _hi2 not in win:
                         if any(heads[_hi2][2] in _exp_seq[_k2]
                                for _k2 in range(len(win))):
                             _skipped_compat += 1
