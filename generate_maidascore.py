@@ -6166,8 +6166,20 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                             _pmid = (center_x + _pv[0]) / 2
                             # 13 Set 2026: limiti dai CERCHI VICINI (stessa riga),
                             # non solo dal settore: usa i bordi liberi tra i vicini.
-                            _lo_b = beat_start_x - (disc_r_approx - 10.0)
-                            _hi_b = beat_end_x + (disc_r_approx - 10.0)
+                            # 4 Ott 2026 (bug coppie semicrome non beamate, consulto
+                            # Fable): l'overhang oltre i bordi settore NON vale ai
+                            # confini di BATTUTA — una nota spinta oltre la barline
+                            # finisce geometricamente nella battuta successiva e il
+                            # gruppo beam [16a,16a] viene spezzato dallo split al
+                            # confine (b61 settore 2: teste a cavallo di x3037 →
+                            # travature separate). Overhang solo verso settori
+                            # INTERNI della stessa battuta.
+                            _is_first_sector = beat_num_key <= 0
+                            _is_last_sector = beat_num_key >= _n_sec3 - 1
+                            _lo_b = (beat_start_x - (disc_r_approx - 10.0)) if not _is_first_sector \
+                                else max(beat_start_x - (disc_r_approx - 10.0), new_m_start + 2.0)
+                            _hi_b = (beat_end_x + (disc_r_approx - 10.0)) if not _is_last_sector \
+                                else min(beat_end_x + (disc_r_approx - 10.0), new_m_end - 2.0)
                             for _nc in notes_in_sys:
                                 if _nc is n or _nc.get('center_x') is None:
                                     continue
@@ -7006,8 +7018,17 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             if old_d_match:
                 old_d_val = old_d_match.group(1)
                 m_flag = re.match(r'M0,([-\d.]+)', old_d_val)
-                if m_flag and float(m_flag.group(1)) < 0:
-                    # flag UP → sostituisci con flag DOWN (curva verso il basso)
+                # 4 Ott 2026 (bug code semicrome, consulto Fable): MuseScore
+                # esporta ANCHE il flag-up di SEMICROMA 'M12.25,-79.4...' (doppio
+                # riccio verso l'ALTO). Con i gambi forzati in SU la coda deve
+                # pendere IN GIÙ (regola Marco: gambo su → coda giù). Si
+                # sostituisce col path flag-down di semicroma 'M69.17,156.5...'
+                # (doppio riccio verso il basso, già valido nel corpus).
+                m16_flag = re.match(r'M12\.25,', old_d_val)
+                if m16_flag:
+                    new_d = 'M69.1719,156.563 C60.2344,144.969 50.3125,134.391 34.0938,118.172 C21.1875,105.25 15.2188,94 12.9063,85.3906 C12.5781,83.7344 12.25,81.4219 11.9219,78.7813 C28.7969,78.7813 50.3125,101.609 62.2344,117.172 C75.1406,134.047 78.1094,147.297 78.1094,159.875 C78.1094,163.188 77.7813,166.484 77.4531,169.797 C74.7969,164.5 71.8281,160.203 69.1719,156.563 M0,126.109 C0,127.109 2.64063,128.422 4.96875,129.422 C13.5781,132.391 39.3906,148.953 59.25,178.406 C70.5,195.281 73.1563,207.203 73.1563,218.453 C73.1563,220.438 73.1563,222.094 72.8125,224.078 C72.8125,232.031 70.5,248.906 65.5313,262.141 C65.2031,263.797 64.2188,265.781 64.2188,267.438 C64.2188,268.766 64.875,270.094 66.5313,271.078 C67.1875,271.422 67.5156,271.422 68.1875,271.422 C70.5,271.422 71.8281,268.766 73.1563,266.781 C79.1094,257.516 87.7188,239.641 87.7188,221.109 C87.7188,211.5 87.0469,203.563 86.0625,196.609 C89.375,184.359 92.3438,172.109 92.3438,155.891 C92.3438,138.688 87.7188,123.125 76.4531,108.234 C60.9063,87.7188 44.0156,70.5 31.4375,52.2969 C18.8594,34.0938 9.59375,0 9.59375,0 C8.9375,-2.3125 8.60938,-3.96875 4.96875,-3.96875 C1,-3.96875 0,-2.3125 0,0 L0,126.109 '
+                elif m_flag and float(m_flag.group(1)) < 0:
+                    # flag UP croma → sostituisci con flag DOWN (curva verso il basso)
                     new_d = ('M0,75.1406 C0,76.125 0.328125,77.7813 2.64063,78.7813 '
                              'C16.875,83.4063 45.3438,101.281 66.8594,138.031 '
                              'C72.8125,148.281 82.4219,162.516 82.4219,189.984 '
@@ -8579,8 +8600,13 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
     
     if os.environ.get('MAIDA_DBG_P9'):
         print(f'[DBG_P9] clip pass6: beams={len(_final_beams)}')
+    # 4 Ott 2026 (bug stanghette mancanti rhythm): la regex non filtrava la
+    # class → il clip processava ANCHE le BarLine/LedgerLine come se fossero
+    # gambi, accorciandole o estendendole a caso (le barline [695,1091] delle
+    # righe senza beams in range X finivano clipate = stanghette scomparse,
+    # restava solo il frammento [609,695] del segmento sopra il rigo).
     modified = re.sub(
-        r'(<polyline[^>]*points=")([\d.\-]+),([\d.\-]+) ([\d.\-]+),([\d.\-]+)"([^>]*>)',
+        r'(<polyline class="Stem"[^>]*points=")([\d.\-]+),([\d.\-]+) ([\d.\-]+),([\d.\-]+)"([^>]*>)',
         _clip_stem, modified)
 
     # merge broken secondary beams in rhythm mode too.
