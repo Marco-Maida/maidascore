@@ -11903,6 +11903,96 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             if _n_rep_bs:
                 print(f"  [BEAMSYNTH] famiglie beams riposizionate presso il rigo: {_n_rep_bs}")
 
+        # 4) NORMALIZZAZIONE barline verticali: ogni barline copre il pentagramma
+        #    COMPLETO del proprio sistema (top = prima linea - 15, bot = quinta
+        #    linea + 15). Barline troppo corte/non uniformi producono stanghette
+        #    staccate dal pentagramma o linee continue spurie.
+        _staff_pat_n = re.compile(r'<polyline class="StaffLines"[^>]*points="([\d.\-]+),([\d.\-]+) ([\d.\-]+),([\d.\-]+)"')
+        _staff_ys_n = []
+        for _m in _staff_pat_n.finditer(modified):
+            _g = [float(_m.group(i)) for i in (1, 2, 3, 4)]
+            if abs(_g[0] - _g[2]) > 1 and abs(_g[1] - _g[3]) < 1:
+                _staff_ys_n.append(_g[1])
+        _y_sorted_n = sorted(set(round(_y) for _y in _staff_ys_n))
+        _systems_n = []
+        _grp_n = []
+        for _y in _y_sorted_n:
+            if _grp_n and _y - _grp_n[-1] > 300:
+                _systems_n.append((_grp_n[0], _grp_n[-1]))
+                _grp_n = []
+            _grp_n.append(_y)
+        if _grp_n:
+            _systems_n.append((_grp_n[0], _grp_n[-1]))
+
+        _bar_pat_n = re.compile(r'(<polyline class="BarLine"[^>]*points=")([\d.\-]+),([\d.\-]+) ([\d.\-]+),([\d.\-]+)"([^>]*>)')
+
+        def _barline_sub(m):
+            _prefix = m.group(1)
+            _x1, _y1, _x2, _y2 = (float(m.group(i)) for i in (2, 3, 4, 5))
+            _suffix = m.group(6)
+            if abs(_x1 - _x2) > 1:
+                return m.group(0)
+            _b_top, _b_bot = min(_y1, _y2), max(_y1, _y2)
+            _bmid = (_b_top + _b_bot) / 2
+            _sys = None
+            _best_d = None
+            for _s_top, _s_bot in _systems_n:
+                _d = abs(_bmid - (_s_top + _s_bot) / 2)
+                if _best_d is None or _d < _best_d:
+                    _best_d = _d
+                    _sys = (_s_top, _s_bot)
+            if _sys is None:
+                return m.group(0)
+            _new_top = _sys[0] - 15
+            _new_bot = _sys[1] + 15
+            if abs(_b_top - _new_top) > 2 or abs(_b_bot - _new_bot) > 2:
+                if _y1 < _y2:
+                    _y1, _y2 = _new_top, _new_bot
+                else:
+                    _y1, _y2 = _new_bot, _new_top
+            return f'{_prefix}{_x1:.2f},{_y1:.2f} {_x2:.2f},{_y2:.2f}"{_suffix}'
+
+        _bar_pat_n = re.compile(r'(<polyline class="BarLine"[^>]*points=")([\d.\-]+),([\d.\-]+) ([\d.\-]+),([\d.\-]+)"([^>]*>)')
+        modified = _bar_pat_n.sub(_barline_sub, modified)
+
+        # RHYTHM: frammenti barline h<200 FUORI dalla riga di micro-celle =
+        # residui raw del segmento "sopra il rigo" di MuseScore (la barline
+        # h396 della riga esiste già): trattini accennati sopra il rigo,
+        # segnalazione Marco. Li rimuoviamo (in rhythm la stanghetta copre
+        # solo la riga di celle).
+        if rhythm_mode:
+            _cell_rows_b = []
+            for _m16b in re.finditer(r'<rect[^>]*?y="([\d.]+)"[^>]*?height="([\d.]+)"', modified):
+                _cy16b, _ch16b = float(_m16b.group(1)), float(_m16b.group(2))
+                if 380 < _ch16b < 400:
+                    _cell_rows_b.append((_cy16b, _cy16b + _ch16b))
+            _n_rm_frag = [0]
+
+            def _rm_barline_frag(_fb):
+                _tagf = _fb.group(0)
+                _vf = [float(_x) for _x in
+                       re.search(r'points="([^"]+)"', _tagf).group(1).replace(',', ' ').split()]
+                if len(_vf) < 4 or abs(_vf[0] - _vf[2]) >= 1:
+                    return _tagf
+                _ft, _fb2 = min(_vf[1], _vf[3]), max(_vf[1], _vf[3])
+                if _fb2 - _ft >= 200:
+                    return _tagf
+                for _rt16b, _rb16b in _cell_rows_b:
+                    if _ft >= _rt16b - 40 and _fb2 <= _rb16b + 40:
+                        return _tagf   # dentro la riga di celle: ok
+                # sopra/sotto ogni riga di celle = residuo raw
+                if any(_ft >= _rt16b - 500 and _fb2 <= _rt16b or
+                       _fb2 <= _rb16b + 500 and _ft >= _rb16b
+                       for _rt16b, _rb16b in _cell_rows_b):
+                    _n_rm_frag[0] += 1
+                    return ''
+                return _tagf
+
+            modified = re.sub(r'<polyline class="BarLine"[^>]*/?>',
+                              _rm_barline_frag, modified)
+            if _n_rm_frag[0]:
+                print(f"  [BEAMSYNTH] frammenti barline rhythm rimossi: {_n_rm_frag[0]}")
+
         # 3 Ott 2026 (bug ledger oblique + gambi-monstro + tavole basse,
         # segnalazione Marco b1/b31-35/b37-48): i pass di LAYOUT del flusso
         # legacy (9c ledger, 13 gambi, cap tavola) sono indipendenti dalle
@@ -16521,8 +16611,22 @@ def _bs_bind(svg_content, groups, note_info, systems_bounds, meas_x=None, sys_fo
             _xs = [meas_x.get(n.get('measure_idx')) for n in g]
             _xs = [x for x in _xs if x]
             if _xs:
-                _gx0 = min(x[0] for x in _xs) - 150
-                _gx1 = max(x[1] for x in _xs) + 150
+                _gx0 = min(x[0] for x in _xs)
+                _gx1 = max(x[1] for x in _xs)
+                # 4 Ott 2026 (cross-barline rhythm): il margine ±150 faceva
+                # entrare nel pool le teste dell'ULTIMA/PRIMA posizione delle
+                # battute vicine (la croma a fine m10 stava a 140px dalla
+                # barline di m11) → il gruppo bindava a cavalcioni della
+                # stanghetta. Il margine ora si ferma a METÀ del gap con la
+                # battuta adiacente (mai oltre la barline).
+                _ms_g = {n.get('measure_idx') for n in g}
+                for _m_adj, _ax in meas_x.items():
+                    if _m_adj in _ms_g or _ax is None:
+                        continue
+                    if _ax[1] <= _gx0:
+                        _gx0 = max(_gx0, (_ax[1] + _gx0) / 2)
+                    elif _ax[0] >= _gx1:
+                        _gx1 = min(_gx1, (_gx1 + _ax[0]) / 2)
         best = None   # (score, sys_idx, [head_idx...])
         _allowed_sys = None
         if sys_for_m:
@@ -16595,7 +16699,24 @@ def _bs_bind(svg_content, groups, note_info, systems_bounds, meas_x=None, sys_fo
                 # spezzata. I gruppi sono processati in ordine temporale e le
                 # teste del pool sono X-ordinate = temporali: la finestra del
                 # gruppo N inizia dove e' finita quella del gruppo N-1.
-                _key = (heads[win[0]][0],
+                # 4 Ott 2026 (cross-barline rhythm, m10→m11): PRIMA la
+                # finestra CONTIGUA nel pool (nessuna testa compatibile col
+                # pattern saltata dentro il suo span), POI la più a sinistra,
+                # poi lo span. Il salto serve SOLO per teste intruse di altro
+                # livello Y (compatibili per raggio ma incompatibili per Y):
+                # una testa LIBERA dello stesso pattern saltata dentro lo
+                # span = la finestra sta rubando la testa della battuta
+                # vicina (cross-barline). Il vincolo Y Δ<1300 non la esclude
+                # (stesso rigo!), quindi va esclusa per CONTIGUITA'.
+                _skipped_compat = 0
+                for _hi2 in pool:
+                    if win[0] < _hi2 < win[-1] and _hi2 not in win:
+                        _pi2 = pool.index(_hi2)
+                        if any(heads[_hi2][2] in _exp_seq[_k2]
+                               for _k2 in range(len(win))):
+                            _skipped_compat += 1
+                _key = (_skipped_compat,
+                        heads[win[0]][0],
                         heads[win[-1]][0] - heads[win[0]][0])
                 if best is None or _key < best[0]:
                     best = (_key, sys_i, win)
@@ -16603,7 +16724,6 @@ def _bs_bind(svg_content, groups, note_info, systems_bounds, meas_x=None, sys_fo
             bound.append((g, None, 'sys'))
             continue
         _span, _sys_i, win = best
-        note_stems = []
         ok = True
         used_here = set()
         _rt_w, _rb_w = systems_bounds[_sys_i]
