@@ -11537,7 +11537,154 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         _bs_bound = _bs_bind(modified, _bs_groups, _bs_page_info,
                              _bs_sys_bounds, _bs_meas_x, _bs_sys_for_m,
                              rhythm_mode=rhythm_mode)
+        # 4 Ott 2026: seconda passata per i gruppi non bindati (es. note LEDGER
+        # fuori banda come il Re6 sopra il rigo 5) con pool teste allargato.
+        _bs_retry = [g for g, st, _e in _bs_bound if st is None]
+        if _bs_retry:
+            _bs_bound2 = _bs_bind(modified, _bs_retry, _bs_page_info,
+                                  _bs_sys_bounds, _bs_meas_x, _bs_sys_for_m,
+                                  rhythm_mode=rhythm_mode, wide_pool=True)
+            _bs_by_id = {id(g): (st, e) for g, st, e in _bs_bound2}
+            _bs_new = []
+            for g, st, e in _bs_bound:
+                if st is None and id(g) in _bs_by_id:
+                    st2, e2 = _bs_by_id[id(g)]
+                    _bs_new.append((g, st2, e2) if st2 is not None else (g, None, e))
+                else:
+                    _bs_new.append((g, st, e))
+            _bs_bound = _bs_new
+            _n_retry = sum(1 for g, st, _e in _bs_bound if st is not None and g in _bs_retry)
+            print(f"  [BEAMSYNTH] retry wide: {len(_bs_retry)} gruppi, "
+                  f"{_n_retry} bindati")
+            for g, st, _e in _bs_bound:
+                if st is None and g in _bs_retry:
+                    print(f"  [BEAMSYNTH]   ancora fallito: m="
+                          f"{sorted({n.get('measure_idx') for n in g})} err={_e}")
         _bs_paths, _bs_fixes = _bs_synthesize(_bs_bound)
+        # 4 Ott 2026: rimozione gambi CORROTTI orfani — un gambo verticale con
+        # una testa DENTRO il proprio intervallo (struttura impossibile, es.
+        # x2173 [8778-9586] con testa 9539 in mezzo) che NON è stato consumato
+        # da alcun gruppo bindato: geometria spazzatura da y-stretch. Senza la
+        # rimozione resta nel SVG come linea verticale fluttuante e spinge la
+        # tavola sonora verso il basso.
+        _bs_used_xy = set()
+        for _g, _st, _e in _bs_bound:
+            if _st:
+                for _stx in _st:
+                    _bs_used_xy.add((round(_stx['x']), round(_stx['tip_y'])))
+        _bs_heads_chk = []
+        for _m_h in re.finditer(r'<circle cx="([\d.]+)" cy="([\d.]+)" r="([\d.]+)"',
+                                modified):
+            _bs_heads_chk.append((float(_m_h.group(1)), float(_m_h.group(2)),
+                                  float(_m_h.group(3))))
+        _n_orphan = [0]
+        def _bs_drop_corrupt(_m_st):
+            _pts = [float(v) for v in _m_st.group(2).replace(',', ' ').split()]
+            if len(_pts) < 4 or abs(_pts[0] - _pts[2]) >= 5:
+                return _m_st.group(0)
+            _sx, _sy1, _sy2 = _pts[0], min(_pts[1], _pts[3]), max(_pts[1], _pts[3])
+            # 4 Ott: il gambo è "usato" se (x, un endpoint) matcha un gambo
+            # bindato — SOLO la X non basta: il monstro x2173 [8778-9586]
+            # condivide la X col gambo legittimo x2173 del rigo 1 [607-1320].
+            _used_here = any(round(_ux) == round(_sx) and
+                             (abs(_uy - _sy1) < 1 or abs(_uy - _sy2) < 1)
+                             for _ux, _uy in _bs_used_xy)
+            if _used_here:
+                return _m_st.group(0)
+            for _hx, _hy, _hr in _bs_heads_chk:
+                if abs(_hx - _sx) < 130 and _hr < 120:
+                    if _sy1 + 10 < _hy < _sy2 - 10:
+                        _n_orphan[0] += 1
+                        return ''
+            return _m_st.group(0)
+        modified = re.sub(
+            r'<polyline class="Stem"([^>]*)points="([^"]+)"([^>]*/?)>',
+            _bs_drop_corrupt, modified)
+        if _n_orphan[0]:
+            print(f"  [BEAMSYNTH] gambi corrotti orfani rimossi: {_n_orphan[0]}")
+        # 4 Ott 2026: dopo la rimozione, RIPRISTINA i gambi delle teste rimaste
+        # orfane (la rimozione head_inside cancellava anche gambi legittimi col
+        # pattern attraversa-centro-testa, overshoot stems-up). Per ogni testa
+        # nel rigo senza gambo (nessun gambo che interseca il cerchio ±67):
+        # crea il gambo (dx = r-8 verso la beam più vicina, default stems-up).
+        _bs_stems_now = []
+        for _m_s3 in re.finditer(
+                r'<polyline class="Stem"([^>]*)points="([^"]+)"([^>]*/?)>', modified):
+            _p3 = [float(v) for v in _m_s3.group(2).replace(',', ' ').split()]
+            if len(_p3) >= 4 and abs(_p3[0] - _p3[2]) < 5:
+                _bs_stems_now.append((_p3[0], min(_p3[1], _p3[3]), max(_p3[1], _p3[3])))
+        _bs_beams_now = []
+        for _m_b3 in re.finditer(
+                r'<path class="Beam"[^>]*d="([^"]+)"', modified):
+            _nb = [float(_v) for _v in re.findall(r'-?[\d.\-]+', _m_b3.group(1))[:8]]
+            if len(_nb) >= 8:
+                _bs_beams_now.append((min(_nb[0], _nb[6]),
+                                      min(_nb[1], _nb[3], _nb[5], _nb[7]),
+                                      max(_nb[1], _nb[3], _nb[5], _nb[7])))
+        _bs_new_stems = []
+        for _hx, _hy, _hr in _bs_heads_chk:
+            if _hr >= 120:
+                continue
+            _has = any(abs(_sx3 - _hx) < 130 and (_sy1b - 67 <= _hy <= _sy2b + 67)
+                       for _sx3, _sy1b, _sy2b in _bs_stems_now)
+            if _has:
+                continue
+            # solo teste dentro/prossime a un rigo (niente tavola sonora)
+            if not any(_rtq - 250 <= _hy <= _rbq + 250
+                       for _rtq, _rbq in _bs_sys_bounds):
+                continue
+            # beam più vicina nel range X ±200
+            _cand_b = [(_by1, _by2) for _bx3, _by1, _by2 in _bs_beams_now
+                       if abs(_bx3 - _hx) < 200 or _bx3 - 300 <= _hx <= _bx3 + 300]
+            _up = None
+            if _cand_b:
+                _above = [(_by1, _by2) for _by1, _by2 in _cand_b if _by2 < _hy]
+                _below = [(_by1, _by2) for _by1, _by2 in _cand_b if _by1 > _hy]
+                if _above and (not _below or
+                               max(_by2 for _by1, _by2 in _above) - _hy >
+                               _hy - min(_by1 for _by1, _by2 in _below)):
+                    _up = True
+                elif _below:
+                    _up = False
+            if _up is None:
+                _up = True   # default stems-up
+            if _up:
+                _sx4 = _hx + _hr - 8
+                _y_bot = _hy - 45
+                _y_top = _hy - 45 - 795
+                _beam_near = [(_by1, _by2) for _by1, _by2 in _cand_b
+                              if _by2 < _hy]
+                if _beam_near:
+                    _y_top = max(_y_top, min(_by2 for _by1, _by2 in _beam_near) - 10)
+            else:
+                _sx4 = _hx - _hr + 8
+                _y_top = _hy + 45
+                _y_bot = _y_top + 795
+                _beam_near = [(_by1, _by2) for _by1, _by2 in _cand_b
+                              if _by1 > _hy]
+                if _beam_near:
+                    _y_bot = min(_y_bot, min(_by1 for _by1, _by2 in _beam_near) + 10)
+
+            _col = '#000000'
+            _hpat = ('<circle cx="%.2f" cy="%.2f" r="%.2f" fill="#' % (_hx, _hy, _hr))
+            _hi2 = modified.find(_hpat)
+            if _hi2 < 0:
+                _hpat2 = ('<circle cx="%.1f" cy="%.1f" r="%.1f" fill="#'
+                          % (round(_hx, 1), round(_hy, 1), round(_hr, 1)))
+                _hi2 = modified.find(_hpat2)
+            if _hi2 >= 0:
+                _col = '#' + modified[_hi2 + len(_hpat):_hi2 + len(_hpat) + 6]
+            _bs_new_stems.append(
+                '<polyline class="Stem" fill="none" stroke="%s" stroke-width="30" '
+                'stroke-linecap="round" points="%.2f,%.2f %.2f,%.2f" />'
+                % (_col, _sx4, _y_top, _sx4, _y_bot))
+            _bs_stems_now.append((_sx4, min(_y_top, _y_bot), max(_y_top, _y_bot)))
+        if _bs_new_stems:
+            modified = modified.replace(
+                '</svg>', ''.join(_bs_new_stems) + '</svg>')
+            print(f"  [BEAMSYNTH] gambi ripristinati per teste orfane: "
+                  f"{len(_bs_new_stems)}")
+
         # estendi i gambi corti alla beam sintetizzata (l'endpoint lato beam del
         # gambo con punta != y_prim viene portato a y_prim)
         _n_fix = 0
@@ -11747,7 +11894,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         # in rhythm il layout è già corretto (beams sulle micro-celle): il
         # reposition qui spostava 306 famiglie legittime (regressione vs v3,
         # segnalazione Marco)
-        if not rhythm_mode:
+        if not rhythm_mode and not os.environ.get('MAIDA_NO_REP'):
             modified, _n_rep_bs = _bs_reposition_beams(modified)
             if _n_rep_bs:
                 print(f"  [BEAMSYNTH] famiglie beams riposizionate presso il rigo: {_n_rep_bs}")
@@ -16293,7 +16440,7 @@ def _bs_group(note_info):
     return [g for g in groups if len(g) >= 2]
 
 
-def _bs_bind(svg_content, groups, note_info, systems_bounds, meas_x=None, sys_for_m=None, rhythm_mode=False):
+def _bs_bind(svg_content, groups, note_info, systems_bounds, meas_x=None, sys_for_m=None, rhythm_mode=False, wide_pool=False):
     """Fase 2 BIND (globale per pagina, greedy): matcha i gruppi (in ordine
     temporale) con finestre di teste SVG, una volta sola per testa.
     Le X si ripetono per colonna in ogni rigo → il bind è PER SISTEMA: per
@@ -16375,14 +16522,48 @@ def _bs_bind(svg_content, groups, note_info, systems_bounds, meas_x=None, sys_fo
             pool = [hi for hi, h in enumerate(heads)
                     if (not h[3]) and h[2] in grp_rads and rt - _mrg <= h[1] <= rb + _mrg
                     and (_gx0 is None or _gx0 <= h[0] <= _gx1)]
+            if wide_pool:
+                # 4 Ott 2026: pool allargato ±900px oltre il margine per le teste
+                # LEDGER (note alte/basse fuori rigo). Usato SOLO nella seconda
+                # passata per i gruppi rimasti non bindati: mai in quella normale
+                # (inquina il greedy con teste ledger di altri righi).
+                _pool_x = set(pool)
+                for hi, h in enumerate(heads):
+                    if (not h[3]) and hi not in _pool_x and h[2] in grp_rads \
+                            and rt - _mrg - 900 <= h[1] < rt - _mrg:
+                        pool.append(hi); _pool_x.add(hi)
+                    elif (not h[3]) and hi not in _pool_x and h[2] in grp_rads \
+                            and rb + _mrg < h[1] <= rb + _mrg + 900:
+                        pool.append(hi); _pool_x.add(hi)
             if len(pool) < len(g):
                 continue
             pool.sort(key=lambda hi: heads[hi][0])
-            for i0 in range(len(pool) - len(g) + 1):
-                win = pool[i0:i0 + len(g)]
+            # 4 Ott 2026: finestre con SALTO — la finestra contigua fallisce
+            # quando nel pool c'è una testa intrusa di altro livello Y (la
+            # croma b49 x2254 con la testa ledger Re6 x2266 in mezzo: le
+            # finestre contigue [2254,2266]/[2266,2572] violano entrambe il
+            # vincolo Y, mentre la coppia giusta [2254,2572] non è contigua).
+            # Combinazioni ordinate (pool ≤ 12, economico).
+            from itertools import combinations as _comb
+            if len(pool) <= 12:
+                _wins = [list(_c) for _c in _comb(pool, len(g))]
+            else:
+                _wins = [pool[i0:i0 + len(g)]
+                         for i0 in range(len(pool) - len(g) + 1)]
+            for win in _wins:
                 # la finestra deve matchare la SEQUENZA dei raggi attesi
                 _pat_ok = all(heads[hi][2] in _exp_seq[k] for k, hi in enumerate(win))
                 if not _pat_ok:
+                    continue
+                # 4 Ott 2026: vincolo coerenza Y (solo wide): la finestra
+                # span-min poteva mescolare la croma di b49 (y7854) con la
+                # testa ledger Re6 (y9539 = 1685 sotto, altro livello).
+                # Le teste di un gruppo beamato differiscono al più di ~1300px.
+                if (max(heads[hi][1] for hi in win)
+                        - min(heads[hi][1] for hi in win)) > 1300:
+                    # 4 Ott: vincolo di coerenza Y in OGNI passata (non solo
+                    # wide): la finestra span-min mescolava la croma b49
+                    # (y7854) con la testa ledger Re6 (y9539, 1685 sotto).
                     continue
                 span = heads[win[-1]][0] - heads[win[0]][0]
                 if best is None or span < best[0]:
@@ -16395,37 +16576,96 @@ def _bs_bind(svg_content, groups, note_info, systems_bounds, meas_x=None, sys_fo
         ok = True
         used_here = set()
         _rt_w, _rb_w = systems_bounds[_sys_i]
+        # 4 Ott 2026: matching gambi↔teste per-nota in ordine temporale (la
+        # nota i-esima prende il gambo libero più vicino in dx): l'ordine è
+        # essenziale — un gambo può essere più vicino alla testa SUCCESSIVA
+        # (equalizzatore X non uniforme) e un global-greedy-dx lo dà alla nota
+        # sbagliata. Fallback al candidato successivo se il migliore è già
+        # usato; le note esterne LEDGER (fallback gambo-lungo) processate
+        # PRIMA perché il loro gambo lungo è non ambiguo.
+        _cands_per_note = [[] for _ in win]   # per nota: [(dx, si, unrel)]
         for n_idx, hi in enumerate(win):
             hx, hy, hr = heads[hi][0], heads[hi][1], heads[hi][2]
-            cand_s = []
+            _added_base = []
             for si, (sx, sy1, sy2) in enumerate(stems):
-                if abs(sx - hx) < 130 and min(abs(sy1 - hy), abs(sy2 - hy)) < hr + 60:
-                    # 3 Ott 2026: il gambo deve appartenere allo stesso SISTEMA
-                    # della testa (l'endpoint lontano, tip, entro la banda del
-                    # rigo con lo stesso margine del pool teste) — senza questo
-                    # check il bind agganciava gambi cross-rigo (m=46: gambo
-                    # con tip nel rigo 2 per una testa del rigo 3) e la synth
-                    # estendeva i gambi attraverso il gap = mostri
+                # 4 Ott 2026 (Re6 ledger b55): scarta il gambo CORROTTO con
+                # la testa DENTRO l'intervallo (es. x2173 [8778-9586] con
+                # testa 9539 in mezzo): struttura impossibile.
+                if min(sy1, sy2) + 10 < hy < max(sy1, sy2) - 10:
+                    continue
+                _d_h = min(abs(sy1 - hy), abs(sy2 - hy))
+                if abs(sx - hx) < 130 and _d_h < hr + 60:
+                    _tip_far = sy1 if abs(sy2 - hy) < abs(sy1 - hy) else sy2
+                    _unrel = False
+                    if not (_rt_w - _mrg <= _tip_far <= _rb_w + _mrg):
+                        # 4 Ott 2026 (tavole basse b37-54): il gate rigido sul
+                        # tip rifiutava i gambi raw con la punta nel gap →
+                        # gruppo scartato → beam mai sintetizzata → mostro.
+                        if not (_rt_w - 2 * _mrg - 1200 <= _tip_far <=
+                                _rb_w + 2 * _mrg + 1200):
+                            continue
+                        _unrel = True
+                    _added_base.append((abs(sx - hx), si, _unrel))
+                elif abs(sx - hx) < 200 and _d_h < hr + 60:
+                    # 4 Ott 2026: range X a due stadi (130 e 200): l'equalizzatore
+                    # sposta teste/gambi con passi non uniformi (2642→2798: dx 156).
                     _tip_far = sy1 if abs(sy2 - hy) < abs(sy1 - hy) else sy2
                     if not (_rt_w - _mrg <= _tip_far <= _rb_w + _mrg):
                         continue
-                    cand_s.append((abs(sx - hx), si))
-            if not cand_s:
-                ok = False
+                    _added_base.append((abs(sx - hx) + 1000, si, False))
+            _added_base.sort(key=lambda c: c[0])
+            _cands_per_note[n_idx] = _added_base
+            if not _added_base and (hy < _rt_w or hy > _rb_w):
+                # fallback LEDGER: SOLO teste FUORI dal rigo (ledger vera).
+                # Nota estrema col gambo LUNGO che scende alla beam comune.
+                # 4 Ott: senza il vincolo fuori-rigo il fallback acchiappava
+                # gambi del rigo SOTTOSTANTE per teste normali (E5 b49 → gambo
+                # 2378 del rigo 5) e il fix di estensione creava un mostro.
+                for si, (sx, sy1, sy2) in enumerate(stems):
+                    if abs(sx - hx) >= 130:
+                        continue
+                    _d_h = min(abs(sy1 - hy), abs(sy2 - hy))
+                    if not (hr + 60 <= _d_h < 2000):
+                        continue
+                    _near2 = sy1 if abs(sy1 - hy) < abs(sy2 - hy) else sy2
+                    if _near2 > hy and _near2 - hy < 2200:
+                        _tip_far = sy2 if _near2 == sy1 else sy1
+                        if not (_rt_w - 2 * _mrg - 1200 <= _tip_far <=
+                                _rb_w + 2 * _mrg + 1200):
+                            continue
+                        _cands_per_note[n_idx].append((abs(sx - hx), si, True))
+        # ordine: prima le note con soli cand unrel (ledger, non ambigui),
+        # poi le altre in ordine temporale; ogni nota prende il primo cand libero
+        _order = sorted(range(len(win)),
+                        key=lambda ni: (0 if _cands_per_note[ni] and
+                                        all(c[2] for c in _cands_per_note[ni]) else 1, ni))
+        note_stems = [None] * len(win)
+        used_here = set()
+        for n_idx in _order:
+            for _dx, si, _unrel in _cands_per_note[n_idx]:
+                if si in used_here:
+                    continue
+                used_here.add(si)
+                sx, sy1, sy2 = stems[si]
+                hx, hy, hr = heads[win[n_idx]][0], heads[win[n_idx]][1], heads[win[n_idx]][2]
+                if abs(sy1 - hy) < abs(sy2 - hy):
+                    _dir, _tip_raw = -1, sy2
+                else:
+                    _dir, _tip_raw = +1, sy1
+                _tip = _tip_raw
+                if _unrel:
+                    # clamp del tip in banda (raw spazzatura da y-stretch); il
+                    # fix di estensione userà tip_raw (endpoint REALE del gambo).
+                    if _tip < _rt_w - _mrg:
+                        _tip = _rt_w - _mrg
+                    elif _tip > _rb_w + _mrg:
+                        _tip = _rb_w + _mrg
+                note_stems[n_idx] = {'x': sx, 'tip_y': _tip, 'dir': _dir,
+                                     'unreliable': _unrel, 'head': (hx, hy, hr),
+                                     'tip_raw': _tip_raw}
                 break
-            cand_s.sort()
-            si = cand_s[0][1]
-            if si in used_here:
-                ok = False
-                break
-            used_here.add(si)
-            sx, sy1, sy2 = stems[si]
-            if abs(sy1 - hy) < abs(sy2 - hy):
-                # top vicino alla testa → gambo in giù
-                note_stems.append({'x': sx, 'tip_y': sy2, 'dir': -1, 'head': (hx, hy, hr)})
-            else:
-                note_stems.append({'x': sx, 'tip_y': sy1, 'dir': +1, 'head': (hx, hy, hr)})
-        if not ok or len(note_stems) != len(g):
+        ok = all(ns is not None for ns in note_stems)
+        if not ok:
             bound.append((g, None, 'stems'))
             continue
         for hi in win:
@@ -16449,18 +16689,31 @@ def _bs_synthesize(bound):
         if stems is None:
             continue
         dirs = {s['dir'] for s in stems}
-        if len(dirs) != 1:
-            continue  # direzioni miste: skip con log
+
         d = dirs.pop()
-        tips = [s['tip_y'] for s in stems]
-        if d == +1:
-            y_prim = min(tips)   # la punta più alta
+        tips = [s['tip_y'] for s in stems if not s.get('unreliable')]
+        if tips:
+            if d == +1:
+                y_prim = min(tips)   # la punta più alta
+            else:
+                y_prim = max(tips)   # la punta più bassa
         else:
-            y_prim = max(tips)   # la punta più bassa
-        # estendi i gambi corti alla beam (endpoint lato beam = y_prim)
+            # 4 Ott 2026: tutti i tip unreliable (gambi corrotti dallo y-stretch)
+            # → beam dalla formula Gould: 3.5 spazi (980px) dalla testa estrema,
+            # direzione-consistente per TUTTE le teste del gruppo.
+            heads_y = [s['head'][1] for s in stems]
+            if d == +1:
+                y_prim = min(heads_y) - 980
+            else:
+                y_prim = max(heads_y) + 980
+        # estendi i gambi corti alla beam (endpoint lato beam = y_prim).
+        # 4 Ott 2026: per i gambi unreliable il tip clampato NON esiste nel
+        # gambo reale (endpoint raw = tip_raw): il fix deve sostituire
+        # l'endpoint REALE lato beam, altrimenti il replace è muto.
         for st in stems:
             if abs(st['tip_y'] - y_prim) > 2:
-                stem_fixes.append((st['x'], st['tip_y'], y_prim))
+                _old = st['tip_raw'] if st.get('unreliable') else st['tip_y']
+                stem_fixes.append((st['x'], _old, y_prim))
         max_lvl = max(n.get('beam_levels', 0) for n in g)
         for lvl in range(1, max_lvl + 1):
             # runs massimali di note con beam_levels >= lvl
