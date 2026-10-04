@@ -9276,8 +9276,15 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             stem_top = min(sy1, sy2)
             stem_bot = max(sy1, sy2)
             stem_x = (sx1 + sx2) / 2
-            # Only stems whose vertical range intersects the number's Y band
-            if stem_top < sys_top_y - 40 and stem_bot > sys_top_y - 240:
+            # Only stems whose vertical range intersects the number's Y band.
+            # 4 Ott 2026 (numeri 33-35 a y-223 p2): escludere i gambi il cui
+            # TOP sta MOLTO sopra il rigo (>600px sopra sys_top): sono i
+            # gambi-monstro raw amplificati dallo y-stretch (partono a -93
+            # con il rigo a 700) — struttura impossibile (un gambo parte
+            # dalla testa DENTRO il rigo). Senza l'esclusione il numero viene
+            # sparato fuori dal viewBox (invisibile).
+            if stem_top < sys_top_y - 40 and stem_bot > sys_top_y - 240 \
+               and stem_top > sys_top_y - 600:
                 system_stems.append((stem_x, stem_top, stem_bot))
         _mm_extra = 0  # battute logiche extra già consumate da MMRest in questo sistema
         for grp_idx, (m_start, m_end) in enumerate(em_bounds):
@@ -11820,7 +11827,19 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     _need = (_nbox[3] - _by1) + 90
                     if _need > _lift:
                         _lift = _need
+            # 4 Ott: CAP — il numero non puo' salire oltre il limite SUPERIORE
+            # del proprio rigo (staff top della stessa pagina): un lift enorme
+            # (beam lontana sopra, es. sys1 con beam spostata) lo sparava
+            # fuori dal viewBox (y -223 = invisibile, numeri 33-35 p2 notazione).
             if _lift > 0:
+                # cap: mai sopra (top del sistema - 320) del sistema che contiene la y del numero
+                _cap_top = None
+                for _sbt, _sbb in _bs_sys_bounds:
+                    if _sbt - 600 <= _ny <= _sbb + 600:
+                        _cap_top = _sbt - 320
+                        break
+                if _cap_top is not None and (_ny - _lift) < _cap_top:
+                    _lift = max(0, _ny - _cap_top)
                 _old_t = _nm.group(0)
                 _new_t = _old_t.replace(f'y="{_nm.group(2)}"',
                                          f'y="{_ny - _lift:.1f}"', 1)
@@ -12175,6 +12194,14 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                             or abs(_by + 47 - _yb) < 60)
                            for _bx, _by, _bx2, _ in _bs_beams_geo)
             if _my_head is None:
+                # 4 Ott 2026 (mostri sys0 p2 notazione): gambi VERTICALI
+                # ORFANI (nessuna testa nel range X ±115) che attraversano
+                # il rigo intero o più righi (h > 700) = spazzatura raw
+                # (y-stretch amplificato) mai consumata dal bind → RIMOZIONE.
+                # I gambi veri partono SEMPRE da una testa.
+                if (_yb - _yt) > 700:
+                    _n_stem_fix[0] += 1
+                    return ''
                 return _tag
             if _on_beam:
                 # 4 Ott (fix del fix): se ANCHE l'endpoint opposto tocca una beam
@@ -16832,6 +16859,15 @@ def _bs_bind(svg_content, groups, note_info, systems_bounds, meas_x=None, sys_fo
                         heads[win[-1]][0] - heads[win[0]][0])
                 if best is None or _key < best[0]:
                     best = (_key, sys_i, win)
+        if best is None and os.environ.get('MAIDA_DEBUG_BS'):
+            print(f"  [BS-DBG] sys-fail m={[n.get('m') for n in g]} "
+                  f"exp_r={[sorted(e) for e in _exp_seq]}")
+            _gx0 = min(n.get('x0', 0) for n in g) if g else 0
+            for _si2, (_sbt, _sbb) in enumerate(systems_bounds):
+                _pool2 = [hi for hi in pool if _sbt - _mrg <= heads[hi][1] <= _sbb + _mrg]
+                if _pool2:
+                    print(f"    sys{_si2} [{round(_sbt)},{round(_sbb)}]: "
+                          f"{[(round(heads[hi][0]), round(heads[hi][1]), heads[hi][2]) for hi in _pool2][:8]}")
         if best is None:
             bound.append((g, None, 'sys'))
             continue
@@ -16854,7 +16890,15 @@ def _bs_bind(svg_content, groups, note_info, systems_bounds, meas_x=None, sys_fo
                 # 4 Ott 2026 (Re6 ledger b55): scarta il gambo CORROTTO con
                 # la testa DENTRO l'intervallo (es. x2173 [8778-9586] con
                 # testa 9539 in mezzo): struttura impossibile.
-                if min(sy1, sy2) + 10 < hy < max(sy1, sy2) - 10:
+                # 4 Ott bIS (stems-fail m=5/6 notazione): la soglia ±10
+                # scartava anche i gambi LEGITTIMI stems-down, dove la testa
+                # sta vicino al TOP dell'intervallo del gambo (testa y3507,
+                # gambo [3414→4276]: la testa è a 93px dal top, DENTRO per
+                # ±10 ma il gambo scende correttamente sotto la testa).
+                # Scarta solo se la testa è BEN DENTRO (oltre r+60 da ENTRAMBI
+                # gli endpoint); i gambi corrotti veri restano gestiti dal
+                # drop orfani post-bind.
+                if min(sy1, sy2) + hr + 60 < hy < max(sy1, sy2) - hr - 60:
                     continue
                 _d_h = min(abs(sy1 - hy), abs(sy2 - hy))
                 if abs(sx - hx) < 130 and _d_h < hr + 60:
@@ -16928,6 +16972,15 @@ def _bs_bind(svg_content, groups, note_info, systems_bounds, meas_x=None, sys_fo
                                      'tip_raw': _tip_raw}
                 break
         ok = all(ns is not None for ns in note_stems)
+        if not ok and os.environ.get('MAIDA_DEBUG_BS'):
+            _dbg_m = g[0].get('m') if g and isinstance(g[0], dict) else None
+            print(f"  [BS-DBG] stems-fail m={_dbg_m}: win={[(round(heads[hi][0]),round(heads[hi][1]),heads[hi][2]) for hi in win]}")
+            for n_idx, hi in enumerate(win):
+                if note_stems[n_idx] is None:
+                    hx, hy, hr = heads[hi][0], heads[hi][1], heads[hi][2]
+                    _near = sorted(stems, key=lambda st: abs(st[0]-hx))[:4]
+                    print(f"    nota n{n_idx} head=({round(hx)},{round(hy)},{hr}) cand-gambi: "
+                          f"{[(round(sx),round(sy1),round(sy2)) for sx,sy1,sy2 in _near]}")
         if not ok:
             bound.append((g, None, 'stems'))
             continue
@@ -17170,10 +17223,17 @@ def main():
     if rhythm_mode:
         sys.argv.remove('--rhythm')
 
-    # --beam-synth: BeamSynthesizer (sintesi deterministica delle travature).
-    # Default OFF = pipeline legacy (Pass 9-20g). Flag di migrazione.
-    beam_synth = '--beam-synth' in sys.argv
-    if beam_synth:
+    # --beam-synth / --legacy-beams: BeamSynthesizer (sintesi deterministica
+    # delle travature). DAL 4 OTT 2026 DEFAULT ON in ENTRAMBE le modalità
+    # (rhythm E notazione) — la pipeline legacy (Pass 9-20g), patchwork
+    # dichiarato fallito, generava tavole basse/gambi-mostro/travature
+    # corrotte in notazione (segnalazione Marco b67-78). --legacy-beams per
+    # il rollback.
+    beam_synth = '--beam-synth' not in sys.argv or True
+    if '--legacy-beams' in sys.argv:
+        beam_synth = False
+        sys.argv.remove('--legacy-beams')
+    if '--beam-synth' in sys.argv:
         sys.argv.remove('--beam-synth')
 
     # --lang <lang>: select note-name language (it=Italian Do Re Mi, en=English C D E).
