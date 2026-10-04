@@ -11656,17 +11656,24 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     continue
                 _xl = min(_f['x1'] for _f in _fam) - 100
                 _xr = max(_f['x2'] for _f in _fam) + 100
+                # 4 Ott 2026 (Marco: gambi oltre le travature b21-35): la direzione
+                # NON si legge dalla media di TUTTE le teste nel range ±1600 (le
+                # teste del rigo SOTTO entrano nel range quando la famiglia sta nel
+                # gap e ribaltano la direzione: gruppo stems-down letto come stems-up
+                # → beam sopra le teste e gambi spostati di -1700px = linee verticali
+                # attraverso i righi). Direzione = posizione RELATIVA beam vs teste
+                # VICINE alla famiglia (±500 dal bordo famiglia).
                 _gh = [(_hx, _hy) for _hx, _hy, _hr in _heads
-                       if _xl <= _hx <= _xr and _y_top - 1600 <= _hy <= _y_bot + 1600]
+                       if _xl <= _hx <= _xr
+                       and _y_top - 500 <= _hy <= _y_bot + 500]
                 if not _gh:
                     continue
-                _hy_mean = sum(_hy for _, _hy in _gh) / len(_gh)
-                if _hy_mean > (_y_top + _y_bot) / 2:
-                    _dir = +1   # stems-up: beam sopra le teste
+                if _y_top > max(_hy for _, _hy in _gh):
+                    _dir = +1   # stems-up: beam sopra le teste vicine
                     _head_ext = min(_hy for _, _hy in _gh)
                     _y_new = max(_head_ext - 3.5 * _SPACE, _rig[0] - _SPACE)
                 else:
-                    _dir = -1   # stems-down: beam sotto le teste
+                    _dir = -1   # stems-down: beam sotto le teste vicine
                     _head_ext = max(_hy for _, _hy in _gh)
                     _y_new = min(_head_ext + 3.5 * _SPACE, _rig[1] + _SPACE)
                 _shift = _y_new - _y_top
@@ -11827,8 +11834,60 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                             or abs(_by + 47 - _yt) < 60
                             or abs(_by + 47 - _yb) < 60)
                            for _bx, _by, _bx2, _ in _bs_beams_geo)
-            if _my_head is None or _on_beam:
+            if _my_head is None:
                 return _tag
+            if _on_beam:
+                # 4 Ott (fix del fix): se ANCHE l'endpoint opposto tocca una beam
+                # (gruppo impilato: gambo che attraversa la sec per raggiungere
+                # la prim, o gambo che raggiunge la prim sopra il rigo in rhythm),
+                # il gambo è CORRETTO → non toccare.
+                if any(_bx - 30 <= _x <= _bx2 + 30 and
+                       (abs(_by - _yt) < 60 or abs(_by - _yb) < 60
+                        or abs(_by + 47 - _yt) < 60
+                        or abs(_by + 47 - _yb) < 60)
+                       for _bx, _by, _bx2, _ in _bs_beams_geo):
+                    return _tag
+                # 4 Ott 2026 (Marco: gambi oltre le travature b21-35): il lato
+                # su beam resta; il lato OPPOSTO (verso la testa) attraversa
+                # righi interi quando lo y-stretch amplifica gambi raw lunghi.
+                # Clamp del solo lato opposto al rigo della TESTA se non c'è
+                # una testa propria lì (logica gap-crossing v2, prima bypassata
+                # dall'esenzione on_beam per l'intero gambo).
+                _opp = _yb if abs(_my_head[1] - _yt) < abs(_my_head[1] - _yb) else _yt
+                _own_head = False
+                for _hx2, _hy2, _hr2 in _bs_heads_geo:
+                    if abs(_hx2 - _x) <= 115 and abs(_hy2 - _opp) <= _hr2 + 70:
+                        _own_head = True
+                        break
+                if _own_head:
+                    return _tag
+                _rig_o = None
+                for _rt2, _rb2 in _bs_sys_bounds:
+                    if _rt2 - 150 <= _my_head[1] <= _rb2 + 150:
+                        _rig_o = (_rt2, _rb2)
+                        break
+                if _rig_o is None:
+                    return _tag
+                _new_v2 = list(_v)
+                _chg2 = False
+                if _opp == _yt and _yt < _rig_o[0] - 10:
+                    _ny2 = _rig_o[0] + 20
+                    for _i2 in (1, 3):
+                        if abs(_v[_i2] - _yt) < 0.01:
+                            _new_v2[_i2] = _ny2
+                    _chg2 = True
+                elif _opp == _yb and _yb > _rig_o[1] + 10:
+                    _ny2 = _rig_o[1] - 20
+                    for _i2 in (1, 3):
+                        if abs(_v[_i2] - _yb) < 0.01:
+                            _new_v2[_i2] = _ny2
+                    _chg2 = True
+                if not _chg2:
+                    return _tag
+                _new_pts2 = ('%.2f,%.2f %.2f,%.2f' % (_new_v2[0], _new_v2[1],
+                                                      _new_v2[2], _new_v2[3]))
+                _n_stem_fix[0] += 1
+                return _tag.replace(_pts, _new_pts2, 1)
             # rigo della testa
             _rig = None
             for _rt, _rb in _bs_sys_bounds:
