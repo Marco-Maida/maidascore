@@ -2922,6 +2922,7 @@ def y_stretch_systems(svg_content, systems, target_line_spacing=280, extra_syste
     # Also update middle for stretch calculation (shift applied separately)
     print(f"  Y-stretch: {len(sys_info)} sistemi, scale={sys_info[0]['scale']:.2f}x (target={target_line_spacing}px), gap+{extra_system_gap}px")
     
+
     def remap_y(y):
         """Map a Y coordinate through the appropriate system's stretch + gap shift."""
         for si in sys_info:
@@ -6645,6 +6646,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     f'points="{new_sx:.2f},{sy1} {new_sx:.2f},{sy2}" />')
         modified = modified.replace(old_stem, new_stem, 1)
     
+
     # 1b. Reposition beams to follow their stems
     # Beams are <path class="Beam"> with 4-point quadrilateral: M(x1,y1) L(x2,y2) L(x3,y3) L(x4,y4)
     # Structure: P1=top-left, P2=top-right, P3=bottom-right, P4=bottom-left
@@ -7558,6 +7560,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                                      extra_system_gap=150 + TAVOLA_ROW_HEIGHT + TAVOLA_GAP_DYNAMIC,
                                      top_margin=700, bottom_margin=700,
                                      page_height=None)  # None = no auto-gap
+
     # TAVOLA_ROW_HEIGHT=175 (era 350), gap totale = 150+175+250 = 575 (era 750)
 
     # Extend StaffLines of the last system to cover all
@@ -12038,9 +12041,11 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 return _tag.replace(_pts, _new_pts2, 1)
             # rigo della testa
             _rig = None
-            for _rt, _rb in _bs_sys_bounds:
+            _rig_idx = None
+            for _ri, (_rt, _rb) in enumerate(_bs_sys_bounds):
                 if _rt - 150 <= _my_head[1] <= _rb + 150:
                     _rig = (_rt, _rb)
+                    _rig_idx = _ri
                     break
             if _rig is None:
                 return _tag
@@ -12048,11 +12053,27 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             _new_v = list(_v)
             _changed = False
             if _yt < _rig[0] - 10:
-                _new_yt = _rig[0] + 20
-                for _i in (1, 3):
-                    if abs(_v[_i] - _yt) < 0.01:
-                        _new_v[_i] = _new_yt
-                _changed = True
+                # 4 Ott 2026 (Marco, rhythm): in modalità rhythm il gambo
+                # uniforme di design (STEM_LEN_RHYTHM 350 → 357 post-stretch)
+                # sporge LEGITTIMAMENTE sopra la riga di micro-celle (h 392):
+                # il clamp "sporge sopra" lo dimezzava a 176px = gambi di
+                # semiminime/minime più corti di quelli di crome/semicrome
+                # (esenti solo perché attaccati a una beam). In rhythm il
+                # clamp scatta SOLO per gap-crossing REALE: il tip raggiunge
+                # il fondo del sistema precedente (i mostri h>1000; il gap
+                # fisso ~1106 > gambo 357 = mai per i gambi legittimi).
+                _cross_up = True
+                if rhythm_mode:
+                    if _rig_idx is None or _rig_idx == 0:
+                        _cross_up = False   # nessun sistema sopra
+                    else:
+                        _cross_up = _yt <= _bs_sys_bounds[_rig_idx - 1][1] + 10
+                if _cross_up:
+                    _new_yt = _rig[0] + 20
+                    for _i in (1, 3):
+                        if abs(_v[_i] - _yt) < 0.01:
+                            _new_v[_i] = _new_yt
+                    _changed = True
             if _yb > _rig[1] + 10:
                 _new_yb = _rig[1] - 20
                 for _i in (1, 3):
@@ -12182,6 +12203,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             f'text-anchor="middle">{_footer_text}</text>\n'
         )
         modified = modified.replace('</svg>', _footer_svg + '</svg>')
+
         return modified, total_meas_in_page
 
     # 29 Set 2026 (travature sempre dritte): le beams PRIMARIE di MuseScore
@@ -16377,7 +16399,6 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         f'text-anchor="middle">{_footer_text}</text>\n'
     )
     modified = modified.replace('</svg>', _footer_svg + '</svg>')
-
     return modified, total_meas_in_page
 
 
