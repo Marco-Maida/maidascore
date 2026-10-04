@@ -9299,30 +9299,32 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             # Number Y center = sys_top_y - 140, height ~160px → from sys_top_y-220 to sys_top_y-60
             mn_y_top = sys_top_y - 240
             mn_y_bot = sys_top_y - 40
+            _mn_shift_y = 0   # 4 Ott 2026: il numero resta SEMPRE a inizio
+            # battuta (m_start+20). Se nota alta/gambo/travatura collidono, lo
+            # si sposta in ALTO (sopra l'elemento), MAI a sinistra nella
+            # battuta precedente (dove si sovrappone alle travature di fine
+            # battuta — segnalazione Marco 4 Ott).
             for hc_x, hc_y, hc_r in nearby_circles:
                 # Bounding box overlap between circle and number
-                # Number: X=[mn_x-20, mn_x+140], Y=[sys_top_y-240, sys_top_y-40]
-                # Circle: X=[hc_x-hc_r, hc_x+hc_r], Y=[hc_y-hc_r, hc_y+hc_r]
+                # Number: X=[mn_x-20, mn_x+140], Y=[mn_y_top, mn_y_bot] (banda
+                # corrente, alzandosi con _mn_shift_y)
                 if (hc_x - hc_r) < (mn_x + 140) and (hc_x + hc_r) > (mn_x - 20) \
-                   and (hc_y - hc_r) < (sys_top_y - 40) and (hc_y + hc_r) > (sys_top_y - 240):
-                    # Overlap! Shift number to the LEFT to avoid the high note
-                    mn_x = m_start + 20 - 220
-                    if mn_x < 50:
-                        # Can't go left enough, try right of the note
-                        mn_x = hc_x + 160
+                   and (hc_y - hc_r) < mn_y_top - _mn_shift_y and (hc_y + hc_r) > mn_y_bot - _mn_shift_y:
+                    # Overlap! Alza il numero SOPRA la nota alta
+                    _need = (mn_y_bot - _mn_shift_y) - (hc_y - hc_r) + 30
+                    if _need > 0:
+                        _mn_shift_y += _need
                     break
-            # Also check stems (vertical lines) that could overlap the number
-            if mn_x == m_start + 20:  # only if not already shifted by circle check
-                for stem_x, stem_top, stem_bot in system_stems:
-                    # Stem is ~20px wide vertically; check X and Y overlap with number
-                    if (stem_x - 15) < (mn_x + 140) and (stem_x + 15) > (mn_x - 20) \
-                       and stem_top < (sys_top_y - 40) and stem_bot > (sys_top_y - 240):
-                        mn_x = m_start + 20 - 220
-                        if mn_x < 50:
-                            mn_x = stem_x + 160
-                        break
+            for stem_x, stem_top, stem_bot in system_stems:
+                if (stem_x - 15) < (mn_x + 140) and (stem_x + 15) > (mn_x - 20) \
+                   and stem_top < mn_y_top - _mn_shift_y and stem_bot > mn_y_bot - _mn_shift_y:
+                    # gambo/travatura che sale nella banda del numero: alza sopra
+                    _need = (mn_y_bot - _mn_shift_y) - stem_top + 30
+                    if _need > 0:
+                        _mn_shift_y += _need
+                    break
             measure_number_texts.append(
-                f'\n<text x="{mn_x:.1f}" y="{mn_y:.1f}" '
+                f'\n<text x="{mn_x:.1f}" y="{mn_y - _mn_shift_y:.1f}" '
                 f'font-family="Atkinson Hyperlegible,Carlito,DejaVu Sans,sans-serif" '
                 f'font-size="{mn_font_size}" font-weight="700" fill="#333333" '
                 f'text-anchor="start" dy="0.35em">{mn_num}</text>'
@@ -11791,6 +11793,43 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         if _bs_prob:
             print(f"  [BEAMSYNTH][VALIDATE] ATTENZIONE: {_bs_prob} beams fuori dai sistemi")
         modified = modified.replace('</svg>', _bs_paths_to_svg(_bs_paths) + '</svg>')
+        # 4 Ott 2026 (numeri di battuta vs travature beamsynth): i numeri
+        # vengono disegnati PRIMA del beamsynth con l'anti-collisione basata
+        # su note/gambi raw — le beams sintetizzate arrivano DOPO e occupano
+        # la stessa banda Y del numero (sys_top-165): overlap tipico nelle
+        # righe con gruppi che iniziano subito (hook/beam al primo onset).
+        # Fix: pass finale DOPO la synth — per ogni numero (text font-size
+        # 160 con contenuto numerico), se una beam interseca il suo box
+        # (x±(80*cifre+20), y±80), alza il numero sopra il bordo superiore
+        # della beam (beam_top - 90). Il numero resta a inizio battuta.
+        _n_bs_lift = [0]
+        _beams_now = []
+        for _bm in re.finditer(r'<path class="Beam"[^>]*d="([^"]+)"', modified):
+            _bn = [float(v) for v in re.findall(r'-?[\d.]+', _bm.group(1))][:8]
+            _beams_now.append((_bn[0], _bn[2], min(_bn[1], _bn[3]), max(_bn[1], _bn[3])))
+        _num_re_bs = re.compile(
+            r'<text x="([\d.]+)" y="(-?[\d.]+)"([^>]*)font-size="160"([^>]*)>(\d+)</text>')
+        _num_matches_bs = list(_num_re_bs.finditer(modified))
+        for _nm in reversed(_num_matches_bs):
+            _nx = float(_nm.group(1)); _ny = float(_nm.group(2))
+            _nd = _nm.group(5); _nw = 80 * len(_nd) + 20
+            _nbox = (_nx - 20, _nx + _nw, _ny - 80, _ny + 80)
+            _lift = 0
+            for _bx1, _bx2, _by1, _by2 in _beams_now:
+                if _bx1 < _nbox[1] and _bx2 > _nbox[0] and _by1 < _nbox[3] and _by2 > _nbox[2]:
+                    _need = (_nbox[3] - _by1) + 90
+                    if _need > _lift:
+                        _lift = _need
+            if _lift > 0:
+                _old_t = _nm.group(0)
+                _new_t = _old_t.replace(f'y="{_nm.group(2)}"',
+                                         f'y="{_ny - _lift:.1f}"', 1)
+                modified = modified[:_nm.start()] + _new_t + modified[_nm.end():]
+                _n_bs_lift[0] += 1
+        if _n_bs_lift[0]:
+            print(f"  [BEAMSYNTH] numeri battuta alzati sopra le beams: "
+                  f"{_n_bs_lift[0]}")
+
 
         # 3 Ott 2026 (bug b13-15 Marco: travature sospese nel gap): la y_prim
         # della synth eredita il tip del gambo RAW, che nel layout affiancato
