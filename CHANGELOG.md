@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.3.3] - 4 Ott 2026
+### Fixed
+- Numeri di battuta sempre a inizio battuta: l'anti-collisione con note alte/gambi spostava il numero a sinistra (dentro la battuta precedente, sovrapposto alle travature di fine battuta); ora lo sposta in alto, restando a inizio battuta.
+- Numeri di battuta sovrapposti alle travature del beamsynth: le beams sintetizzate occupano la stessa banda Y del numero; pass finale dopo l'inserimento delle beams alza il numero sopra la travatura (beam_top-90).
+
 ## [1.3.2] - 4 Ott 2026
 ### Fixed
 - Stanghette mancanti nel rhythm mode: la regex del clip-stems processava anche le stanghette come se fossero gambi (nessun filtro class) e le accorciava in base alle travature vicine; il tratto coprente-riga spariva e restava solo il frammento sopra il rigo, poi rimosso dalla pulizia. Regex limitata a class="Stem"; audit 72/72 stanghette uniformi per pagina.
