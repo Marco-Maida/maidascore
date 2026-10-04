@@ -17042,10 +17042,16 @@ def extract_score_title(input_path):
         # che appare REALLY sulla partitura (il workTitle metaTag può essere
         # vuoto o errato, es. dopo import OMR). 25 Set 2026.
         _m_title = re.search(
-            r'<Text>\s*<eid>[^<]*</eid>\s*<style>title</style>\s*<text>([^<]+)</text>',
-            xml_content)
-        if _m_title and _m_title.group(1).strip():
-            return _m_title.group(1).strip()
+            r'<Text>\s*<eid>[^<]*</eid>\s*<style>title</style>\s*<text>(.*?)</text>',
+            xml_content, re.S)
+        # 4 Ott 2026: il testo del titolo puo' iniziare con tag inline
+        # (<font size="24"/> ecc., es. Radetsky March dopo import OMR) —
+        # catturare TUTTO il contenuto e ripulire i tag, non solo ([^<]+)
+        # che esclude questi casi e ricade nel fallback nome-file.
+        if _m_title:
+            _title_txt = re.sub(r'<[^>]+>', '', _m_title.group(1)).strip()
+            if _title_txt:
+                return _title_txt
     if xml_content:
         # 1) credit-words: quello che appare realmente sulla parte
         credits = [m.group(1).strip() for m in
@@ -17077,10 +17083,13 @@ def extract_score_author(input_path):
     # che appare REALLY sulla partitura (il metaTag composer può contenere
     # artefatti dell'import, es. "Music21"). 25 Set 2026.
     _m_comp = re.search(
-        r'<Text>\s*<eid>[^<]*</eid>\s*<style>composer</style>\s*<text>([^<]+)</text>',
-        xml_content)
-    if _m_comp and _m_comp.group(1).strip():
-        return _m_comp.group(1).strip()
+        r'<Text>\s*<eid>[^<]*</eid>\s*<style>composer</style>\s*<text>(.*?)</text>',
+        xml_content, re.S)
+    # 4 Ott 2026: anche il composer puo' avere tag inline (<font/>)
+    if _m_comp:
+        _comp_txt = re.sub(r'<[^>]+>', '', _m_comp.group(1)).strip()
+        if _comp_txt:
+            return _comp_txt
     # 1) secondo credit-words non-parte (es. "Marco Maida")
     #    (prioritario: <creator> spesso contiene artefatti tipo "Music21")
     credits = [c.group(1).strip() for c in
