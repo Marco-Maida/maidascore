@@ -7577,10 +7577,50 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                                      page_height=None)
         print(f"  [rhythm] Y-stretch: NO stretch (spacing={orig_spacing:.1f}), fixed_gap={rhythm_fixed_gap}")
     else:
+        # 4 Ott 2026 (bug b2/b33-34 notazione, consulto Fable 5): top_margin
+        # dinamico — le note LEDGER ESTREME (es. Mi6 = 5 spazi sopra la
+        # middle line) dopo lo stretch 2.96x finivano a y NEGATIVA (fuori
+        # viewBox = teste invisibili: b2 p1, b33-34 p2 intere battute di E6).
+        # Il margine sopra il sistema 1 deve coprire la nota più alta del
+        # PRIMO sistema: half_steps_max * 280 + disco (r) + aria 80px.
+        _tm_dyn = 700.0
+        try:
+            _sys_sorted = sorted(systems.values(), key=lambda si: si['top'])
+            _sys1 = _sys_sorted[0]
+            _mid1 = _sys1['middle_line_y']
+            _hs1 = _sys1['half_step']
+            _ymax_needed = 0.0
+            for _ni in note_info.get('notes', []) if note_info else []:
+                # pitch → half_steps sopra/sotto il Do4 centrale (formula
+                # y_correct del merge, step_offset_C): usa pitch e step.
+                _st = _ni.get('step')
+                if not _st:
+                    continue
+                _so = {'C': 1, 'D': 2, 'E': 3, 'F': 4, 'G': 5, 'A': 6, 'B': 7}.get(_st)
+                if not _so:
+                    continue
+                _hs = (_ni.get('octave', 4) - 4) * 7 + _so - 7
+                # y nel sistema 1 (coordinate POST-stretch: half_step 280)
+                _y_post = _mid1 - _hs * 280.0
+                if _y_post < _ymax_needed:
+                    _ymax_needed = _y_post
+            # _ymax_needed è relativo al middle del sistema 1 post (middle
+            # post = middle raw: lo stretch è relativo al middle!) → la nota
+            # più alta sta (middle - _ymax_needed) sopra il middle; il top
+            # del sistema 1 post = top_margin; il middle post = top_margin
+            # + 2*280. Margine = distanza sopra il top + disco + aria.
+            _over_top = (_mid1 - _ymax_needed) - 2 * 280.0
+            if _over_top > 0:
+                _tm_dyn = max(700.0, _over_top + 115 + 80)
+        except Exception:
+            _tm_dyn = 700.0
         modified = y_stretch_systems(modified, systems, target_line_spacing=280,
                                      extra_system_gap=150 + TAVOLA_ROW_HEIGHT + TAVOLA_GAP_DYNAMIC,
-                                     top_margin=700, bottom_margin=700,
+                                     top_margin=_tm_dyn, bottom_margin=700,
                                      page_height=None)  # None = no auto-gap
+        if _tm_dyn > 700:
+            print(f"  [LEDGER] top_margin dinamico: {_tm_dyn:.0f}px "
+                  f"(note estreme sopra il sistema 1)")
 
     # TAVOLA_ROW_HEIGHT=175 (era 350), gap totale = 150+175+250 = 575 (era 750)
 
@@ -11625,8 +11665,12 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     _htx = float(_hm.group(1))
                     _hty = float(_hm.group(2))
                     for _hx, _hy, _hr in _bs_bound_heads:
+                        # 4 Ott 2026 (b4 notazione): finestra Y 1400 — le teste
+                        # LEDGER ALTE (E5 y2575 col rigo 2435) col gambo lungo
+                        # (tip 3555) hanno dy 980 > 900 → la flag restava
+                        # insieme alla beam sintetizzata (coda+travatura).
                         if (abs(_htx - _hx) <= _hr + 160 and
-                                abs(_hty - _hy) <= 900):
+                                abs(_hty - _hy) <= 1400):
                             modified = modified[:_hm.start()] + modified[_hm.end():]
                             _bs_hook_removed[0] += 1
                             break
@@ -16675,7 +16719,8 @@ def _bs_group(note_info):
             # 'mid' o AUTO (None) su nota beamabile: prosegue
             cur.append(n)
     _flush()
-    return [g for g in groups if len(g) >= 2]
+    _out = [g for g in groups if len(g) >= 2]
+    return _out
 
 
 def _bs_bind(svg_content, groups, note_info, systems_bounds, meas_x=None, sys_for_m=None, rhythm_mode=False, wide_pool=False):
@@ -16764,15 +16809,33 @@ def _bs_bind(svg_content, groups, note_info, systems_bounds, meas_x=None, sys_fo
             if _allowed_sys is not None and sys_i not in _allowed_sys:
                 continue
             # margine verticale: copre ledger/beams sopra-sotto il rigo, MA non
-            # invade la zona del sistema adiacente (gap/2 - 20 di rispetto)
+            # invade la zona del sistema adiacente (gap/2 - 20 di rispetto).
+            # 4 Ott 2026 (b2 E6/D6 ledger, consulto Fable): per il PRIMO sistema
+            # lo spazio SOPRA è il margine pagina (non il gap col sistema 2):
+            # le note ledger estreme (Mi6 = 840px sopra il top) restavano fuori
+            # pool (mrg 683) → gruppo [e,e] mai bindato → "gambi mancanti" b2.
+            # Simmetrico per l'ULTIMO sistema verso il fondo pagina.
             _mrg = 900.0
+            # 4 Ott (b2 ledger): margini ASIMMETRICI — sopra e sotto il rigo lo
+            # spazio disponibile è diverso (il primo sistema ha il margine
+            # pagina sopra; il gap col sistema adiacente limita solo il lato
+            # VERSO l'adiacente). Un _mrg simmetrico clampato al gap minimo
+            # escludeva le teste ledger estreme (E6 a 840px sopra il top con
+            # gap/2 = 683 → pool corto → gruppo mai bindato).
+            _mrg_up, _mrg_dn = 900.0, 900.0
             if sys_i > 0:
-                _mrg = min(_mrg, (rt - systems_bounds[sys_i - 1][1]) / 2 - 20)
+                _mrg_up = min(_mrg_up, (rt - systems_bounds[sys_i - 1][1]) / 2 - 20)
+            else:
+                _mrg_up = min(_mrg_up, rt * 0.9)
             if sys_i < len(systems_bounds) - 1:
-                _mrg = min(_mrg, (systems_bounds[sys_i + 1][0] - rb) / 2 - 20)
-            _mrg = max(_mrg, 200.0)
+                _mrg_dn = min(_mrg_dn, (systems_bounds[sys_i + 1][0] - rb) / 2 - 20)
+            else:
+                _mrg_dn = min(_mrg_dn, 900.0)
+            _mrg_up = max(_mrg_up, 200.0)
+            _mrg_dn = max(_mrg_dn, 200.0)
+            _mrg = max(_mrg_up, _mrg_dn)   # per compat col codice seguente
             pool = [hi for hi, h in enumerate(heads)
-                    if (not h[3]) and h[2] in grp_rads and rt - _mrg <= h[1] <= rb + _mrg
+                    if (not h[3]) and h[2] in grp_rads and rt - _mrg_up <= h[1] <= rb + _mrg_dn
                     and (_gx0 is None or _gx0 <= h[0] <= _gx1)]
             if wide_pool and not rhythm_mode:
                 # 4 Ott 2026: pool allargato ±900px oltre il margine per le teste
@@ -16786,12 +16849,26 @@ def _bs_bind(svg_content, groups, note_info, systems_bounds, meas_x=None, sys_fo
                 # sceglieva il rigo SBAGLIATO (m36 bindata su y5367 invece di
                 # y6859). In rhythm il retry allarga SOLO in X, mai in Y.
                 _pool_x = set(pool)
+                # 4 Ott 2026 (b49 cross-barline notazione, consulto Fable): il
+                # wide-retry aggiungeva teste ledger SENZA il filtro X della
+                # battuta → la E6 di b50 (x3848, ledger nel gap) entrava nel
+                # pool del gruppo di b49 → finestra cross-barline [E6(b49),
+                # E6(b50)] con beam che attraversa la stanghetta. Il vincolo
+                # gx (clampato a metà gap con le battute adiacenti) vale
+                # SEMPRE, anche per le teste ledger fuori banda Y.
                 for hi, h in enumerate(heads):
+                    # 4 Ott (b55 D6 nel gap): il wide usa i margini ASIMMETRICI
+                    # (_mrg_up/_mrg_dn), non _mrg simmetrico: con _mrg=900 il
+                    # wide (rt-1800, rt-900) saltava la testa a 11274 (nel gap
+                    # tra righi, a 700 sopra il top) → gruppo [e,16,16] mai
+                    # bindato → gambo mostro senza beam.
                     if (not h[3]) and hi not in _pool_x and h[2] in grp_rads \
-                            and rt - _mrg - 900 <= h[1] < rt - _mrg:
+                            and rt - _mrg_up - 900 <= h[1] < rt - _mrg_up \
+                            and (_gx0 is None or _gx0 <= h[0] <= _gx1):
                         pool.append(hi); _pool_x.add(hi)
                     elif (not h[3]) and hi not in _pool_x and h[2] in grp_rads \
-                            and rb + _mrg < h[1] <= rb + _mrg + 900:
+                            and rb + _mrg_dn < h[1] <= rb + _mrg_dn + 900 \
+                            and (_gx0 is None or _gx0 <= h[0] <= _gx1):
                         pool.append(hi); _pool_x.add(hi)
             if len(pool) < len(g):
                 continue
@@ -16859,15 +16936,6 @@ def _bs_bind(svg_content, groups, note_info, systems_bounds, meas_x=None, sys_fo
                         heads[win[-1]][0] - heads[win[0]][0])
                 if best is None or _key < best[0]:
                     best = (_key, sys_i, win)
-        if best is None and os.environ.get('MAIDA_DEBUG_BS'):
-            print(f"  [BS-DBG] sys-fail m={[n.get('m') for n in g]} "
-                  f"exp_r={[sorted(e) for e in _exp_seq]}")
-            _gx0 = min(n.get('x0', 0) for n in g) if g else 0
-            for _si2, (_sbt, _sbb) in enumerate(systems_bounds):
-                _pool2 = [hi for hi in pool if _sbt - _mrg <= heads[hi][1] <= _sbb + _mrg]
-                if _pool2:
-                    print(f"    sys{_si2} [{round(_sbt)},{round(_sbb)}]: "
-                          f"{[(round(heads[hi][0]), round(heads[hi][1]), heads[hi][2]) for hi in _pool2][:8]}")
         if best is None:
             bound.append((g, None, 'sys'))
             continue
@@ -16972,15 +17040,6 @@ def _bs_bind(svg_content, groups, note_info, systems_bounds, meas_x=None, sys_fo
                                      'tip_raw': _tip_raw}
                 break
         ok = all(ns is not None for ns in note_stems)
-        if not ok and os.environ.get('MAIDA_DEBUG_BS'):
-            _dbg_m = g[0].get('m') if g and isinstance(g[0], dict) else None
-            print(f"  [BS-DBG] stems-fail m={_dbg_m}: win={[(round(heads[hi][0]),round(heads[hi][1]),heads[hi][2]) for hi in win]}")
-            for n_idx, hi in enumerate(win):
-                if note_stems[n_idx] is None:
-                    hx, hy, hr = heads[hi][0], heads[hi][1], heads[hi][2]
-                    _near = sorted(stems, key=lambda st: abs(st[0]-hx))[:4]
-                    print(f"    nota n{n_idx} head=({round(hx)},{round(hy)},{hr}) cand-gambi: "
-                          f"{[(round(sx),round(sy1),round(sy2)) for sx,sy1,sy2 in _near]}")
         if not ok:
             bound.append((g, None, 'stems'))
             continue
