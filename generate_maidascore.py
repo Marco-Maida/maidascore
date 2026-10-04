@@ -11591,6 +11591,40 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                           f"{sorted({n.get('measure_idx') for n in g})} err={_e}")
         _bs_paths, _bs_fixes = _bs_synthesize(_bs_bound)
 
+        # 4 Ott 2026 (regola Marco: o la coda o la travatura, MAI entrambe):
+        # le note di un gruppo beamato bindato (>=2 note) hanno l'uncino di
+        # travatura sintetizzato dal beamsynth → l'HOOK (coda) di MuseScore
+        # va RIMOSSO, altrimenti la stessa nota mostra coda + travatura
+        # (b4 settore 2 Radetsky rhythm: 16e beamate con la coda doppia).
+        # La coda resta SOLO sulle note isolate (semicroma sola = gruppo di 1
+        # o nota non bindata). L'hook si individua per X vicino alla testa
+        # (entro r+160) e Y vicino alla punta del gambo (finestra generosa
+        # ±900: dopo y-stretch e clamp la ty può discostarsi dal tip).
+        _bs_hook_removed = [0]
+        _bs_bound_heads = []
+        for _g, _st, _e in _bs_bound:
+            if _st and len(_st) >= 2:
+                for _stx in _st:
+                    _bs_bound_heads.append(_stx['head'])
+        if _bs_bound_heads:
+            _hook_pat_bs = re.compile(
+                r'<path class="Hook"[^>]*transform="matrix\([^,]+,[^,]+,[^,]+,[^,]+,([\d.\-]+),([\d.\-]+)\)"[^>]*/?>')
+            _bs_hooks = list(_hook_pat_bs.finditer(modified))
+            if _bs_hooks:
+                # rimuovi dal fondo per offset stabili
+                for _hm in reversed(_bs_hooks):
+                    _htx = float(_hm.group(1))
+                    _hty = float(_hm.group(2))
+                    for _hx, _hy, _hr in _bs_bound_heads:
+                        if (abs(_htx - _hx) <= _hr + 160 and
+                                abs(_hty - _hy) <= 900):
+                            modified = modified[:_hm.start()] + modified[_hm.end():]
+                            _bs_hook_removed[0] += 1
+                            break
+        if _bs_hook_removed[0]:
+            print(f"  [BEAMSYNTH] code rimosse su note beamate: "
+                  f"{_bs_hook_removed[0]}")
+
         # 4 Ott 2026: rimozione gambi CORROTTI orfani — un gambo verticale con
         # una testa DENTRO il proprio intervallo (struttura impossibile, es.
         # x2173 [8778-9586] con testa 9539 in mezzo) che NON è stato consumato
