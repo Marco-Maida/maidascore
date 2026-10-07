@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.4.2] - 7 Ott 2026
+### Fixed
+- Sistemi misti (battute reali + gruppo di pause collassato): la fusione delle barline del gruppo di pause — pensata per il layout espanso, dove il gruppo occupava N colonne — ingoiava la battuta reale successiva. Il sistema perdeva una battuta: il numero di battuta non veniva disegnato e le sue note restavano parcheggiate a fine riga, sopra la tavola della battuta precedente. Con il collasso fisico il gruppo occupa una sola colonna e non viene più fuso.
+- Dedup barline: l'epsilon proporzionale (2% della larghezza del sistema, ~758px nel canvas affiancato) poteva ingoiare le due stanghette di un gruppo di pause stretto (655px); epsilon limitato a 150px.
+
 ## [1.4.1] - 4 Ott 2026
 ### Fixed
 - Notazione: note ledger estreme (Mi6/Re6) invisibili (cy negativa dopo y-stretch) — top_margin dinamico del layout.

@@ -1684,9 +1684,11 @@ def extract_single_part_mscz(input_mscz, part_index=0, key_sig_changes=None, rhy
     _all_changes = _ts_change_set
     if not rhythm_mode:
         _all_changes = _ts_change_set | (set(key_sig_changes) if key_sig_changes else set())
+    # 7 Ott 2026 (strategia B): gruppi [] — il file ricostruito è ESPANSO (116 battute,
+    # pause interne invisibili): packing uniforme, l'MMR non è più una battuta speciale.
     break_after = compute_system_breaks(note_counts,
                                          initial_rest_measures=initial_rest,
-                                         mmrest_groups=mmrest_groups,
+                                         mmrest_groups=[],
                                          time_sig_changes=_all_changes,
                                          time_sigs_per_measure=note_info.get('time_sigs_per_measure'),
                                          pack_mmrest=rhythm_mode, rhythm_mode=rhythm_mode)
@@ -1921,8 +1923,24 @@ def make_accessible_mscz(input_mscz, output_mscz, part_index=0, rhythm_mode=Fals
                     for mi, count in mmrest_info:
                         print(f"        Battuta {mi+1}: MMRest({count})")
                     
-                    # Converti <Measure len="N/M"> in <Measure> (rimuovi l'attributo len)
-                    mscx = re.sub(r'<Measure len="[^"]*">', '<Measure>', mscx)
+                    # 7 Ott 2026 (fix segfault MMRest compresso): le battute
+                    # multiMeasureRest DEVONO mantenere l'attributo len (es.
+                    # len="108/4" per 36 battute in 3/4): MuseScore 4 segfaulta
+                    # se Rest-duration ≠ Measure-len. Rimuovi len SOLO dalle
+                    # battute senza multiMeasureRest.
+                    _mmr_measure_spans = [(m.start(), m.end()) for m in
+                                          re.finditer(r'<Measure[^>]*>(?:(?!</Measure>).)*?<multiMeasureRest>\d+</multiMeasureRest>', mscx, re.DOTALL)]
+                    _mmr_starts = [s for s, e in _mmr_measure_spans]
+                    _mmr_measure_text = set(mscx[s:e] for s, e in _mmr_measure_spans)
+                    def _keep_len(mobj):
+                        return mobj.group(0)  # battuta MMRest: mantieni len
+                    def _strip_len(mobj):
+                        # battuta normale: rimuovi len solo se NON contiene multiMeasureRest
+                        after = mscx[mobj.start():mobj.start()+4000]
+                        if '<multiMeasureRest>' in after.split('</Measure>')[0]:
+                            return mobj.group(0)
+                        return '<Measure>'
+                    mscx = re.sub(r'<Measure len="[^"]*">', _strip_len, mscx)
 
                     # 15 Set 2026 (crash MMRest come prima battuta): MuseScore 4
                     # segfaulta se la PRIMA battuta della partitura è un
@@ -1944,43 +1962,100 @@ def make_accessible_mscz(input_mscz, output_mscz, part_index=0, rhythm_mode=Fals
                     # l'MMRest come SECONDA battuta → nessun crash. La battuta
                     # header slitta TUTTO: note measure_idx e mmrest_info +1.
 
-                    # 13 Set 2026: ESPANDI gli MMRest in N battute reali
-                    # (bug Carol battute 85-87: compresso, le battute successive
-                    # slittavano → figurazioni e nomi mismatchati nel PDF).
-                    _all_m_expand = list(re.finditer(r'<Measure[^>]*>(.*?)</Measure>', mscx, re.DOTALL))
-                    _expand_offsets = []  # (start, end, replacement, measure_idx)
-                    _cur_ts_n, _cur_ts_d = global_ts_n, global_ts_d
-                    for _im_idx, _m in enumerate(_all_m_expand):
-                        _content = _m.group(1)
-                        _ts_m = re.search(r'<sigN>(\d+)</sigN>\s*<sigD>(\d+)</sigD>', _content)
-                        if _ts_m:
-                            _cur_ts_n, _cur_ts_d = _ts_m.group(1), _ts_m.group(2)
-                        _mmr_m = re.search(r'<multiMeasureRest>(\d+)</multiMeasureRest>', _content)
-                        if not _mmr_m:
+                    # 7 Ott 2026 (bug JTLM doppione pause — strategia B, consulto
+                    # Claude): ESPANSIONE ripristinata (fisiche=logiche=116, l'invariante
+                    # che TUTTA la pipeline assume) MA le pause interne dei gruppi MMR
+                    # vengono rese INVISIBILI (<visible>0</visible> nel <Rest>): il rigo
+                    # mostra battute grigie vuote SENZA pause riscritte, il box "N battute
+                    # di pausa" vive SOLO nella tavola sonora. Il tag <multiMeasureRest>
+                    # va rimosso (con createMultiMeasureRests=0 fa segfaultare MuseScore
+                    # 4.7 headless) e mmrest_groups NON va passato al layout/packing
+                    # (fix G2): niente più contabilità doppia.
+                    mscx = re.sub(r'<multiMeasureRest>\d+</multiMeasureRest>\s*', '', mscx)
+                    mscx = re.sub(r'<Measure len="[^"]*">', '<Measure>', mscx)
+
+                    
+                    # 7 Ott 2026 (strategia B): ESPANDI ogni gruppo in N battute.
+                    # La PRIMA battuta del gruppo = pausa VISIBILE (semibreve, la
+                    # "rappresentante" che tiene il metro), le N-1 successive = pause
+                    # INVISIBILI (<visible>0</visible>): il rigo resta con battute
+                    # grigie vuote senza simboli ripetuti; il box "N battute di pausa"
+                    # lo disegna SOLO la tavola sonora.
+                    # 7 Ott 2026 (richiesta Marco "le battute vuote vanno tolte"):
+                    # COLlasso FISICO (consulto Claude Fable 5): ogni gruppo
+                    # deve risultare in UNA SOLA battuta fisica visibile (pausa
+                    # measure normalissima — niente len oversize né tag
+                    # multiMeasureRest, terra bruciata in MuseScore 4.7
+                    # headless). groups_phys = [(phys_idx, n_logical)] è emesso
+                    # QUI (mai ri-rilevato a valle: una battuta collassata è
+                    # indistinguibile da una pausa genuina). L'invariante della
+                    # pipeline resta: SVG, layout, matcher e note_info lavorano
+                    # TUTTI in indici FISICI; la conversione fisico→logico
+                    # avviene SOLO alla presentazione (numeri battuta e box
+                    # tavola) via _phys2log.
+                    _all_m_exp = list(re.finditer(r'<Measure[^>]*>.*?</Measure>', mscx, re.DOTALL))
+                    _exp_offs = []  # (start, end, replacement, midx)
+                    _already_collapsed = []
+                    for _ei, _mm in enumerate(_all_m_exp):
+                        _is_grp_start = any(mi == _ei for mi, _cnt in mmrest_info)
+                        if not _is_grp_start:
                             continue
-                        _n = int(_mmr_m.group(1))
-                        _voice_content = re.sub(r'<multiMeasureRest>\d+</multiMeasureRest>\s*', '', _content).strip()
-                        _voice_content = re.sub(r'<eid>[^<]*</eid>\s*', '', _voice_content)
-                        if '<Rest>' in _voice_content:
-                            _new_measure = f'<Measure>{_voice_content}</Measure>'
-                        else:
-                            _dur = f"{_cur_ts_n}/{_cur_ts_d}"
-                            _new_measure = (f'<Measure><voice><Rest><durationType>measure</durationType>'
-                                            f'<duration>{_dur}</duration></Rest></voice></Measure>')
-                        _expand_offsets.append((_m.start(), _m.end(), _new_measure * _n, _im_idx))
-                    _expand_by_midx = [(rep, midx) for _, _, rep, midx in
-                                       sorted(_expand_offsets, key=lambda x: x[3])]
-                    for _s, _e, _rep, _ in sorted(_expand_offsets, key=lambda x: -x[0]):
-                        mscx = mscx[:_s] + _rep + mscx[_e:]
-                    if _expand_offsets:
-                        print(f"      Espansi {len(_expand_offsets)} MMRest in battute individuali")
-                        def _shift_idx(orig_idx):
-                            shift = 0
-                            for rep, midx in _expand_by_midx:
-                                if orig_idx > midx:
-                                    shift += rep.count('<Measure>') - 1
-                            return orig_idx + shift
-                        mmrest_info = [(_shift_idx(mi), cnt) for mi, cnt in mmrest_info]
+                        _cnt = next(c for mi, c in mmrest_info if mi == _ei)
+                        if _cnt < 2:
+                            continue
+                        if _ei + _cnt - 1 >= len(_all_m_exp):
+                            _already_collapsed.append(_ei)
+                            continue
+                        # Il gruppo è già collassato se la battuta successiva
+                        # contiene note reali (file a 73 battute: il gruppo
+                        # MMR del _add_mmrests_to_mscx comprime già fisicamente).
+                        _next_body = _all_m_exp[_ei + 1].group(0)
+                        if '<pitch>' in _next_body:
+                            _already_collapsed.append(_ei)
+                            continue
+                        # ASSERT (Fable 5): le battute RIMOSSE devono contenere
+                        # SOLO pause (vietati TimeSig/KeySig/Tempo/note reali —
+                        # verrebbero distrutte silenziosamente).
+                        _rm_full = mscx[_all_m_exp[_ei + 1].start():_all_m_exp[_ei + _cnt - 1].end()]
+                        for _bad in ('<TimeSig>', '<KeySig>', '<Tempo>', '<RehearsalMark>'):
+                            if _bad in _rm_full:
+                                raise RuntimeError(
+                                    f"Collasso MMRest impossibile: elemento {_bad} "
+                                    f"dentro il gruppo a battuta {_ei+1}")
+                        for _rm_i in range(_ei + 1, _ei + _cnt):
+                            _rm_b = _all_m_exp[_rm_i].group(0)
+                            if '<Rest>' not in _rm_b or '<pitch>' in _rm_b:
+                                raise RuntimeError(
+                                    f"Collasso MMRest impossibile: battuta {_rm_i+1} "
+                                    f"contiene note reali, non solo pause")
+                        # RIMUOVI le battute _ei+1 .. _ei+_cnt-1 (tenendo la prima)
+                        _exp_offs.append((_all_m_exp[_ei + 1].start(),
+                                          _all_m_exp[_ei + _cnt - 1].end(),
+                                          '', _ei))
+                    # Applica le rimozioni in ordine inverso
+                    for _s, _e, _r, _ in sorted(_exp_offs, key=lambda t: -t[0]):
+                        mscx = mscx[:_s] + _r + mscx[_e:]
+                    # groups_phys: start FISICI delle battute collassate (0-based)
+                    # con il numero di battute logiche coperte. I gruppi
+                    # successivi slittano di -(count-1) ciascuno.
+                    groups_phys = []
+                    _sh = 0
+                    _all_starts = sorted(set([t[3] for t in _exp_offs] + _already_collapsed))
+                    for _ei in _all_starts:
+                        _cnt = next(c for mi, c in mmrest_info if mi == _ei)
+                        groups_phys.append((_ei - _sh, _cnt))
+                        # Lo shift fisico accumulato conta SOLO le rimozioni
+                        # effettuate qui (gruppi in _exp_offs): i gruppi già
+                        # collassati dal single_part NON slittano nulla.
+                        if _ei in set(t[3] for t in _exp_offs):
+                            _sh += _cnt - 1
+                    mmrest_info = list(groups_phys)
+                    if groups_phys:
+                        print(f"      Collasso fisico: {len(groups_phys)} gruppi "
+                              f"{[(g+1, c) for g, c in groups_phys]} "
+                              f"({len(_already_collapsed)} già collassati dal single_part)")
+                    else:
+                        groups_phys = []
                     
                     # Correggi i <duration> delle pause measure nelle battute MMRest.
                     # Il duration originale era "N×ts" (es. 28×6/8=168/8), ma ora è 1 battuta.
@@ -2021,7 +2096,13 @@ def make_accessible_mscz(input_mscz, output_mscz, part_index=0, rhythm_mode=Fals
                     
                     # Assicurati che ogni battuta MMRest abbia una pausa measure
                     # (alcune battute MMRest potrebbero non avere un <Rest> esplicito)
-                    all_m_final = list(re.finditer(r'<Measure>(.*?)</Measure>', mscx, re.DOTALL))
+                    # 7 Ott 2026 (fix off-by-one): la regex deve matchare ANCHE le
+                    # battute MMRest con attributo len (r'<Measure len="108/4">'):
+                    # la vecchia regex '<Measure>' esatta le SALTAVA → tutti gli
+                    # indici slittavano di 1 → il Rest measure veniva aggiunto alla
+                    # battuta DOPO l'MMRest (b37: Rest 3/4 + Chord 3/4 = overfull →
+                    # segfault MuseScore all'export SVG).
+                    all_m_final = list(re.finditer(r'<Measure[^>]*?>(.*?)</Measure>', mscx, re.DOTALL))
                     for _idx, _m in enumerate(all_m_final):
                         _content = _m.group(1)
                         _is_mmrest = any(mi == _idx for mi, _ in mmrest_info)
@@ -2034,7 +2115,8 @@ def make_accessible_mscz(input_mscz, output_mscz, part_index=0, rhythm_mode=Fals
                                 _dur = f"{global_ts_n}/{global_ts_d}"
                             _new_content = _content.replace('<voice>', 
                                 f'<voice><Rest><durationType>measure</durationType><duration>{_dur}</duration></Rest>', 1)
-                            mscx = mscx[:_m.start()] + f'<Measure>{_new_content}</Measure>' + mscx[_m.end():]
+                            _orig_tag = re.match(r'<Measure[^>]*>', _m.group(0)).group(0)
+                            mscx = mscx[:_m.start()] + f'{_orig_tag}{_new_content}</Measure>' + mscx[_m.end():]
                     
                     initial_rest_measures = mmrest_info[0][1] if (mmrest_info and mmrest_info[0][0] == 0) else 0
                 else:
@@ -2069,12 +2151,13 @@ def make_accessible_mscz(input_mscz, output_mscz, part_index=0, rhythm_mode=Fals
             # gruppi di pause consecutive. mmrest_info = [(measure_idx, count)]
             # Converti in mmrest_groups = [(start_idx, count)] (formato atteso dal resto)
             if mmrest_info:
-                mmrest_groups = mmrest_info  # already [(idx, count)]
+                mmrest_groups = mmrest_info  # [(phys_idx, n_logical)] — fisico
             else:
                 mmrest_groups = []
-            print(f"      Gruppi MMRest: {len(mmrest_groups)}")
+                groups_phys = []
+            print(f"      Gruppi MMRest (fisici): {len(mmrest_groups)}")
             for gs, gc in mmrest_groups:
-                print(f"        Battuta {gs+1}: MMRest({gc})")
+                print(f"        Battuta fisica {gs+1}: {gc} battute logiche")
             
             # Count notes per measure and compute where to break
             note_counts = count_notes_per_measure(mscx)
@@ -2118,9 +2201,10 @@ def make_accessible_mscz(input_mscz, output_mscz, part_index=0, rhythm_mode=Fals
             if ks_change_set:
                 print(f"      Cambi di armatura alle battute (0-based): {sorted(ks_change_set)}")
                 print(f"      (= battute 1-based: {[c+1 for c in sorted(ks_change_set)]})")
+            # 7 Ott 2026 (strategia B): gruppi [] — accessibile espanso, packing uniforme
             break_indices = compute_system_breaks(note_counts, 
                                                     initial_rest_measures=initial_rest_measures,
-                                                    mmrest_groups=mmrest_groups,
+                                                    mmrest_groups=[],
                                                     time_sig_changes=all_changes,
                                                     time_sigs_per_measure=_ts_per_measure_local,
                                                     pack_mmrest=rhythm_mode, rhythm_mode=rhythm_mode)
@@ -2301,7 +2385,14 @@ def make_accessible_mscz(input_mscz, output_mscz, part_index=0, rhythm_mode=Fals
                 zf.write(file_path, arcname)
     
     shutil.rmtree(temp_dir)
-    return output_mscz, initial_rest_measures, mmrest_groups
+    # groups_phys: [(phys_idx, n_logical)] — indici FISICI delle battute
+    # collassate (emessi dal collassatore). Vuoto se nessun gruppo o se il
+    # file non aveva MMRest nativi.
+    try:
+        _gp = list(groups_phys)
+    except NameError:
+        _gp = []
+    return output_mscz, initial_rest_measures, mmrest_groups, _gp
 
 
 def build_wavy_line(x, y, width, height, color, n_waves=None, wave_h=None,
@@ -3122,7 +3213,7 @@ DURATION_BEATS = {
 def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
                        note_offset, tavola_row_height=500, tavola_gap=150,
                        processed_notes=None, initial_rest_measures=0,
-                       measure_offset=0, mmrest_groups=None, system_layout=None):
+                       measure_offset=0, mmrest_groups=None, system_layout=None, groups_phys=None):
     """Disegna la riga della Tavola Sonora sotto ogni sistema.
     
     Per ogni battuta: celle colorate (suono) o bianche tratteggiate (pausa),
@@ -3132,6 +3223,17 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
     Se processed_notes è fornito, usa le posizioni center_x calcolate dal
     posizionamento dei cerchi (allineamento perfetto pentagramma↔tavola).
     """
+
+    # 7 Ott 2026 (collasso fisico): conversione fisico→logico per la tavola.
+    # Una sola funzione pura (consulto Fable 5): groups_phys arriva dal
+    # collassatore, MAI ri-rilevato a valle.
+    _groups_phys_tav = list(groups_phys or [])
+    def _phys2log_tav(phys_idx):
+        shift = 0
+        for g_phys, n in _groups_phys_tav:
+            if phys_idx > g_phys:
+                shift += n - 1
+        return phys_idx + shift
     all_notes = note_info.get('notes', [])
     all_rests = note_info.get('rests', [])
     ts = note_info.get('time_sig', (4, 4))
@@ -3382,11 +3484,10 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
                     _extra_tav += _gc - 1
         for m_idx, (m_start, m_end) in enumerate(measures):
             global_measure_idx = system_start_measure + m_idx
-            if system_start_measure + _extra_tav > 0:
-                global_measure_idx = system_start_measure + _tav_log_map.get(m_idx, m_idx)
-            if global_measure_idx in _mmrest_skip_measures:
-                # battuta interna di un MMRest già disegnato: salta
-                continue
+            # 7 Ott 2026 (collasso fisico): le battute interne non esistono più
+            # (rimosse dal collassatore) — il vecchio shift _tav_log_map non
+            # serve. L'indice logico (per TS) = _phys2log(fisico).
+            global_measure_log = _phys2log_tav(global_measure_idx)
             if global_measure_idx in _mmrest_set_local:
                 # battuta MMRest dentro un sistema misto: UNA cella tratteggiata
                 mmrest_count = 1
@@ -3408,7 +3509,9 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
                               f'fill="white">{mmrest_count} battute di pausa</text>')
                 continue
             m_width = m_end - m_start
-            bpm = _beats_for_measure(global_measure_idx)
+            # 7 Ott 2026: TS per indice LOGICO (time_sigs_per_measure è logico);
+            # note/rests restano indicizzate FISICO (note_info dal collassato).
+            bpm = _beats_for_measure(global_measure_log)
             beat_width = m_width / bpm
             
             # FIX 2 Ago 2026: se abbiamo le note processate (con center_x),
@@ -3985,8 +4088,16 @@ def build_system_layout(systems, barlines, time_sigs_per_measure, measure_offset
             sys_n_measures[sys_key] = uniform
             continue
 
-        # Dedup: collassa barline molto vicine (finale doppia, ripetizioni)
-        EPS = 0.02 * sys_width
+        # Dedup: collassa barline molto vicine (finale doppia, ripetizioni).
+        # 7 Ott 2026 (bug b60/b61 JTLM): il canvas RAW affiancato rende
+        # sys_width ~38000 → EPS = 2% = 758px INGOIAVA le due barline di
+        # confine di un box MMRest largo 655px (dedup fuse il box con la
+        # battuta successiva → n_meas 4 invece di 5 → la b61 restava senza
+        # gruppo: note non riposizionate parcheggiate a fine riga sopra la
+        # tavola della b60, numero 61 mai disegnato). Cap l'EPS a un valore
+        # ragionevole per barline DOPPIE (finale, ripetizioni sono ~10-40px):
+        # 150px basta per il dedup legittimo e non tocca i box MMRest.
+        EPS = min(0.02 * sys_width, 150.0)
         dedup = [bls[0]]
         for b in bls[1:]:
             if b - dedup[-1] > EPS:
@@ -4043,20 +4154,17 @@ def build_system_layout(systems, barlines, time_sigs_per_measure, measure_offset
         # (doppio conteggio → measure_offset avanza troppo → numeri saltati
         # alla fine, drift +N). Con il piano disponibile, il rigo MMRest conta
         # SOLO le battute che il piano gli assegna (n_meas già = _exp).
-        if _m in _mmrest_set and expected_measures is None:
-            # MMRest: 1 visual measure che copre count battute logiche
+        if _m in _mmrest_set:
+            # MMRest (7 Ott 2026, unificato con/senza piano): 1 battuta visiva
+            # che copre count battute logiche. n_logical = count SEMPRE.
+            # Se il piano assegna n_meas>1 al rigo dell'MMRest (MMRest(2)
+            # spezzato su più righi), il contatore avanza di max(count, n_meas)
+            # per non contare due volte le battute successive.
             mmrest_count = _mmrest_count_map.get(_m, 1)
             measures = [_m]
             n_logical = mmrest_count
             global_idx_start = _m
-            _m += mmrest_count
-        elif _m in _mmrest_set:
-            # Piano presente: conta solo le battute assegnate a questo rigo
-            mmrest_count = _mmrest_count_map.get(_m, 1)
-            measures = list(range(_m, _m + n_meas))
-            n_logical = n_meas
-            global_idx_start = _m
-            _m += n_meas
+            _m += max(mmrest_count, n_meas)
         else:
             measures = list(range(_m, _m + n_meas))
             n_logical = n_meas
@@ -4135,7 +4243,7 @@ def _note_final_x(n, all_notes_in_sys, current_measure_idx, new_m_start, new_m_w
     return center_x
 
 
-def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False, title_text=None, part_text=None, measure_offset=0, initial_rest_measures=0, mmrest_groups=None, rhythm_mode=False, key_sig_changes_dict=None, expected_system_plan=None, beam_synth=False):
+def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False, title_text=None, part_text=None, measure_offset=0, initial_rest_measures=0, mmrest_groups=None, groups_phys=None, rhythm_mode=False, key_sig_changes_dict=None, expected_system_plan=None, beam_synth=False):
     parsed = parse_svg(svg_content)
     systems = parsed['systems']
     barlines = parsed['barlines_by_system']
@@ -4186,10 +4294,30 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 _current_group = []
         if len(_current_group) >= 2:
             _logical_mmrest.append((_current_group[0], len(_current_group)))
-        # Usa i gruppi logici invece di mmrest_groups
-        mmrest_groups = _logical_mmrest
+        # 7 Ott 2026 (collasso fisico): con groups_phys (file collassato) usa i
+        # gruppi FISICI dal collassatore — la rilevazione _logical_mmrest (battute
+        # consecutive senza note) non funziona sul collassato: il gruppo è 1
+        # battuta sola (mai >=2) e non verrebbe mai rilevato → niente box.
+        if groups_phys:
+            mmrest_groups = list(groups_phys)
+            print(f"  MMRest fisici (collassati): {[(gs+1, gc) for gs, gc in mmrest_groups]}")
+        else:
+            # Usa i gruppi logici invece di mmrest_groups
+            mmrest_groups = _logical_mmrest
         if mmrest_groups:
-            print(f"  MMRest logici: {[(gs+1, gc) for gs, gc in mmrest_groups]}")
+            print(f"  MMRest attivi: {[(gs+1, gc) for gs, gc in mmrest_groups]}")
+        
+        # 7 Ott 2026 (collasso fisico): groups_phys = [(phys_idx, n_logical)]
+        # emesso dal collassatore nel make_accessible_mscz. phys2log è l'UNICA
+        # funzione di conversione fisico→logico (consulto Fable 5: una funzione
+        # pura, usata SOLO alla presentazione — numeri battuta e box tavola).
+        _groups_phys = list(groups_phys or [])
+        def _phys2log(phys_idx):
+            shift = 0
+            for g_phys, n in _groups_phys:
+                if phys_idx > g_phys:
+                    shift += n - 1
+            return phys_idx + shift
         
         # Group mscz notes by measure_idx, sorted by onset
         from collections import defaultdict
@@ -4230,9 +4358,12 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         # I 3 punti che ne hanno bisogno (sys_measure_ranges, _sys_to_global_idx,
         # draw_tavola_sonora) consumano questa struttura invece di ricalcolarla.
         _time_sigs_pm = note_info.get('time_sigs_per_measure', {}) if note_info else {}
+        # 7 Ott 2026 (strategia B): mmrest_groups=[] al layout — l'mscx accessibile
+        # è ESPANSO (fisiche=logiche, pause interne invisibili), quindi la contabilità
+        # del layout deve essere uniforme. I gruppi servono SOLO alla tavola (box).
         _system_layout = build_system_layout(
             systems, barlines, _time_sigs_pm, measure_offset,
-            mmrest_groups, uniform=UNIFORM_MEASURES_PER_SYSTEM,
+            None, uniform=UNIFORM_MEASURES_PER_SYSTEM,
             expected_measures=expected_system_plan)
         
         # Track which mscz notes have been matched (to handle duplicate onsets)
@@ -4386,14 +4517,34 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
     rests_by_measure = {}
     if note_info:
         all_rests = note_info.get('rests', [])
+        # 7 Ott 2026 (bug JTLM: pause riscritte una ad una dopo il box): le battute
+        # INTERNE ai gruppi MMRest hanno pause invisibili nell'mscx accessibile
+        # (strategia B) → MuseScore NON le rende nell'SVG → il cloner le ricreava
+        # come glifi visibili = "36 battute di pausa riscritte ad una ad una".
+        # Escludile dal matching/cloning: la semantica del gruppo è già nel box
+        # "N battute di pausa" della tavola. Restano i settori grigi vuoti.
+        # 7 Ott 2026 (collasso fisico): gli indici in mmrest_groups sono FISICI
+        # e con il collasso attivo le battute interne del gruppo NON ESISTONO
+        # nel file — range(_gs+1, _gs+_gc) su indici FISICI escludeva per
+        # errore le pause delle battute REALI successive (bug JTLM: pause
+        # quarter b47-71 senza glifo nel pentagramma, la tavola mostrava
+        # "UNO" ma sopra non c'era la pausa). Con il collasso il gruppo
+        # occupa SOLO la battuta _gs: nessuna battuta interna da escludere.
+        _grp_internal = set()
+        if not groups_phys:
+            for _gs, _gc in (mmrest_groups or []):
+                _grp_internal.update(range(_gs + 1, _gs + _gc))
         for r in all_rests:
             m = r['measure_idx']
+            if m in _grp_internal:
+                continue
             if m not in rests_by_measure:
                 rests_by_measure[m] = []
             rests_by_measure[m].append((r['onset'], r['duration_type']))
     # Sort rests by onset within each measure (for ordered assignment)
     for m in rests_by_measure:
         rests_by_measure[m].sort()
+
     # Time signature beats for onset→position conversion.
     # In 4/4: 4 quarter beats per measure → onset/4 = position fraction.
     # In 6/8: 3 quarter beats per measure → onset/3 = position fraction.
@@ -4674,7 +4825,28 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     if _gm_probe <= _gs < _gm_probe + len(bls):
                         _first_grp = _gs - _gm_probe  # index of first collapsed group
                         _mmrest_count_here = _gc
-                        if 0 <= _first_grp < len(groups):
+                        # 7 Ott 2026 (collasso fisico): se il gruppo è GIÀ
+                        # collassato fisicamente nel file (1 battuta = 1
+                        # group-barline), NON fondere le barline — il vecchio
+                        # collasso (per i gruppi ESPANSI del 15 Set) fonde
+                        # TUTTI i gruppi del sistema in una sola battuta e
+                        # distrugge le celle delle battute reali del sistema
+                        # misto (bug JTLM: sistema 0 = pausa + b37-40 → 1
+                        # cella sola). Fonde SOLO se ci sono abbastanza
+                        # gruppi-barline da coprire il count del gruppo.
+                        # 7 Ott 2026 (bug b60/b61 JTLM — CAUSA RADICE): con il
+                        # collasso FISICO il gruppo-box MMRest occupa UN SOLO
+                        # gruppo-barline; la fusione di _gc gruppi (pensata per
+                        # l'ESPANSO, dove il MMRest occupava _gc battute
+                        # fisiche) ingoiava il gruppo SUCCESSIVO = la prima
+                        # battuta reale dopo il box (sistema glo=20: box(2)
+                        # fonduto con la b60 → 4 gruppi invece di 5 → la b61
+                        # senza gruppo: note non riposizionate parcheggiate
+                        # sopra la tavola della b60, numero 61 mai disegnato).
+                        # Con groups_phys attivo: nessuna fusione.
+                        if (groups_phys is None and
+                                0 <= _first_grp < len(groups)
+                                and _first_grp + _gc <= len(groups)):
                             _collapsed = []
                             for g in groups[_first_grp:_first_grp + _gc]:
                                 _collapsed.extend(g)
@@ -4871,7 +5043,6 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 n['measure_idx'] for n in notes_in_sys 
                 if 'measure_idx' in n
             ))
-            
             # se una battuta ha SOLO pause (nessuna nota),
             # il suo measure_idx manca da system_measure_indices. Questo causava la
             # pausa di semibreve della battuta 39 (solo pause) di essere assegnata
@@ -4952,7 +5123,25 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                         #     sistema MMRest b1-4 + b5 + b6: le battute MMRest
                         #     non hanno note): _gc0 elementi NON esistono dopo
                         #     _mm_pos — inserisci _gs0 senza saltare nulla.
-                        if _smi_was_rebuilt:
+                        # 7 Ott 2026 (bug b60 JTLM, collasso fisico): quando il
+                        # collasso è FISICO (groups_phys attivo) il gruppo-box
+                        # occupa UNA SOLA battuta fisica (_gs0) e la smi
+                        # REBUILDATA contigua [_gm_here..+n_groups-1] è GIÀ la
+                        # mappatura corretta una-per-gruppo (contiene _gs0 al
+                        # posto giusto: gruppo k = battuta fisica _gm_here+k).
+                        # QUALSIASI inserimento/salto la rompe:
+                        # - salto _gc0-1 (ramo a, pensato per l'espanso dove il
+                        #   gruppo = _gc0 battute fisiche): [20,21,22,23,24] →
+                        #   [20,21,22,24] = note slittate di un gruppo a sinistra
+                        #   (note della b61 dentro il box, note della b62 dentro
+                        #   la b60 = "più figure del dovuto" sopra la tavola);
+                        # - inserimento senza salto (ramo b): duplica _gs0
+                        #   ([0,1,2,3,4] → [0,0,1,2,3,4]) = note slittate di un
+                        #   gruppo a destra. Con collasso fisico + smi rebuilt:
+                        #   NON toccare la lista.
+                        if _smi_was_rebuilt and groups_phys:
+                            pass  # smi contigua già una-per-gruppo, corretta
+                        elif _smi_was_rebuilt:
                             system_measure_indices = (
                                 system_measure_indices[:_mm_pos] +
                                 [_gs0] +
@@ -5668,8 +5857,9 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     continue
                 if os.environ.get('MAIDA_DEBUG_RESTS'):
                     print(f"      [rest-debug] sys grp={grp_idx} m_idx={m_idx} m_rests={m_rests} matched={_matched_rest_indices.get(m_idx, set())}")
-                matched_set = _matched_rest_indices.get(m_idx, set())
+
                 # For each UNMATCHED .mscz rest, clone a rest glyph
+                matched_set = _matched_rest_indices.get(m_idx, set())
                 for r_idx, (r_onset, r_dtype) in enumerate(m_rests):
                     if r_idx in matched_set:
                         continue  # this rest has a matching SVG rest
@@ -9331,15 +9521,13 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             m_idx = first_m_idx + grp_idx
             if m_idx < 0:
                 continue
-            # salta i numeri di battuta per le battute MMRest
-            # (il numero è già mostrato nel box nero)
+            # salta i numeri di battuta per le battute MMRest collassate
+            # (il numero è già mostrato nel box nero della tavola)
             if m_idx in _mmrest_map:
-                _mm_extra += _mmrest_map[m_idx] - 1
                 continue
-            # 16 Set 2026 (bug numerazione sistema misto): un sistema può
-            # contenere battute reali SEGUIDE da un gruppo MMRest: i gruppi
-            # dopo l'MMRest devono saltare le battute logiche coperte.
-            mn_num = m_idx + 1 + _mm_extra
+            # 7 Ott 2026 (collasso fisico): il numero mostrato è LOGICO —
+            # conversione fisico→logico via _phys2log (una sola funzione pura).
+            mn_num = _phys2log(m_idx) + 1
             mn_x = m_start + 20
             # Check if any high note circle overlaps with the measure number position
             # Number spans roughly mn_x to mn_x + 120 (font 160, 1-2 digits)
@@ -9374,7 +9562,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 f'\n<text x="{mn_x:.1f}" y="{mn_y - _mn_shift_y:.1f}" '
                 f'font-family="Atkinson Hyperlegible,Carlito,DejaVu Sans,sans-serif" '
                 f'font-size="{mn_font_size}" font-weight="700" fill="#333333" '
-                f'text-anchor="start" dy="0.35em">{mn_num}</text>'
+                f'text-anchor="start" dy="0.35em" data-mn="1">{mn_num}</text>'
             )
             measure_number_count += 1
         # Advance global measure counter by the number of REAL measures in
@@ -11302,6 +11490,12 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 
                 # Rimuovi numeri battuta in questo sistema
                 def remove_meas_nums_sys(match, msl=sys_start_x, msel=sys_end_x, st=st, sb=sb):
+                    # 7 Ott 2026: i numeri battuta legittimi (marcati data-mn)
+                    # NON vanno mai cancellati — il box MMRest di un sistema
+                    # misto cancellava per errore i numeri delle battute reali
+                    # vicine alla pausa collassata (bug JTLM: 53 e 61 mancanti).
+                    if 'data-mn="1"' in match.group(0):
+                        return match.group(0)
                     x_m = re.search(r'x="([\d.]+)"', match.group(0))
                     y_m = re.search(r'y="([\d.]+)"', match.group(0))
                     if x_m and y_m:
@@ -12400,7 +12594,8 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                                        initial_rest_measures=initial_rest_measures,
                                        measure_offset=measure_offset,
                                        mmrest_groups=mmrest_groups,
-                                       system_layout=_system_layout)
+                                       system_layout=_system_layout,
+                                       groups_phys=groups_phys)
 
         # 3 Ott 2026: dot clamp — il punto della croma puntata non deve
         # sovrapporre la testa successiva (rhythm: teste r58/72 vicine).
@@ -14805,7 +15000,8 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                                   initial_rest_measures=initial_rest_measures,
                                   measure_offset=measure_offset,
                                   mmrest_groups=mmrest_groups,
-                                  system_layout=_system_layout)
+                                  system_layout=_system_layout,
+                                  groups_phys=groups_phys)
 
     # Pass 14: pulizia finale rhythm/notazione (coordinate definitive).
     # 14a: connettori tavola che superano il bottom della propria riga
@@ -17450,7 +17646,11 @@ def main():
     key_sig_breaks = {idx for idx in key_sig_changes_dict if idx > 0}
     # Passa il dict completo a extract_single_part_mscz per ricostruire i KeySig intermedi
     single_part_mscz = extract_single_part_mscz(input_mscz, part_index=part_index, key_sig_changes=key_sig_changes_dict, rhythm_mode=rhythm_mode)
-    accessible_mscz, initial_rest_measures, mmrest_groups = make_accessible_mscz(single_part_mscz, accessible_mscz, part_index=part_index, rhythm_mode=rhythm_mode, key_sig_changes=key_sig_breaks)
+    accessible_mscz, initial_rest_measures, mmrest_groups, groups_phys = make_accessible_mscz(single_part_mscz, accessible_mscz, part_index=part_index, rhythm_mode=rhythm_mode, key_sig_changes=key_sig_breaks)
+    # 7 Ott 2026 (collasso fisico): sanity check globale (Fable 5) —
+    # fisiche + somma(count-1) == logiche.
+    if groups_phys:
+        print(f"  Mappatura fisico→logico: {groups_phys} (phys2log applicata in numerazione/tavola)")
     print(f"  ✓ {accessible_mscz} (spatium={SPATIUM}, staffLineWidth={STAFF_LINE_WIDTH})")
     
     # ri-estrarre le note dal .mscz accessibile (dopo split MMRest)
@@ -17462,8 +17662,18 @@ def main():
     # (che va in segfault con MuseScore a causa degli MMRest nativi).
     # Il file originale ha 140 battute logiche con measure_idx 0-139, che
     # corrispondono alle battute reali del brano per il mapping note→battute.
-    note_info = extract_notes_via_music21(input_mscz, part_index=part_index)
-    print(f"  Ri-estratte {len(note_info['notes'])} note dal file originale (via music21, tie-aware)")
+    # 7 Ott 2026 (collasso fisico, consulto Fable 5): note_info va estratto dal
+    # file COLLASSATO (indici FISICI) — il SVG renderizza le battute fisiche e il
+    # matcher lavora tutto in fisico. La conversione in logico avviene SOLO alla
+    # presentazione (numeri/tavola) via _phys2log. Con l'espansione di un tempo
+    # (fisiche==logiche) questo ritorno coincideva col file originale; col
+    # collasso MUST usare accessible_mscz.
+    if groups_phys:
+        note_info = extract_notes_via_music21(accessible_mscz, part_index=part_index)
+        print(f"  Ri-estratte {len(note_info['notes'])} note dal file COLLASSATO (indici fisici, tie-aware)")
+    else:
+        note_info = extract_notes_via_music21(input_mscz, part_index=part_index)
+        print(f"  Ri-estratte {len(note_info['notes'])} note dal file originale (via music21, tie-aware)")
     print(f"  measure_idx range: 0-{max(n['measure_idx'] for n in note_info['notes'])}")
     print()
     
@@ -17571,7 +17781,7 @@ def main():
             _max_sectors = (globals().get('_MAX_SECTORS_OVERRIDE') or 8) - 2
         print(f"  → Nuovo packing: _MAX_SECTORS_OVERRIDE = {_max_sectors} (tentativo {_attempt + 2})")
         globals()['_MAX_SECTORS_OVERRIDE'] = _max_sectors
-        accessible_mscz, initial_rest_measures, mmrest_groups = make_accessible_mscz(
+        accessible_mscz, initial_rest_measures, mmrest_groups, groups_phys = make_accessible_mscz(
             single_part_mscz, accessible_mscz, part_index=part_index,
             rhythm_mode=rhythm_mode, key_sig_changes=key_sig_breaks)
         svg_files = export_svg(accessible_mscz, svg_prefix)
@@ -17621,6 +17831,7 @@ def main():
                                 measure_offset=measure_offset,
                                 initial_rest_measures=initial_rest_measures if i == 0 else 0,
                                 mmrest_groups=mmrest_groups,
+                                groups_phys=groups_phys,
                                 rhythm_mode=rhythm_mode,
                                 key_sig_changes_dict=key_sig_changes_dict,
                                 beam_synth=beam_synth)
