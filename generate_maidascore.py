@@ -1481,6 +1481,18 @@ def extract_single_part_mscz(input_mscz, part_index=0, key_sig_changes=None, rhy
                     beam_start_ok = last_elem_is_rest is not True
                     last_elem_is_rest = False
                     bm_info = orig_beam_modes.get((m_idx, chord_idx))
+                    # 8 Ott 2026 (bug travature semicrome assenti, A Fifth of
+                    # Beethoven): un gruppo che INIZIA subito dopo una pausa
+                    # è legittimo (la pausa è PRIMA del gruppo, la travatura
+                    # non la attraversa). Il filtro anti-pausa deve bloccare
+                    # solo le note che CONTINUANO una travatura esistente
+                    # (mid/end), mai un 'begin' che apre un nuovo gruppo.
+                    # Prima: beam_start_ok False dopo un rest scartava anche
+                    # il 'begin' → MuseScore riceveva continue/end senza begin
+                    # → normalizzava TUTTE le note del gruppo a BeamMode 'no'
+                    # → flag singole invece delle travature.
+                    if bm_info and bm_info[0] in ('begin', 'begin16'):
+                        beam_start_ok = True
                     # Determine if this note ends a beam group:
                     # it ends if the PREVIOUS chord had a beam mode (begin/mid)
                     # but this one doesn't (none), OR it's the last chord.
@@ -3491,6 +3503,8 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
                     _extra_tav += _gc - 1
         for m_idx, (m_start, m_end) in enumerate(measures):
             global_measure_idx = system_start_measure + m_idx
+            if os.environ.get('MAIDA_DEBUG_TAV'):
+                print(f"  [TAV-DBG] sys_idx={sys_idx} m_idx={m_idx} g={global_measure_idx} bounds=({m_start:.0f},{m_end:.0f}) w={m_end-m_start:.0f}")
             # 7 Ott 2026 (collasso fisico): le battute interne non esistono più
             # (rimosse dal collassatore) — il vecchio shift _tav_log_map non
             # serve. L'indice logico (per TS) = _phys2log(fisico).
@@ -3555,16 +3569,70 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
                         'notes': [n],
                     })
                 
+                # 8 Ott 2026 (bug tavola non simmetrica b14, Marco): le celle
+                # devono essere centrate sotto le FIGURE reali del pentagramma
+                # (i dischi). Le pause non hanno center_x da processed_notes:
+                # si parsano dal SVG (path class="Rest" con matrix). Il tag può
+                # avere attributi extra (data-repos) — mai assumere l'ordine.
+                _rest_pos_used = set()
+                _svg_rests = []
+                for _rm in re.finditer(r'<path class="Rest"([^>]*)>', svg_content):
+                    _ra = _rm.group(1)
+                    _trm = re.search(r'matrix\(([\d.eE+-]+),([\d.eE+-]+),([\d.eE+-]+),([\d.eE+-]+),([\d.eE+-]+),([\d.eE+-]+)\)', _ra)
+                    _dm = re.search(r'd="([^"]+)"', _ra)
+                    if not (_trm and _dm):
+                        continue
+                    _a, _b, _c2, _dd, _e2, _f2 = map(float, _trm.groups())
+                    _pts = [float(v) for v in re.findall(r'-?\d+\.?\d*', _dm.group(1))]
+                    _xs, _ys = [], []
+                    for _j in range(0, len(_pts) - 1, 2):
+                        _xs.append(_a * _pts[_j] + _c2 * _pts[_j+1] + _e2)
+                        _ys.append(_b * _pts[_j] + _dd * _pts[_j+1] + _f2)
+                    if not _xs:
+                        continue
+                    _svg_rests.append(((min(_xs) + max(_xs)) / 2.0,
+                                       (min(_ys) + max(_ys)) / 2.0))
                 for r in measure_rests:
                     onset = r.get('onset', 0.0)
                     dur = DURATION_BEATS.get(r.get('duration_type', 'quarter'), 1.0)
                     if r.get('dots', 0) > 0:
                         dur *= 1.5
+                    # Centro reale della pausa: la più vicina per X entro i
+                    # bounds della battuta e nella banda Y del sistema.
+                    _r_cx = None
+                    _best = None
+                    for _ri, (_rx, _ry) in enumerate(_svg_rests):
+                        if _ri in _rest_pos_used:
+                            continue
+                        if not (m_start - 60 <= _rx <= m_end + 60):
+                            continue
+                        if not (top_y - 300 <= _ry <= bottom_y + 300):
+                            continue
+                        if _best is None or abs(_rx - (m_start + m_width / 2)) < _best[0]:
+                            pass  # si scelgono in ordine di onset sotto
+                    # assegna in ordine di onset: la prima pausa non ancora
+                    # usata (da sinistra) nell'ordine con cui MuseScore le
+                    # renderizza ≈ ordine di onset
+                    # Candidati = TUTTE le pause SVG nel range (non filtrate
+                    # per consumo): l'evento i-esimo (per onset) prende la
+                    # i-esima pausa da sinistra. Le pause consumate da eventi
+                    # precedenti della stessa misura sono esattamente le
+                    # prime _n_rest_before — quindi l'indice è stabile anche
+                    # ricostruendo la lista completa.
+                    _cands = sorted([(_rx, _ri) for _ri, (_rx, _ry) in enumerate(_svg_rests)
+                                     if m_start - 60 <= _rx <= m_end + 60
+                                     and top_y - 300 <= _ry <= bottom_y + 300])
+                    _n_rest_before = sum(1 for _pr in measure_rests
+                                         if _pr.get('onset', 0.0) < onset - 0.01)
+                    if _cands and _n_rest_before < len(_cands):
+                        _r_cx = _cands[_n_rest_before][0]
+                        _rest_pos_used.add(_cands[_n_rest_before][1])
                     events_timeline.append({
                         'onset': onset,
                         'duration': dur,
                         'type': 'rest',
                         'rest': r,
+                        'center_x': _r_cx,
                     })
                 
                 # Merge chord notes (same onset) into single events
@@ -3590,11 +3658,48 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
                 # Una pausa eighth deve essere PIÙ LARGA di una 16th
                 # perché dura il doppio. Rimpicciolire la cella confonde la percezione temporale.
                 
+                # 8 Ott 2026 (bug tavola non simmetrica b14, Marco): le celle
+                # si ancorano ai CENTRI REALI delle figure (dischi e pause),
+                # non alla formula onset→X: in multi-time-sig (2/4, 3/4) la
+                # formula usa bpm/bounds della battuta SBAGLIATA e comprime le
+                # celle a sinistra. Regola: se un evento ha centro reale c_i,
+                # la cella copre da metà(tra centro precedente e c_i) a metà
+                # (tra c_i e centro successivo); la prima cella parte da
+                # m_start, l'ultima finisce a m_end. Eventi senza centro reale
+                # usano la vecchia formula onset-based.
+                _centers = []
                 for e in events_timeline:
+                    if e['type'] == 'note':
+                        _centers.append(e['notes'][0].get('center_x', e['notes'][0].get('x')))
+                    else:
+                        _centers.append(e.get('center_x'))
+                _has_real = any(c is not None for c in _centers)
+
+                for e_idx, e in enumerate(events_timeline):
                     onset = e['onset']
                     dur = e['duration']
-                    cell_x = m_start + (onset / bpm) * m_width
-                    cell_w = (dur / bpm) * m_width
+                    _c_me = _centers[e_idx]
+                    _c_prev = _centers[e_idx - 1] if e_idx > 0 else None
+                    _c_next = _centers[e_idx + 1] if e_idx + 1 < len(_centers) else None
+                    if _has_real and _c_me is not None:
+                        _x0 = ((_c_prev + _c_me) / 2.0) if _c_prev is not None else m_start
+                        _x1 = ((_c_me + _c_next) / 2.0) if _c_next is not None else m_end
+                        cell_x = max(m_start, _x0)
+                        cell_w = min(m_end, _x1) - cell_x
+                    elif _has_real and _c_me is None:
+                        # evento senza centro reale: vecchia formula, ma limitata
+                        # ai midpoint dei centri reali circostanti
+                        cell_x = m_start + (onset / bpm) * m_width
+                        cell_w = (dur / bpm) * m_width
+                        if _c_prev is not None:
+                            cell_x = max(cell_x, (_c_prev + cell_x) / 2.0)
+                        if _c_next is not None:
+                            cell_w = min(cell_w, (_c_next + cell_x) / 2.0 - cell_x)
+                    else:
+                        cell_x = m_start + (onset / bpm) * m_width
+                        cell_w = (dur / bpm) * m_width
+                    if cell_w <= 0:
+                        cell_w = MIN_CELL_W
                     cell_w_vis = cell_w
                     cell_x_vis = cell_x
                     
@@ -3624,10 +3729,17 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
                         text_x = cell_x_vis + font_size_est * 0.7
                         text_anchor = "start"
                     elif e['type'] == 'rest':
-                        # Pausa: allineata a sinistra come minime/semibrevi
-                        font_size_est = min(100, max(40, cell_w_adj * 0.25))
-                        text_x = cell_x_vis + font_size_est * 0.5
-                        text_anchor = "start"
+                        # Pausa: allineata a sinistra come minime/semibrevi.
+                        # 8 Ott 2026: se abbiamo il centro reale della pausa
+                        # (parsato dal SVG), il testo va centrato SOTTO la
+                        # pausa disegnata nel pentagramma (simmetria figure).
+                        if _c_me is not None:
+                            text_x = _c_me
+                            text_anchor = "middle"
+                        else:
+                            font_size_est = min(100, max(40, cell_w_adj * 0.25))
+                            text_x = cell_x_vis + font_size_est * 0.5
+                            text_anchor = "start"
                     else:
                         text_x = cell_x_vis + cell_w_adj / 2
                         text_anchor = "middle"
@@ -3765,13 +3877,29 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
                         n_words = len(rest_words)
                         sec_w = cell_w_adj / n_words
                         wf_size = min(100, max(40, sec_w * 0.25))
+                        # 8 Ott 2026: parola centrata sotto la pausa reale
+                        # (simmetria figure↔tavola) quando il centro è noto.
+                        _word_cx = _c_me if (_c_me is not None and n_words == 1) else None
                         for wi, word in enumerate(rest_words):
                             wx = cell_x_vis + wi * sec_w
+                            _txt_dx = None  # offset testo per ancorarlo alla pausa
+                            if _word_cx is not None and n_words == 1:
+                                # la CELLA resta nel suo slot midpoint (senza
+                                # buchi/overlap con le celle adiacenti), ma la
+                                # PAROLA va centrata sotto la pausa reale
+                                # (clamp nei bordi della cella)
+                                _txt_dx = _word_cx - (wx + sec_w / 2.0)
                             tavola_svg += (f'<rect x="{wx:.1f}" y="{tavola_top:.1f}" '
                                           f'width="{sec_w:.1f}" height="{tavola_row_height}" '
                                           f'fill="#111111" rx="8" '
                                           f'stroke="#111111" stroke-width="2"/>')
-                            tavola_svg += (f'<text x="{wx + sec_w/2:.1f}" '
+                            _tx_w = wx + sec_w / 2.0
+                            if _txt_dx is not None:
+                                _half_w = wf_size * 0.62 * len(word) / 2.0
+                                _tx_w = max(wx + 4 + _half_w,
+                                            min(wx + sec_w - 4 - _half_w,
+                                                wx + sec_w / 2.0 + _txt_dx))
+                            tavola_svg += (f'<text x="{_tx_w:.1f}" '
                                           f'y="{tavola_top + tavola_row_height/2 + wf_size*0.35:.1f}" '
                                           f'text-anchor="middle" font-family="Atkinson Hyperlegible" '
                                           f'font-size="{wf_size:.0f}" font-weight="700" '

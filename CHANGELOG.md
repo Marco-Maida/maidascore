@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.7] - 8 Ott 2026
+### Fixed
+- Bug travature semicrome assenti (flag singole al posto delle travature): l'iniezione dei beam mode scartava il tag 'begin' della prima nota di un gruppo quando la nota precedente era una PAUSA (regola anti-beam-attraverso-pausa applicata anche ai 'begin') → MuseScore riceveva continue/end senza begin e normalizzava TUTTO il gruppo a BeamMode 'no' → flag singole. Fix: un 'begin' è sempre iniettabile (apre un NUOVO gruppo, la pausa prima non viene attraversata); il filtro pausa vale solo per mid/end.
+- Bug tavola sonora non simmetrica alle figure (multi-time-sig, es. battuta 14 in 2/4): le celle erano posizionate con formula onset→X che usa bpm/bounds dell'indice SBAGLIATO (lookup logico su time_sigs_per_measure fisico) e non teneva conto dei centri reali dei dischi. Fix: celle ancorate ai CENTRI REALI delle figure — cella dell'evento = da metà(centro precedente, centro proprio) a metà(centro proprio, centro successivo); le pause (senza center_x) vengono parsate dal SVG (path class="Rest") e assegnate per ordine di onset; parola pausa ("UN"/"UNO") centrata sotto la pausa reale con clamp nei bordi della cella.
+
+# Changelog
+
 ## [1.4.6] - 8 Ott 2026
 ### Fixed
 - Bug intro cancellata: la battuta prima di un MMRest veniva rimossa se conteneva ANCHE pause ("&lt;Rest&gt; in m0"), anche quando conteneva NOTE (es. intro con pause di semicroma) → la prima battuta suonata spariva e la numerazione slittava di 1 (A Fifth of Beethoven b1). Ora la M0 si rimuove solo se è pausa PURA (nessun Chord/Note).
