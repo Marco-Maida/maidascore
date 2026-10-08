@@ -1850,7 +1850,14 @@ def make_accessible_mscz(input_mscz, output_mscz, part_index=0, rhythm_mode=Fals
                     if len(all_m) >= 2:
                         m0 = all_m[0].group(1)
                         m1 = all_m[1].group(1)
-                        if ('<Rest>' in m0 and '<multiMeasureRest>' not in m0 and
+                        # 8 Ott 2026 (bug intro mangiata): la battuta prima dell'MMRest
+                        # va rimossa SOLO se è una pausa PURA (nessuna nota). Il check
+                        # originale ('<Rest>' in m0) matchava anche battute con NOTE +
+                        # pause brevi (es. intro con pause di semicroma) → l'intera
+                        # prima battuta suonata veniva cancellata e la numerazione
+                        # slittava di 1.
+                        if ('<Rest>' in m0 and '<Chord>' not in m0 and '<Note>' not in m0 and
+                            '<multiMeasureRest>' not in m0 and
                             '<multiMeasureRest>' in m1):
                             # Salva il KeySig da M0 prima di rimuoverla
                             ks_match = re.search(r'<KeySig>.*?</KeySig>', m0, re.DOTALL)
@@ -10971,7 +10978,7 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             return f'<path class="Rest" transform="matrix({new_a:.4f},{b},{c},{new_d:.4f},{tx:.2f},{new_ty:.2f})"'
     
     modified = re.sub(
-        r'<path class="Rest" transform="matrix\(([\d.\-]+),([\d.\-]+),([\d.\-]+),([\d.\-]+),([\d.\-]+),([\d.\-]+)\)"(?:\s+d="([^"]*)")?',
+        r'<path class="Rest" transform="matrix\(([\d.\-]+),([\d.\-]+),([\d.\-]+),([\d.\-]+),([\d.\-]+),([\d.\-]+)\)"(?:[^>]*?\s+d="([^"]*)")?',
         enlarge_rest, modified
     )
     if rest_count > 0:
@@ -11241,6 +11248,40 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
 
     if rhythm_mode:
         modified = _rest_dedup(modified)
+    
+    # 2f1b. SQUEEZE 16TH RESTS (8 Ott 2026, bug pause sovrapposte alle note)
+    # Il glifo della pausa di semicroma renderizzato da MuseScore (matrix a≈1.72)
+    # è largo ~195px, ma nel layout MaidaScore il settore di una semicroma è
+    # ~140px → la pausa invade le teste adiacenti (gap 0px dalle teste r58).
+    # Fix: restringere orizzontalmente SOLO i rest 16th (d che inizia con M0, o
+    # M113) a larghezza target ~100px, mantenendo il CENTRO del glifo fermo:
+    #   x' = a*k*x + tx'  con  tx' = tx + cx*(1-k),  cx = centro attuale pagina
+    # La scala Y resta invariata. Entrambe le modalità. Va eseguito QUI (fine
+    # post-processing, dopo il repositioning e il clone) perché i rest vengono
+    # ricreati/riposizionati nei pass precedenti.
+    _squeeze_repls = []
+    for _rm in re.finditer(
+            r'<path class="Rest"\s+transform="matrix\(([\d.]+),([\d.]+),([\d.]+),([\d.]+),([\d.]+),([\d.]+)\)"\s+d="(M(?:0,|113)[^"]*)"',
+            modified):
+        _a = float(_rm.group(1)); _tx = float(_rm.group(5))
+        _pts = [float(v) for v in re.findall(r'-?\d+\.?\d*', _rm.group(7))]
+        _xs = _pts[0::2]
+        if not _xs:
+            continue
+        _w_cur = (max(_xs) - min(_xs)) * _a
+        if _w_cur < 150:  # già stretta (o glifo diverso): skip
+            continue
+        _cx_svg = (min(_xs) + max(_xs)) / 2.0 * _a + _tx
+        _k = 100.0 / _w_cur
+        _a_new = _a * _k
+        _tx_new = _tx + _cx_svg * (1.0 - _k)
+        _old_m = f'matrix({_rm.group(1)},{_rm.group(2)},{_rm.group(3)},{_rm.group(4)},{_rm.group(5)},{_rm.group(6)})'
+        _new_m = f'matrix({_a_new:.4f},{_rm.group(2)},{_rm.group(3)},{_rm.group(4)},{_tx_new:.2f},{_rm.group(6)})'
+        _squeeze_repls.append((_rm.start(1), _rm.end(6), _old_m, _new_m))
+    for _s, _e, _o, _n in sorted(_squeeze_repls, key=lambda r: r[0], reverse=True):
+        modified = modified[:_s] + _n + modified[_e:]
+    if _squeeze_repls:
+        print(f"    Squeeze 16th rests: {len(_squeeze_repls)} pause di semicroma compresse (anti-overlap)")
     
     # 2f2. Enlarge NoteDots (augmentation dots for dotted notes AND rests)
     # MuseScore renders dots as <path class="NoteDot"> with small scale.

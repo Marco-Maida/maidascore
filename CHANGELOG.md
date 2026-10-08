@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.6] - 8 Ott 2026
+### Fixed
+- Bug intro cancellata: la battuta prima di un MMRest veniva rimossa se conteneva ANCHE pause ("&lt;Rest&gt; in m0"), anche quando conteneva NOTE (es. intro con pause di semicroma) → la prima battuta suonata spariva e la numerazione slittava di 1 (A Fifth of Beethoven b1). Ora la M0 si rimuove solo se è pausa PURA (nessun Chord/Note).
+- Bug pause di semicroma sovrapposte alle note (rhythm): il repositioning aggiunge data-repos="1" tra transform e d → il regex di enlarge_rest (gruppo opzionale d=) non catturava più il path → TUTTE le pause (anche 16th) prendevano la scala quarter (glifo 195px) e invadevano le teste adiacenti. Fix regex: (?:[^&gt;]*?\s+d="([^"]*)")? + pass SQUEEZE 16th (glifi residui >150px compressi a 100px centrati).
+
+# Changelog
+
 ## [1.4.5] - 8 Ott 2026
 ### Fixed
 - Validatore: confrontava i cerchi SVG col file single_part (note legate cross-misura NON fuse, 152) invece dell'.mscz accessibile realmente renderizzato (MuseScore fonde le coppie legate in note prolungate, 144) → falso "bug silenzioso" su brani con tie cross-misura (es. A Fifth of Beethoven). Ora validate_all_pages riceve l'accessible_mscz.
