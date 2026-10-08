@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.9] - 8 Ott 2026
+### Fixed
+- Pause di semicroma sovrapposte alle semicrome (battute con pausa 16th + gruppo di semicrome nello stesso settore): half-width reale del glifo 16th (52px, non 44), ramo tollerante nel decollide (gap 8px, bordi estesi), self-check anti-stack corretto.
+- Pausa di semicroma spuria dentro il box MMRest a battuta 2: la pausa whole della battuta fisica del gruppo collassato non va clonata (il box la rappresenta già).
+
+# Changelog
+
 ## [1.4.8] - 8 Ott 2026
 ### Fixed
 - Linee verticali nere anomale a fianco delle semibrevi: il fallback "crea gambo per teste senza gambo" del BeamSynthesizer fabbricava gambi h795 anche per le SEMIBREVI (teste aperte fill="white", che per natura non hanno gambo) — il pattern di estrazione del colore (fill="#xxxxxx") non matchava fill="white" e il gambo veniva creato nero (#000000). Fix: le teste aperte (fill white) sono escluse dalla fabbricazione di gambi ex-novo.
