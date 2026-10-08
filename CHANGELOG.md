@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.4.5] - 8 Ott 2026
+### Fixed
+- Validatore: confrontava i cerchi SVG col file single_part (note legate cross-misura NON fuse, 152) invece dell'.mscz accessibile realmente renderizzato (MuseScore fonde le coppie legate in note prolungate, 144) → falso "bug silenzioso" su brani con tie cross-misura (es. A Fifth of Beethoven). Ora validate_all_pages riceve l'accessible_mscz.
+
+# Changelog
+
 ## [1.4.4] - 8 Ott 2026
 ### Fixed
 - BeamSynthesizer BIND: vincolo di POSIZIONE temporale nel match gruppi→teste. Il greedy left-most non distingueva finestre con la stessa sequenza di raggi: il gruppo [D,B,G,D] (crome a onset 2.0-3.5 di una battuta) bindava sulle teste [B,D,B,G] (onset 1.5-3.0) slittato di una posizione — con la croma finale orfana (gambo senza travatura) e, nelle battute [quarter, eighth, quarter, eighth, eighth], una beam larga che attraversava la semiminima. FIX: k = numero di note della battuta con onset precedente al gruppo; la prima testa della finestra deve avere esattamente k teste prima di sé nel range X della battuta (banda Y ±900 sopra / +600 sotto per escludere le teste della tavola sonora; range X puro senza margini per non includere le ultime teste della battuta precedente; conteggio su TUTTE le teste anche già consumate per i gruppi multipli nella stessa battuta).

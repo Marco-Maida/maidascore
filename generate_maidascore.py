@@ -17973,7 +17973,7 @@ def main():
     try:
         from validate_maidascore import validate_all_pages
         val_dir = os.path.dirname(prefix) or '.'
-        val_result = validate_all_pages(val_dir, single_part_mscz, prefix=prefix)
+        val_result = validate_all_pages(val_dir, accessible_mscz, prefix=prefix)
         print(val_result.report())
         if val_result.ok:
             print("  ✓ Validazione superata")
