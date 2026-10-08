@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.3] - 8 Ott 2026
+### Fixed
+- Notazione: box multi-measure rest disegnato sopra battute con note reali (il gruppo di pause matchava per coincidenza battute logiche di un'altra zona della partitura).
+- Notazione: stanghette e tavole cancellate su interi sistemi lontani dal gruppo di pause (il gruppo di 36 battute matchava anche le battute della pagina successiva, e la routine di pulizia rimuoveva barline del sistema sbagliato).
+- Con il collasso fisico attivo ogni gruppo di pause occupa una sola battuta fisica: il matching ora è esatto (una battuta per gruppo) invece dell'intervallo storico pensato per il layout espanso.
+
+## [1.4.2] - 7 Ott 2026
 ## [1.4.2] - 7 Ott 2026
 ### Fixed
 - Sistemi misti (battute reali + gruppo di pause collassato): la fusione delle barline del gruppo di pause — pensata per il layout espanso, dove il gruppo occupava N colonne — ingoiava la battuta reale successiva. Il sistema perdeva una battuta: il numero di battuta non veniva disegnato e le sue note restavano parcheggiate a fine riga, sopra la tavola della battuta precedente. Con il collasso fisico il gruppo occupa una sola colonna e non viene più fuso.

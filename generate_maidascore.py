@@ -9528,6 +9528,9 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             # 7 Ott 2026 (collasso fisico): il numero mostrato è LOGICO —
             # conversione fisico→logico via _phys2log (una sola funzione pura).
             mn_num = _phys2log(m_idx) + 1
+            if os.environ.get('MAIDA_DBG_MN'):
+                print(f"  [mn-dbg] sys_top={sys_top_y:.0f} cell=[{m_start:.0f},{m_end:.0f}] m_idx={m_idx} mn={mn_num}")
+
             mn_x = m_start + 20
             # Check if any high note circle overlaps with the measure number position
             # Number spans roughly mn_x to mn_x + 120 (font 160, 1-2 digits)
@@ -11416,19 +11419,25 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 _logical = _sys_g0
                 for _mi_loc, (m_start, m_end) in enumerate(measures):
                     _gm = _logical
-                    if _gm not in _mmrest_start_set_post:
-                        all_meas_info.append((_gm, m_start, m_end, sk, si))
-                        _logical += 1
-                    else:
-                        # battuta collassata MMRest: 1 indice logico ma il numero
-                        # mostrato (_mmrest_map_mmr[_gm]) copre gm..gm+count-1.
-                        # La pulizia usa la finestra X di QUESTA sola battuta.
-                        all_meas_info.append((_gm, m_start, m_end, sk, si))
-                        _logical += _mmrest_map_mmr.get(_gm, 1)
+                    all_meas_info.append((_gm, m_start, m_end, sk, si))
+                    # 8 Ott 2026: _gm è FISICO (avanza di 1 anche sui box) —
+                    # vedi commento sopra. Il numero logico lo calcola _phys2log.
+                    _logical += 1
                 global_m_idx = _logical
 
         
         # Per ogni gruppo MMRest, trova le battute che appartengono a questa pagina
+        # 8 Ott 2026 (bug box "8" sovrapposto alle note b53-55 + stanghette
+        # mancanti b56-71, JTLM notazione): il confronto dev'essere FISICO da
+        # entrambi i lati. gm_idx era un IBRIDO: nelle pagine che contengono un
+        # box il salto `_logical += count` produceva indici LOGICI (pag1 dopo
+        # il box 36: gm 36..54), nelle pagine senza box restava FISICO (pag2:
+        # gm 20..35). Il gruppo fisico (52,8) = b89-96: matchava per coincidenza
+        # le battute LOGICHE gm 52-54 di pag1 → box "8" disegnato sopra note
+        # reali b53-55, e in pag2 il gruppo (36,36) matchava gm 20-35 → secondo
+        # box "36" + pulizia barline del sistema (stanghette b56-71 cancellate).
+        # Ora gm_idx è SEMPRE FISICO (niente salto): il numero di battuta
+        # logico resta compito di _phys2log, non di questa mappatura.
         for grp_start, grp_count in mmrest_groups:
             # l'MMRest è 1 battuta fisica nel SVG (non splittata).
             # grp_start = indice della battuta MMRest, grp_count = numero mostrato.
@@ -11438,8 +11447,16 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             # raccogli TUTTE le battute fisiche del gruppo (start + count-1),
             # non solo la prima: la pulizia (pause, settori grigi, barlines,
             # tavola) deve coprire l'intero intervallo del gruppo.
+            # 8 Ott 2026: col collasso FISICO il gruppo = 1 sola battuta (gm ==
+            # grp_start): il range storico [start, start+count) serviva al layout
+            # ESPANSO e matchava per coincidenza battute di altre pagine (gruppo
+            # (0,36) che raccoglieva gm 20-35 di pag2 → box duplicato + pulizia
+            # barline del sistema sbagliato).
+            _exact_phys = bool(groups_phys)
             for gm_idx, m_start, m_end, sk, si in all_meas_info:
-                if grp_start <= gm_idx < grp_start + grp_count:
+                _in_grp = (gm_idx == grp_start) if _exact_phys else (
+                    grp_start <= gm_idx < grp_start + grp_count)
+                if _in_grp:
                     grp_measures.append((gm_idx, m_start, m_end, sk, si))
 
             
@@ -11604,6 +11621,10 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             modified = modified.replace('</svg>', mmrest_svg + '\n</svg>')
             
             print(f"    MMRest: centro={rect_center_x:.0f}, numero={display_count}, sistemi={len(by_system)}")
+            if os.environ.get('MAIDA_DBG_MM'):
+                for _sk, _info in by_system.items():
+                    print(f"    [mm-dbg] sk={_sk} sys_top={_info['sys_info']['top']:.0f} meas={_info['measures']}")
+
             # 15 Set 2026 (bug pausa b5 scomparsa): pulizia dei marker DOPO il
             # blocco MMRest — remove_rests_sys usa i marker data-repos/data-clone
             # per non cancellare le pause delle battute reali del sistema misto.
