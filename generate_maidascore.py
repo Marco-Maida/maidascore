@@ -5990,6 +5990,14 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 m_rests = rests_by_measure.get(m_idx, [])
                 if not m_rests:
                     continue
+                # 8 Ott 2026 (bug pausa di semicroma nel box MMRest): la
+                # battuta fisica di un GRUPPO MMRest collassato non deve
+                # clonare pause — il box "N battute di pausa" della tavola
+                # rappresenta già la semantica del gruppo. La pausa whole
+                # della m2 veniva clonata col primo glifo ANY del sistema
+                # (una 16th rest) dentro l'area del box MMRest.
+                if any(m_idx == _gs for _gs, _gc in (mmrest_groups or [])):
+                    continue
                 if os.environ.get('MAIDA_DEBUG_RESTS'):
                     print(f"      [rest-debug] sys grp={grp_idx} m_idx={m_idx} m_rests={m_rests} matched={_matched_rest_indices.get(m_idx, set())}")
 
@@ -11147,6 +11155,9 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             rx, ry, rsc = float(m.group(3)), float(m.group(4)), float(m.group(2))
             # 13 Set 2026: half-width REALE del glyph (il path parte da tx ma è largo
             # ~45-50 unità, non 75). Usare 75 sposta troppo le pause.
+            # 8 Ott 2026 (bug pause 16th sovrapposte): il glifo 16th post-scale
+            # è largo ~104px (semi-ampiezza 52): con half_w=44 il decollide
+            # lasciava 8px di overlap col cerchio adiacente.
             rest_entries.append([m, rx, ry, 48.0 * rsc, rx + 48.0 * rsc])
         replacements = []
         for m, rx, ry, half_w, center in rest_entries:
@@ -11296,6 +11307,60 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             # il candidato deve stare nel settore di origine della pausa
             _cand_in_sect = [c for c in cands
                              if _orig_sect_start - 2 <= c - half_w and c + half_w <= _orig_sect_start + _sect_w + 2]
+            if not _cand_in_sect and half_w < 50:
+                # 8 Ott 2026 (bug pause 16th sovrapposte alle semicrome): le
+                # pause di semicroma (glifo piccolo ~104px) che condividono il
+                # settore con un gruppo di semicrome non trovano candidati con
+                # il gap standard 18px e il bordo battuta rigido. Secondo
+                # tentativo TOLLERANTE: gap ridotto a 8px, bordi battuta
+                # estesi di ±14px, settore di origine esteso ai bordi reali
+                # della battuta (il settore grigio può contenere pausa+gruppo).
+                _near_tol = [(cx_n, cr_n) for cx_n, cr_n in near
+                             if m_start - 10 <= cx_n <= m_end + 10]
+                # 8 Ott 2026: semi-ampiezza REALE del glifo 16th = 52px
+                # (104px di larghezza): con half_w=44 i candidati tolleranti
+                # lasciavano 8px di sovrapposizione col cerchio adiacente.
+                if half_w < 50:
+                    half_w = 52.0
+
+                def _collides_tol(cx_test):
+                    # gap ridotto 8px (il glifo 16th è piccolo: 8px di respiro
+                    # bastano, 18px rendevano impossibile ogni candidatura).
+                    # NB: i candidati sono costruiti ESATTAMENTE a cr+half_w+8
+                    # dal cerchio: il confronto stretto '<' è borderline al
+                    # floating point → usa 7 nel check (1px di grazia).
+                    if any(abs(cx - cx_test) < cr + half_w + 7 for cx, cr in _near_tol):
+                        return True
+                    for ox, oy in rest_xs:
+                        if abs(oy - ry) > 60:
+                            continue
+                        if abs((ox + 48.0) - cx_test) < 48.0 + half_w + 8 and abs(ox - rx) > 1:
+                            return True
+                    return False
+                _tol_cands = []
+                for cx_n, cr_n in _near_tol:
+                    for cand in (cx_n - (cr_n + half_w) - 8, cx_n + (cr_n + half_w) + 8):
+                        if m_start - 12 <= cand - half_w and cand + half_w <= m_end + 12:
+                            if not _collides_tol(cand):
+                                _tol_cands.append(cand)
+                # candidato INIZIO BATTUTA (prima della prima testa): la pausa
+                # onset-based parte dal bordo sinistro: spesso è l'unica
+                # posizione libera col gruppo di semicrome a ridosso.
+                _first_head = min((cx for cx, cr in _near_tol), default=None)
+                if _first_head is not None:
+                    _c0 = m_start + half_w + 2
+                    # il candidato inizio-battuta è ammesso SOLO se resta nel
+                    # settore di origine della pausa (distanza dal centro
+                    # originale <= mezza ampiezza settore, ~300px in 4/4):
+                    # la pausa onset 3.0 non può finire sopra il beat 1.
+                    if (abs(_c0 - center) <= 300
+                            and _c0 + half_w <= _first_head - 58 - 8
+                            and not _collides_tol(_c0)):
+                        _tol_cands.append(_c0)
+                _sect_lo = m_start
+                _sect_hi = m_end
+                _cand_in_sect = [c for c in _tol_cands
+                                 if _sect_lo - 2 <= c - half_w and c + half_w <= _sect_hi + 2]
             if _cand_in_sect:
                 best = min(_cand_in_sect, key=lambda c: abs(c - center))
             else:
@@ -11312,7 +11377,10 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                     continue
                 # 15 Set 2026: non confrontare la pausa con la PROPRIA posizione
                 # (prepopolata da _occupied_rests) — bloccherebbe ogni candidato.
-                if abs(_oc - _my_center) < 1.0 and abs(_oc_y - ry) < 1.0:
+                # 8 Ott 2026: la prepopolazione usa 48*rsc come half-width ma il
+                # ramo tollerante 16th usa half_w=52: il self-check <1px non
+                # riconosceva la pausa stessa e la bloccava sul proprio posto.
+                if abs(_oc_y - ry) < 1.0 and abs(_oc - rx - 50.0) < 60.0:
                     continue
                 if abs(_oc - best) < 2 * half_w + 18:
                     _alts = [c for c in _cand_in_sect
