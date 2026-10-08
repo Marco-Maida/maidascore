@@ -16923,7 +16923,18 @@ def _bs_group(note_info):
     for n in note_info.get('notes', []):
         bm = n.get('beam_mode')
         lvls = n.get('beam_levels', 0)
-        if lvls == 0 or bm == 'no':
+        if lvls == 0 or bm == 'no' or bm is None:
+            # 8 Ott 2026 (bug cigni b4/b7/b10/11): una nota AUTO (bm=None,
+            # nessun beam esplicito da music21) è una croma/semicroma NON
+            # beamata → deve CHIUDERE il gruppo, mai aprirlo/proseguire.
+            # Il vecchio ramo `bm == 'begin' or not cur` apriva un gruppo con
+            # una nota AUTO: le 3 crome non beamate di b4 (E5-D5-C#5) si
+            # fondevano in un gruppo FALSO che consumava 3 teste extra nel
+            # greedy BIND → tutti i gruppi successivi slittavano di 3
+            # (b7 bindata su B-D-B-G con D finale orfana; b10/11 con beam
+            # che attraversa la semiminima). Le catene vere hanno SEMPRE
+            # start/continue/stop espliciti (injection 1:1 o auto-beam
+            # MuseScore), quindi AUTO puro = isolata.
             _flush()
             continue
         # confine di battuta: split incondizionato (mai beam cross-barline)
@@ -16933,7 +16944,7 @@ def _bs_group(note_info):
             _flush()
             cur = [n]
         else:
-            # 'mid' o AUTO (None) su nota beamabile: prosegue
+            # 'mid' PROSEGUE
             cur.append(n)
     _flush()
     _out = [g for g in groups if len(g) >= 2]
@@ -17016,6 +17027,35 @@ def _bs_bind(svg_content, groups, note_info, systems_bounds, meas_x=None, sys_fo
                     elif _ax[0] >= _gx1:
                         _gx1 = min(_gx1, (_gx1 + _ax[0]) / 2)
         best = None   # (score, sys_idx, [head_idx...])
+        # 8 Ott 2026 (bug cigni b7/b10/11, consulto engraving): vincolo di
+        # POSIZIONE temporale. Il greedy left-most non distingue finestre
+        # con la stessa sequenza di raggi: il gruppo b7 [D,B,G,D] (crome a
+        # onset 2.0-3.5) bindava sulle teste [B,D,B,G] (onset 1.5-3.0)
+        # slittato di una posizione — stessa sequenza r88, left-most vince.
+        # FIX: k = numero di NOTE della stessa battuta con onset precedente
+        # al gruppo; la PRIMA testa della finestra deve avere ESATTAMENTE k
+        # teste (qualsiasi raggio) prima di sé nel range X della battuta
+        # (stesso sistema). Le semiminime r110 contano nel conteggio teste
+        # (hanno onset nel note_info); le pause no (nessuna testa, nessuna
+        # nota — coerenti). Finestra errata [B(3210)..]: 1 testa prima ≠ 2
+        # (F# quarter + B isolata) → scartata. Finestra giusta [D(3530)..]:
+        # 2 teste prima ✓.
+        _pos_k = None
+        _pos_m = None
+        _g_meas = {n.get('measure_idx') for n in g}
+        _g_onsets = [n.get('onset') for n in g if n.get('onset') is not None]
+        if len(_g_meas) == 1 and _g_onsets:
+            _gm = next(iter(_g_meas))
+            _go = min(_g_onsets)
+            _k = 0
+            for n2 in note_info.get('notes', []):
+                if n2 is n and False:
+                    continue
+                o2 = n2.get('onset')
+                if n2.get('measure_idx') == _gm and o2 is not None and o2 < _go - 1e-9:
+                    _k += 1
+            _pos_k = _k
+            _pos_m = _gm
         _allowed_sys = None
         if sys_for_m:
             _sm = {sys_for_m.get(n.get('measure_idx')) for n in g}
@@ -17103,6 +17143,29 @@ def _bs_bind(svg_content, groups, note_info, systems_bounds, meas_x=None, sys_fo
                 _wins = [pool[i0:i0 + len(g)]
                          for i0 in range(len(pool) - len(g) + 1)]
             for win in _wins:
+                # 8 Ott 2026 (bug cigni): vincolo POSIZIONE — la prima testa
+                # della finestra deve avere esattamente _pos_k teste (qualsiasi
+                # raggio) prima di sé nel range X della battuta, stesso sistema.
+                # Scarta le finestre slittate di posizione (left-most ma con
+                # teste battuta-prima sbagliate).
+                if _pos_k is not None and meas_x:
+                    _mx = meas_x.get(_pos_m)
+                    if _mx:
+                        _w0x = heads[win[0]][0]
+                        _rt2, _rb2 = systems_bounds[sys_i]
+                        # Banda Y: ±900 sopra (ledger estreme a -840), ma
+                        # SOLO +600 sotto: le teste della TAVOLA SONORA stanno
+                        # a ~+850 dal bottom e inquinerebbero il conteggio
+                        # (bug cigni b9: nbefore=6≠3 per le teste tavola).
+                        # Conta TUTTE le teste (anche già usate): per gruppi
+                        # multipli nella stessa battuta le teste del gruppo
+                        # precedente sono consumate ma vanno contate nel k.
+                        _nbefore = sum(1 for h2 in heads
+                                        if h2[0] < _w0x - 1
+                                        and _mx[0] <= h2[0] < _mx[1]
+                                        and _rt2 - 900 <= h2[1] <= _rb2 + 600)
+                        if _nbefore != _pos_k:
+                            continue
                 # la finestra deve matchare la SEQUENZA dei raggi attesi
                 _pat_ok = all(heads[hi][2] in _exp_seq[k] for k, hi in enumerate(win))
                 if not _pat_ok:
