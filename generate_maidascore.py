@@ -12074,8 +12074,16 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 for _stx in _st:
                     _bs_used_xy.add((round(_stx['x']), round(_stx['tip_y'])))
         _bs_heads_chk = []
-        for _m_h in re.finditer(r'<circle cx="([\d.]+)" cy="([\d.]+)" r="([\d.]+)"',
+        for _m_h in re.finditer(r'<circle cx="([\d.]+)" cy="([\d.]+)" r="([\d.]+)"([^>]*?)>',
                                 modified):
+            # 8 Ott 2026 (linee verticali nere accanto alle semibrevi): le
+            # teste APERTE (fill="white", testa vuota) senza gambo sono
+            # SEMIBREVI — MuseScore non dà loro il gambo e nemmeno noi:
+            # niente fabbricazione ex-novo di gambi per teste aperte.
+            _attrs_h = _m_h.group(4)
+            _fill_m = re.search(r'fill="([^"]+)"', _attrs_h)
+            if _fill_m and _fill_m.group(1).lower() in ('white', '#ffffff', '#fff'):
+                continue
             _bs_heads_chk.append((float(_m_h.group(1)), float(_m_h.group(2)),
                                   float(_m_h.group(3))))
         _n_orphan = [0]

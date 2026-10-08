@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.4.8] - 8 Ott 2026
+### Fixed
+- Linee verticali nere anomale a fianco delle semibrevi: il fallback "crea gambo per teste senza gambo" del BeamSynthesizer fabbricava gambi h795 anche per le SEMIBREVI (teste aperte fill="white", che per natura non hanno gambo) — il pattern di estrazione del colore (fill="#xxxxxx") non matchava fill="white" e il gambo veniva creato nero (#000000). Fix: le teste aperte (fill white) sono escluse dalla fabbricazione di gambi ex-novo.
+
+# Changelog
+
 ## [1.4.7] - 8 Ott 2026
 ### Fixed
 - Bug travature semicrome assenti (flag singole al posto delle travature): l'iniezione dei beam mode scartava il tag 'begin' della prima nota di un gruppo quando la nota precedente era una PAUSA (regola anti-beam-attraverso-pausa applicata anche ai 'begin') → MuseScore riceveva continue/end senza begin e normalizzava TUTTO il gruppo a BeamMode 'no' → flag singole. Fix: un 'begin' è sempre iniettabile (apre un NUOVO gruppo, la pausa prima non viene attraversata); il filtro pausa vale solo per mid/end.
