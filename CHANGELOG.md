@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.10] - 9 Ott 2026
+### Fixed
+- Pause di minima sparite dal PDF (b26+): il pass Squeeze 16th rest matchava anche le half rest (prefisso M0,) e il replacement generava un transform invalido (doppio matrix) scartato da cairosvg.
+- Celle pausa della tavola non simmetriche alle pause sopra (b16-18): la cella nera ora è centrata sotto la pausa reale con larghezza proporzionale alla durata.
+
+# Changelog
+
 ## [1.4.9] - 8 Ott 2026
 ### Fixed
 - Pause di semicroma sovrapposte alle semicrome (battute con pausa 16th + gruppo di semicrome nello stesso settore): half-width reale del glifo 16th (52px, non 44), ramo tollerante nel decollide (gap 8px, bordi estesi), self-check anti-stack corretto.
