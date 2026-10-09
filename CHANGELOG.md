@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.12] - 9 Ott 2026
+### Fixed
+- Cella della minima puntata estesa alla durata reale (~80% battuta) anche quando la figura successiva è una pausa di qualsiasi durata (bug b8/b10/b18: la condizione v1.4.11 richiedeva dur <= 0.5 e con pausa quarter a fine battuta non scattava).
+- La cella della pausa eredita il confine condiviso: compatta (w 260px) e centrata sotto il proprio glifo.
+
+# Changelog
+
 ## [1.4.11] - 9 Ott 2026
 ### Fixed
 - Simmetria pause-celle nella tavola sonora: celle pausa centrate sotto il centro reale del glifo (cap larghezza allo spazio centrabile, floor 50px).
