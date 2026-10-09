@@ -3877,11 +3877,38 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
                         n_words = len(rest_words)
                         sec_w = cell_w_adj / n_words
                         wf_size = min(100, max(40, sec_w * 0.25))
+                        # 9 Ott 2026 (bug Marco: celle pausa non simmetriche alle
+                        # pause sopra): quando il centro reale della pausa è
+                        # noto e la cella ha UNA sola parola (UN per 16th/eighth,
+                        # UNO per quarter), la CELLA nera va centrata sotto la
+                        # pausa reale con larghezza ~proporzionale alla durata
+                        # (clampata dentro lo slot midpoint, senza buchi oltre
+                        # al CELL_GAP già esistente). Prima la cella occupava
+                        # l'intero slot midpoint: con una nota lunga (3/4 di
+                        # battuta) seguita da pausa+semicrome, la cella nera
+                        # partiva a metà strada nota→pausa e sembrava scritta
+                        # "sotto il vuoto", non sotto la pausa (b16-18 b5).
+                        _cell_x_new = cell_x_vis
+                        _cell_w_new = cell_w_adj
+                        if _c_me is not None and n_words == 1:
+                            try:
+                                _w_dur = (dur / bpm) * m_width if bpm else cell_w_adj
+                            except Exception:
+                                _w_dur = cell_w_adj
+                            _cell_w_new = min(cell_w_adj, max(140.0, _w_dur * 1.2))
+                            _cell_x_new = _c_me - _cell_w_new / 2.0
+                            # clamp dentro lo slot originale (niente overlap
+                            # con le celle adiacenti)
+                            if _cell_x_new < cell_x_vis:
+                                _cell_x_new = cell_x_vis
+                            if _cell_x_new + _cell_w_new > cell_x_vis + cell_w_adj:
+                                _cell_x_new = cell_x_vis + cell_w_adj - _cell_w_new
+                        sec_w = _cell_w_new / n_words
                         # 8 Ott 2026: parola centrata sotto la pausa reale
                         # (simmetria figure↔tavola) quando il centro è noto.
                         _word_cx = _c_me if (_c_me is not None and n_words == 1) else None
                         for wi, word in enumerate(rest_words):
-                            wx = cell_x_vis + wi * sec_w
+                            wx = _cell_x_new + wi * sec_w
                             _txt_dx = None  # offset testo per ancorarlo alla pausa
                             if _word_cx is not None and n_words == 1:
                                 # la CELLA resta nel suo slot midpoint (senza
@@ -11459,6 +11486,13 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
     for _rm in re.finditer(
             r'<path class="Rest"\s+transform="matrix\(([\d.]+),([\d.]+),([\d.]+),([\d.]+),([\d.]+),([\d.]+)\)"\s+d="(M(?:0,|113)[^"]*)"',
             modified):
+        # 9 Ott 2026 (bug pause di minima sparite dal PDF): il prefisso M0,
+        # matcha ANCHE la half rest di MuseScore 4 (M0,-3.3125): la half veniva
+        # compressa a 100px e il replacement generava un transform INVALIDO
+        # (doppio matrix) che cairosvg scarta silenziosamente → la pausa di
+        # minima spariva dal PDF ma restava nell'SVG. Escludere le half rest.
+        if _rm.group(7).startswith(('M0,-3.3', 'M-3.2', 'M-3.3')):
+            continue
         _a = float(_rm.group(1)); _tx = float(_rm.group(5))
         _pts = [float(v) for v in re.findall(r'-?\d+\.?\d*', _rm.group(7))]
         _xs = _pts[0::2]
@@ -11472,7 +11506,11 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         _a_new = _a * _k
         _tx_new = _tx + _cx_svg * (1.0 - _k)
         _old_m = f'matrix({_rm.group(1)},{_rm.group(2)},{_rm.group(3)},{_rm.group(4)},{_rm.group(5)},{_rm.group(6)})'
-        _new_m = f'matrix({_a_new:.4f},{_rm.group(2)},{_rm.group(3)},{_rm.group(4)},{_tx_new:.2f},{_rm.group(6)})'
+        # 9 Ott 2026: il replace copre i SOLI 6 argomenti numerici (span dei
+        # gruppi 1-6, DENTRO il matrix( esistente): la stringa nuova NON deve
+        # ripetere il prefisso 'matrix(' → altrimenti transform invalido
+        # (matrix(matrix(...))) scartato da cairosvg = pausa invisibile nel PDF.
+        _new_m = f'{_a_new:.4f},{_rm.group(2)},{_rm.group(3)},{_rm.group(4)},{_tx_new:.2f},{_rm.group(6)}'
         _squeeze_repls.append((_rm.start(1), _rm.end(6), _old_m, _new_m))
     for _s, _e, _o, _n in sorted(_squeeze_repls, key=lambda r: r[0], reverse=True):
         modified = modified[:_s] + _n + modified[_e:]
