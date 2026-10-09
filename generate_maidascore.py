@@ -3530,9 +3530,24 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
                               f'fill="white">{mmrest_count} battute di pausa</text>')
                 continue
             m_width = m_end - m_start
-            # 7 Ott 2026: TS per indice LOGICO (time_sigs_per_measure è logico);
-            # note/rests restano indicizzate FISICO (note_info dal collassato).
-            bpm = _beats_for_measure(global_measure_log)
+            # 9 Ott 2026 v3 (direttiva Marco: calcolare tutto in rapporto ai
+            # SETTORI GRIGI): bpm = numero di settori grigi REALMENTE
+            # renderizzati per questa battuta (indice FISICO, come il render).
+            # Prima usava _beats_for_measure(LOGICO): con il collasso MMRest il
+            # mapping logico→fisico era sfasato e una battuta 4/4 (m_width =
+            # 4 settori) riceveva bpm=2 → le celle onset-based finivano
+            # NELLA battuta successiva (b10: pausa UNO oltre il confine).
+            # _n_sectors_for_measure non è visibile qui (è in process_svg):
+            # replica la logica dei settori grigi su time_sigs_pm, che è
+            # indicizzato FISICO (stesso indice del render dei settori).
+            _ts_m5 = time_sigs_pm.get(global_measure_idx)
+            if _ts_m5 is not None:
+                if _ts_m5[1] == 8 and _ts_m5[0] % 3 == 0:
+                    bpm = _ts_m5[0] // 3
+                else:
+                    bpm = int(_beats_for_ts(_ts_m5))
+            else:
+                bpm = _beats_for_ts(ts)
             beat_width = m_width / bpm
             
             # FIX 2 Ago 2026: se abbiamo le note processate (con center_x),
@@ -3696,14 +3711,11 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
                     # minima puntata + pausa quarter finale di battuta — la
                     # condizione dur<=0.5 non scattava e la cella della minima
                     # puntata restava tagliata al ~46% della battuta)
-                    if (_c_a is not None and _c_b is not None
-                            and _e_a['type'] == 'note'
-                            and _e_a['duration'] >= 3.0
-                            and (_e_b['type'] == 'rest'
-                                 or _e_b['duration'] <= 0.5)):
-                        _bnd = min(m_end, _c_b - 130.0)
-                        if _bnd > (_c_a + _c_b) / 2.0:
-                            _shared_lo[_k_ev + 1] = _bnd
+                    # 9 Ott 2026 v3 (direttiva Marco: calcolare tutto in
+                    # rapporto ai SETTORI GRIGI): i confini condivisi basati sui
+                    # centri reali sono disattivati — la geometria delle celle
+                    # e' onset/durata (settori grigi). _shared_lo resta vuoto.
+                    pass
 
                 for e_idx, e in enumerate(events_timeline):
                     onset = e['onset']
@@ -3711,43 +3723,23 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
                     _c_me = _centers[e_idx]
                     _c_prev = _centers[e_idx - 1] if e_idx > 0 else None
                     _c_next = _centers[e_idx + 1] if e_idx + 1 < len(_centers) else None
-                    if _has_real and _c_me is not None:
-                        _x0 = ((_c_prev + _c_me) / 2.0) if _c_prev is not None else m_start
-                        _x1 = ((_c_me + _c_next) / 2.0) if _c_next is not None else m_end
-                        # 9 Ott 2026: confine condiviso con la cella lunga
-                        # precedente (vedi _shared_lo sopra)
-                        if e_idx in _shared_lo:
-                            _x0 = _shared_lo[e_idx]
-                        cell_x = max(m_start, _x0)
-                        cell_w = min(m_end, _x1) - cell_x
-                                                # 9 Ott 2026 (richiesta Marco: allungare la cella della
-                        # minima puntata): una figura LUNGA (dur >= 3 beat, es.
-                        # minima con punto = 3/4 di battuta) che termina poco
-                        # prima di eventi rapidi (pausa 16th + semicrome
-                        # nell'ultimo quarto) ha il centro reale vicino
-                        # all'inizio battuta: il midpoint la taglia a ~40% della
-                        # battuta anche se dura il 75%. Estendi il bordo destro
-                        # fino a 130px prima del centro dell'evento successivo
-                        # (la cella copre la durata reale senza toccare la
-                        # cella dell'evento breve successivo). Solo se c'è
-                        # margine reale e l'evento successivo è breve.
-                        if (e['type'] == 'note' and dur >= 3.0
-                                and _c_next is not None
-                                and (events_timeline[e_idx + 1]['type'] == 'rest'
-                                     or events_timeline[e_idx + 1]['duration'] <= 0.5)):
-                            _x1_ext = min(m_end, _c_next - 130.0)
-                            if _x1_ext > cell_x + cell_w:
-                                cell_w = _x1_ext - cell_x
-                    elif _has_real and _c_me is None:
-                        # evento senza centro reale: vecchia formula, ma limitata
-                        # ai midpoint dei centri reali circostanti
-                        cell_x = m_start + (onset / bpm) * m_width
-                        cell_w = (dur / bpm) * m_width
-                        if _c_prev is not None:
-                            cell_x = max(cell_x, (_c_prev + cell_x) / 2.0)
-                        if _c_next is not None:
-                            cell_w = min(cell_w, (_c_next + cell_x) / 2.0 - cell_x)
-                    else:
+                    # 9 Ott 2026 v3 (direttiva Marco): le celle della tavola
+                    # si calcolano in rapporto ai SETTORI GRIGI (geometria
+                    # onset/durata: onset -> inizio settore, dur -> n settori).
+                    # Il centro reale della figura (_c_me) NON determina piu'
+                    # i confini: serve solo alla centratura micro (se il glifo
+                    # reale sfasa dal centro della cella, la cella trasla di
+                    # max META' settore per restare simmetrica rispetto alla
+                    # figura SOPRASTANTE, senza uscire dai propri settori).
+                    if _has_real:
+                        # 9 Ott 2026 v3 (direttiva Marco: calcolare tutto in
+                        # rapporto ai settori grigi): cella = esattamente i
+                        # settori grigi coperti dalla figura (onset -> inizio
+                        # settore, dur -> numero di settori). Nessun uso dei
+                        # centri reali per i confini: la simmetria e'
+                        # rispetto ai SETTORI, che nel pentagramma rhythm
+                        # contengono le figure allineate (note a inizio
+                        # settore, pause onset-based).
                         cell_x = m_start + (onset / bpm) * m_width
                         cell_w = (dur / bpm) * m_width
                     if cell_w <= 0:
@@ -3940,46 +3932,20 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
                         # battuta) seguita da pausa+semicrome, la cella nera
                         # partiva a metà strada nota→pausa e sembrava scritta
                         # "sotto il vuoto", non sotto la pausa (b16-18 b5).
+                        # 9 Ott 2026 v3 (direttiva Marco: calcolare tutto
+                        # in rapporto ai settori grigi): la cella pausa occupa
+                        # esattamente il/i settore/i grigi della sua durata
+                        # (onset-based), come le pause del pentagramma rhythm
+                        # che stanno all'inizio del settore. Nessuna
+                        # centratura sui centri reali: la simmetria e'
+                        # rispetto ai settori grigi.
                         _cell_x_new = cell_x_vis
                         _cell_w_new = cell_w_adj
-                        if _c_me is not None and n_words == 1:
-                            try:
-                                _w_dur = (dur / bpm) * m_width if bpm else cell_w_adj
-                            except Exception:
-                                _w_dur = cell_w_adj
-                            _slot_lo = cell_x_vis
-                            _slot_hi = cell_x_vis + cell_w_adj
-                            _w_want = min(cell_w_adj, max(140.0, _w_dur * 1.2))
-                            # 9 Ott 2026 (bug Marco: celle pausa non centrate b10/
-                            # b16-18): se la larghezza voluta eccede lo spazio
-                            # centrabile rispetto al centro REALE della pausa
-                            # (2*min(dist_sx, dist_dx) dello slot), RIDURRE la
-                            # cella per poterla centrare sotto la pausa (floor
-                            # 140px = glifo minimo). Prima la cella riempiva
-                            # l'intero slot e il clamp la spindeva tutta a
-                            # sinistra: pausa a fine battuta → cella sotto il
-                            # vuoto, sfaso fino a ~18pt.
-                            _w_centerable = 2.0 * min(_c_me - _slot_lo,
-                                                      _slot_hi - _c_me)
-                            # floor 50px (~metta' glifo pausa 16th): se lo slot
-                            # e' strettissimo (evento breve fitto), una cella
-                            # minima ma CENTRATA e' meglio di una larga tutta
-                            # schiacciata a sinistra dal clamp
-                            if _w_centerable >= 50.0:
-                                _cell_w_new = max(50.0, min(_w_want, _w_centerable))
-                            else:
-                                _cell_w_new = _w_want
-                            _cell_x_new = _c_me - _cell_w_new / 2.0
-                            # clamp dentro lo slot originale (niente overlap
-                            # con le celle adiacenti)
-                            if _cell_x_new < _slot_lo:
-                                _cell_x_new = _slot_lo
-                            if _cell_x_new + _cell_w_new > _slot_hi:
-                                _cell_x_new = _slot_hi - _cell_w_new
                         sec_w = _cell_w_new / n_words
                         # 8 Ott 2026: parola centrata sotto la pausa reale
                         # (simmetria figure↔tavola) quando il centro è noto.
-                        _word_cx = _c_me if (_c_me is not None and n_words == 1) else None
+                        # 9 Ott 2026 v3: parola centrata nella cella (settori)
+                        _word_cx = None
                         for wi, word in enumerate(rest_words):
                             wx = _cell_x_new + wi * sec_w
                             _txt_dx = None  # offset testo per ancorarlo alla pausa
