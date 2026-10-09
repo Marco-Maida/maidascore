@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.11] - 9 Ott 2026
+### Fixed
+- Simmetria pause-celle nella tavola sonora: celle pausa centrate sotto il centro reale del glifo (cap larghezza allo spazio centrabile, floor 50px).
+- Confini condivisi cella lunga/celle brevi: la minima puntata (3/4 battuta) non viene più tagliata dal midpoint; la catena pausa+semicrome resta stretta attorno ai propri glifi.
+- Cella della minima puntata allungata alla durata reale (~75% della battuta).
+
+# Changelog
+
 ## [1.4.10] - 9 Ott 2026
 ### Fixed
 - Pause di minima sparite dal PDF (b26+): il pass Squeeze 16th rest matchava anche le half rest (prefisso M0,) e il replacement generava un transform invalido (doppio matrix) scartato da cairosvg.
