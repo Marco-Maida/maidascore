@@ -3691,10 +3691,16 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
                     _e_b = events_timeline[_k_ev + 1]
                     _c_a = _centers[_k_ev]
                     _c_b = _centers[_k_ev + 1]
+                    # 9 Ott 2026 v2: esteso anche quando l'evento breve
+                    # successivo e' una PAUSA di qualsiasi durata (bug b8/10/18:
+                    # minima puntata + pausa quarter finale di battuta — la
+                    # condizione dur<=0.5 non scattava e la cella della minima
+                    # puntata restava tagliata al ~46% della battuta)
                     if (_c_a is not None and _c_b is not None
                             and _e_a['type'] == 'note'
                             and _e_a['duration'] >= 3.0
-                            and _e_b['duration'] <= 0.5):
+                            and (_e_b['type'] == 'rest'
+                                 or _e_b['duration'] <= 0.5)):
                         _bnd = min(m_end, _c_b - 130.0)
                         if _bnd > (_c_a + _c_b) / 2.0:
                             _shared_lo[_k_ev + 1] = _bnd
@@ -3714,7 +3720,7 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
                             _x0 = _shared_lo[e_idx]
                         cell_x = max(m_start, _x0)
                         cell_w = min(m_end, _x1) - cell_x
-                        # 9 Ott 2026 (richiesta Marco: allungare la cella della
+                                                # 9 Ott 2026 (richiesta Marco: allungare la cella della
                         # minima puntata): una figura LUNGA (dur >= 3 beat, es.
                         # minima con punto = 3/4 di battuta) che termina poco
                         # prima di eventi rapidi (pausa 16th + semicrome
@@ -3727,7 +3733,8 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
                         # margine reale e l'evento successivo è breve.
                         if (e['type'] == 'note' and dur >= 3.0
                                 and _c_next is not None
-                                and events_timeline[e_idx + 1]['duration'] <= 0.5):
+                                and (events_timeline[e_idx + 1]['type'] == 'rest'
+                                     or events_timeline[e_idx + 1]['duration'] <= 0.5)):
                             _x1_ext = min(m_end, _c_next - 130.0)
                             if _x1_ext > cell_x + cell_w:
                                 cell_w = _x1_ext - cell_x
