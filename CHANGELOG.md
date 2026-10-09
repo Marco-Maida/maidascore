@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.13] - 9 Ott 2026
+### Changed
+- Direttiva: le celle della tavola sonora si calcolano in rapporto ai settori grigi (formula onset/durata pura). Rimosso il calcolo midpoint/confini condivisi basato sui centri reali (v1.4.7-12): una minima = 2 settori, una minima puntata = 3 settori, una pausa = il proprio settore.
+- Fix bpm: derivato dalla time signature FISICA della battuta renderizzata (time_sigs_pm), non dall'indice logico sfasato dal collasso MMRest (bug: pausa UNO della b10 oltre il confine battuta).
+
+# Changelog
+
 ## [1.4.12] - 9 Ott 2026
 ### Fixed
 - Cella della minima puntata estesa alla durata reale (~80% battuta) anche quando la figura successiva è una pausa di qualsiasi durata (bug b8/b10/b18: la condizione v1.4.11 richiedeva dur <= 0.5 e con pausa quarter a fine battuta non scattava).
