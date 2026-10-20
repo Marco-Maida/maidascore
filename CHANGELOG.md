@@ -1,6 +1,9 @@
 # Changelog
 
-## [1.4.14] - 20 Ott 2026
+## [1.5.0] - 20 Ott 2026
+### Added
+- Legature di valore (tie) e legature di portamento disegnate come archi sopra le note del pentagramma (Pass 16): piccoli, bassi, curvi dolcemente verso l'alto, collegano coppie di note vicine, in entrambe le modalità.
+
 ### Fixed
 - Legature di valore (Pass 16): eliminati gli archi duplicati sovrapposti. Il recupero della Y della testa prendeva il primo cerchio entro ±2000px, ma i sistemi distano ~1270px: coppie con lo stesso X in sistemi diversi (frasi ripetute) agganciavano lo stesso cerchio e disegnavano due archi identici. Ora si seleziona il cerchio con Y più vicina al sistema della nota (finestra <700px) + difesa anti-duplicati sul Path D finale.
 - Dedup strutturale delle coppie per chiave geometrica (cx, middle_line_y, pitch) — il dedup per id() non basta: la stessa nota può comparire due volte nella lista con id diversi.
