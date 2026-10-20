@@ -636,6 +636,7 @@ def extract_notes_via_music21(mscz_path, part_index=0):
                         'note_name': note_name_full,  # con alterazione: Bb, C#, A
                         'passing_acc': passing_acc,  # 7 Ago: '#', 'b', 'natural', o ''
                         'staff_acc': staff_acc,  # 9 Ago: alterazione da disegnare sul pentagramma
+                        'tie': (n.tie.type if getattr(n, 'tie', None) else ''),  # 20 Ott 2026: 'start'/'continue'/'stop'/''
                         'duration_type': dur_type,
                         'dots': dots,
                         'dur_key': dur_key,
@@ -1139,6 +1140,72 @@ def _merge_16th_beams(score):
                             b.type = 'continue'
 
 
+def extract_slur_pairs_same_pitch(input_mscz, part_index=0):
+    """Estrae le coppie di legature di portamento (slur) che collegano due
+    note della STESSA altezza e stesso nome (20 Ott 2026, direttiva Marco).
+    
+    Nel brano pop le slur di frase coprono quasi ogni battuta, ma quelle
+    didatticamente rilevanti per l'allievo (da mostrare come legature) sono
+    SOLO quelle same-pitch: indicano di NON ri-attaccare il suono. Le slur
+    tra note diverse (fraseggio) vengono ignorate.
+    
+    Ritorna lista di dict: {'measure_idx': int (0-based logico),
+                            'onset_a': float, 'onset_b': float,
+                            'pitch': int, 'note_name': str}
+    """
+    import subprocess
+    from music21 import converter, spanner
+    
+    xml_path = '/tmp/m21_slur_' + str(os.getpid()) + '.musicxml'
+    cmd = f'{XVFB} {MUSESCORE_CMD} -o "{xml_path}" "{input_mscz}"'
+    result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60)
+    if result.returncode != 0 or not os.path.exists(xml_path):
+        return []
+    
+    try:
+        score = converter.parse(xml_path)
+        if part_index >= len(score.parts):
+            return []
+        part = score.parts[part_index]
+        
+        # mappa id(nota) -> (measure_idx 0-based, onset nella misura)
+        note_pos = {}
+        from music21 import stream as m21stream
+        for meas in part.getElementsByClass(m21stream.Measure):
+            m_idx = meas.number - 1
+            for n in meas.recurse().notes:
+                note_pos[id(n)] = (m_idx, float(n.offset))
+        
+        pairs = []
+        for sl in part.recurse().getElementsByClass(spanner.Slur):
+            els = sl.getSpannedElements()
+            if len(els) < 2:
+                continue
+            a, b = els[0], els[-1]
+            # SOLO same pitch e stesso nome (direttiva Marco 20 Ott 2026)
+            if a.pitch.midi != b.pitch.midi or a.pitch.step != b.pitch.step:
+                continue
+            if id(a) not in note_pos or id(b) not in note_pos:
+                continue
+            m_a, on_a = note_pos[id(a)]
+            m_b, on_b = note_pos[id(b)]
+            pairs.append({
+                'measure_idx': m_a,
+                'measure_idx_b': m_b,
+                'onset_a': on_a,
+                'onset_b': on_b,
+                'pitch': a.pitch.midi,
+                'note_name': a.pitch.name,
+            })
+        return pairs
+    except Exception as e:
+        print(f"  ⚠ extract_slur_pairs_same_pitch: {e}")
+        return []
+    finally:
+        if os.path.exists(xml_path):
+            os.remove(xml_path)
+
+
 def extract_single_part_mscz(input_mscz, part_index=0, key_sig_changes=None, rhythm_mode=False):
     """Estrae una singola parte da un .mscz multi-strumento.
     
@@ -1237,7 +1304,9 @@ def extract_single_part_mscz(input_mscz, part_index=0, key_sig_changes=None, rhy
         # rilevanti e music21 non le esporta correttamente senza durata.
         if (n.get('ql') or 0) == 0.0:
             continue
-        events_by_measure[n['measure_idx']].append(('N', n['onset'], n['duration_type'], n['pitch'], n.get('dots', 0), n.get('is_measure_rest', False), n.get('ql')))
+        # 20 Ott 2026 (legature di valore, Marco): propaga il tipo di tie
+        # ('start'/'continue'/'stop') così il rebuild può ricreare i legami.
+        events_by_measure[n['measure_idx']].append(('N', n['onset'], n['duration_type'], n['pitch'], n.get('dots', 0), n.get('is_measure_rest', False), n.get('ql'), n.get('tie', '')))
     for r in note_info['rests']:
         if (r.get('ql') or 1) == 0.0:
             continue
@@ -1288,6 +1357,14 @@ def extract_single_part_mscz(input_mscz, part_index=0, key_sig_changes=None, rhy
                 ql = 1.0
             if t == 'N':
                 n = m21note.Note(pitch, quarterLength=ql)
+                # 20 Ott 2026 (legature di valore, Marco): ricrea il tie
+                # ('start'/'continue'/'stop') — senza questo l'export MusicXML
+                # di music21 PERDE il legame di valore e il single_part.mscz
+                # non ha più i <Tie> (verificato su Heal the World m.78).
+                _tie_type = ev[7] if len(ev) > 7 else ''
+                if _tie_type in ('start', 'continue', 'stop'):
+                    from music21 import tie as m21tie
+                    n.tie = m21tie.Tie(_tie_type)
                 m.append(n)
             else:
                 r = m21note.Rest(quarterLength=ql)
@@ -3300,6 +3377,12 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
     
     tavola_svg = ''
     cell_rects_svg = ''
+    # 20 Ott 2026 (legature sulla tavola, direttiva Marco): registro dei centri
+    # delle celle NOTA, chiave (measure_idx, onset, pitch) → (cx, tavola_top).
+    # Serve per disegnare l'archetto di legatura anche tra le celle della
+    # tavola sonora, così il lettore dislessico vede il legame SENZA dover
+    # risalire al pentagramma.
+    _tav_cell_pos = {}
     
     # Sort systems by Y (top to bottom)
     sorted_systems = sorted(systems_post.items(), key=lambda x: x[1]['top'])
@@ -3817,6 +3900,12 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
                                       f'width="{cell_w_adj:.1f}" height="{tavola_row_height}" '
                                       f'fill="{color}" rx="8" '
                                       f'stroke="{color}" stroke-width="2"/>')
+                        # 20 Ott: registra centro cella per archetti legatura
+                        for _n_reg in e['notes']:
+                            _tav_cell_pos[(n0.get('measure_idx'),
+                                           round(_n_reg.get('onset', 0.0), 2),
+                                           _n_reg.get('pitch'))] = (
+                                cell_x_vis + cell_w_adj / 2, tavola_top)
                         font_size = min(140, max(60, cell_w_adj * 0.35))
                         # Nome nota allineato SOTTO la figura (cerchio)
                         # sul pentagramma ritmico, non al centro della cella.
@@ -4132,6 +4221,12 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
                                       f'width="{cell_w:.1f}" height="{tavola_row_height}" '
                                       f'fill="{evt["color"]}" rx="8" '
                                       f'stroke="{evt["color"]}" stroke-width="2"/>')
+                        # 20 Ott: registra centro cella per archetti legatura
+                        for _n_reg in evt['notes']:
+                            _tav_cell_pos[(_n_reg.get('measure_idx'),
+                                           round(_n_reg.get('onset', 0.0), 2),
+                                           _n_reg.get('pitch'))] = (
+                                cell_x + cell_w / 2, tavola_top)
                         font_size = min(140, max(60, cell_w * 0.35))
                         # alterazione come testo '#' o 'b' in NERO, SOTTO il nome
                         pc_name_evt = evt.get('pc_name', '')
@@ -4227,6 +4322,58 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
                               f'width="{m_width:.1f}" height="{tavola_row_height}" '
                               f'fill="white" rx="8" '
                               f'stroke="#ccc" stroke-width="2" stroke-dasharray="20,12"/>')
+    
+    # 20 Ott 2026 (legature sulla tavola): disegna l'archetto di legatura
+    # TRA LE CELLE della tavola per ogni coppia legatura/tie same-pitch.
+    # L'arco si disegna DENTRO la riga tavola, sopra i nomi (y = tavola_top + 90),
+    # grigio scuro, curvo verso l'alto come sul pentagramma. Le coppie che
+    # attraversano sistemi diversi (tavole su righe diverse) vengono saltate.
+    if processed_notes is not None and _tav_cell_pos:
+        _tav_arcs = []
+        _seen_pairs = set()
+        for _pn in processed_notes:
+            _is_start = _pn.get('legatura') == 'start' or _pn.get('tie') in ('start', 'continue')
+            if not _is_start:
+                continue
+            _ka = (_pn.get('measure_idx'), round(_pn.get('onset', 0.0), 2), _pn.get('pitch'))
+            if _ka not in _tav_cell_pos:
+                continue
+            # target: dai dati legatura_b (slur) o tie-stop vicino (tie)
+            _kb = None
+            if _pn.get('legatura_b'):
+                _f_m, _on_b, _pi_b = _pn['legatura_b']
+                _kb = (_f_m, round(_on_b, 2), _pi_b)
+            if _kb is None or _kb not in _tav_cell_pos:
+                _cands = [k for k in _tav_cell_pos
+                          if k[2] == _pn.get('pitch') and k[0] >= _ka[0]
+                          and (_tav_cell_pos[k][0] > _tav_cell_pos[_ka][0])]
+                if _cands:
+                    _cands.sort(key=lambda k: _tav_cell_pos[k][0])
+                    _kb = _cands[0]
+            if _kb is None or _kb not in _tav_cell_pos:
+                continue
+            _pk = (_ka, _kb)
+            if _pk in _seen_pairs:
+                continue
+            _seen_pairs.add(_pk)
+            _cxa, _tya = _tav_cell_pos[_ka]
+            _cxb, _tyb = _tav_cell_pos[_kb]
+            if abs(_tya - _tyb) > 5:
+                continue  # celle in tavole di sistemi diversi
+            if _cxb - _cxa < 20:
+                continue
+            # arco SOTTO la riga tavola (come i triangoli ottava down):
+            # non copre i nomi delle note dentro le celle
+            _y_base = _tya + tavola_row_height + 55
+            _arc_h = min(160.0, max(45.0, (_cxb - _cxa) * 0.22))
+            _y_ctrl = _y_base + _arc_h
+            _d_tav = (f'M{_cxa:.1f},{_y_base:.1f} '
+                      f'Q{(_cxa + _cxb) / 2:.1f},{_y_ctrl:.1f} {_cxb:.1f},{_y_base:.1f}')
+            _tav_arcs.append(
+                f'<path class="Tie" fill="none" stroke="#111111" '
+                f'stroke-width="12" stroke-linecap="round" d="{_d_tav}"/>')
+        if _tav_arcs:
+            tavola_svg += '\n' + '\n'.join(_tav_arcs)
     
     # Insert tavola SVG before the closing </svg>
     if tavola_svg:
@@ -4663,6 +4810,13 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                             # propaga note_name con alterazione (es. 'C#', 'Bb')
                             # per la tavola sonora (simbolo alterazione a sinistra del nome)
                             svg_n['note_name'] = mscz_n.get('note_name', note_name)
+                            # 20 Ott 2026 (legature di valore, Pass 16): propaga
+                            # il tipo di tie dalla fonte music21 alla nota SVG.
+                            svg_n['tie'] = mscz_n.get('tie', '')
+                            # 20 Ott 2026: propaga la legatura di portamento
+                            # same-pitch ('legatura' start/stop + target)
+                            svg_n['legatura'] = mscz_n.get('legatura', '')
+                            svg_n['legatura_b'] = mscz_n.get('legatura_b')
                             # 9 Ago 2026 (bug enarmonia Re#/Eb): MuseScore a volte
                             # disegna un enarmonico diverso (es. D#5 come Eb5) nella
                             # posizione dello step enarmonico (spazio del Mi invece
@@ -13002,6 +13156,149 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         )
         modified = modified.replace('</svg>', _footer_svg + '</svg>')
 
+        # PASS 16 — LEGATURE DI VALORE (20 Ott 2026, direttiva Marco: versione ritmo).
+        # Disegna un arco curvo tra due note legate (tie start→stop).
+        # Coordinate DEFINITIVE (tutti i pass di riposizionamento sono già girati).
+        # Fonte dati: campo 'tie' ('start'/'continue'/'stop') propagato alle note
+        # SVG dal matching con mscz (extract_notes_via_music21, tie-aware).
+        # In modalità rhythm tutte le teste sono sulla middle_line_y del sistema:
+        # l'arco si disegna SOPRA i dischi (i gambi vanno in su), curvo verso l'alto.
+        # L'arco NON deve sovrapporsi alla tavola sonora né al sistema sopra.
+        _tie_pairs = []
+        _n_tied16 = [0]
+        if rhythm_mode:
+            _tstarts16 = [n for n in notes if n.get('tie') in ('start', 'continue')
+                          and n.get('center_x') is not None]
+            for _t0 in _tstarts16:
+                _cands16 = [n for n in notes
+                            if n.get('tie') in ('stop', 'continue')
+                            and n.get('center_x') is not None
+                            and n.get('pitch') == _t0.get('pitch')
+                            and n['center_x'] > _t0['center_x']
+                            and abs(n.get('system', {}).get('middle_line_y', -1)
+                                    - _t0.get('system', {}).get('middle_line_y', -2)) < 5]
+                if _cands16:
+                    _nxt16 = min(_cands16, key=lambda n: n['center_x'])
+                    _tie_pairs.append((_t0, _nxt16))
+            # dedup: una stessa nota stop NON può essere endpoint di due archi
+            # (una coppia tie+slur sulla stessa coppia di note disegnava due
+            # archi sovrapposti — bug segnalato da Marco 20 Ott)
+            def _gkey16(_n16):
+                return (round(_n16.get('center_x', -1) / 20),
+                        round(_n16.get('system', {}).get('middle_line_y', -1) / 40),
+                        _n16.get('pitch'))
+            _used_stops16 = set()
+            _dedup_pairs16 = []
+            for _pa16, _pb16 in _tie_pairs:
+                _kb16 = _gkey16(_pb16)
+                if _kb16 in _used_stops16:
+                    continue
+                _used_stops16.add(_kb16)
+                _dedup_pairs16.append((_pa16, _pb16))
+            _tie_pairs = _dedup_pairs16
+            # 20 Ott 2026 (2ª direttiva Marco): anche le LEGATURE DI
+            # PORTAMENTO same-pitch (campo 'legatura', estratte dall'originale
+            # perché il rebuild le perde). A differenza dei tie possono
+            # attraversare le barline (misure adiacenti) — la coppia è
+            # identificata dai dati 'legatura_b' (misura, onset, pitch) o,
+            # fallback, dalla nota 'stop' più vicina stessa altezza.
+            _lstarts16 = [n for n in notes if n.get('legatura') == 'start'
+                          and n.get('center_x') is not None]
+            # chiave geometrica di una nota (una stessa nota fisica può
+            # comparire DUE volte in `notes` con id diversi → dedup per id
+            # non basta, serve la geometria)
+            def _gkey16(_n16):
+                return (round(_n16.get('center_x', -1) / 20),
+                        round(_n16.get('system', {}).get('middle_line_y', -1) / 40),
+                        _n16.get('pitch'))
+            _used_starts16 = {_gkey16(_pa16) for _pa16, _ in _tie_pairs}
+            _used_stops16 = {_gkey16(_pb16) for _, _pb16 in _tie_pairs}
+            for _l0 in _lstarts16:
+                if _gkey16(_l0) in _used_starts16:
+                    # la start ha GIÀ un arco tie: niente secondo arco
+                    continue
+                _lb = _l0.get('legatura_b')  # (f_misura, onset, pitch)
+                _match = None
+                if _lb:
+                    for n in notes:
+                        if n.get('legatura') == 'stop' and n.get('pitch') == _lb[2]:
+                            _mi = n.get('measure_idx')
+                            if _mi == _lb[0] and abs(n.get('onset', -9) - _lb[1]) < 0.06:
+                                _match = n
+                                break
+                if _match is None:
+                    _candsl = [n for n in notes
+                               if n.get('legatura') == 'stop'
+                               and n.get('pitch') == _l0.get('pitch')
+                               and n.get('center_x') is not None
+                               and n['center_x'] > _l0['center_x']
+                               and id(n) not in _used_stops16]
+                    if _candsl:
+                        _match = min(_candsl, key=lambda n: n['center_x'])
+                if _match is None or _gkey16(_match) in _used_stops16:
+                    continue
+                if _match['center_x'] - _l0['center_x'] < 6000:
+                    _used_stops16.add(_gkey16(_match))
+                    _tie_pairs.append((_l0, _match))
+
+            _tie_svg_parts16 = []
+            _drawn_ties16 = set()
+            for _ta16, _tb16 in _tie_pairs:
+                _ax16 = _ta16['center_x']; _bx16 = _tb16['center_x']
+                _r_a16 = _ta16.get('disc_r') or max(DISC_R_OVERRIDE, 1)
+                _r_b16 = _tb16.get('disc_r') or max(DISC_R_OVERRIDE, 1)
+                _sys16 = _ta16.get('system')
+                if _sys16 is None:
+                    continue
+                # Y reale della testa post-stretch: recuperata dal cerchio
+                # disegnato nell'SVG. NB (bug 20 Ott, doppioni): il primo
+                # cerchio entro ±2000 NON va bene — i sistemi distano ~1270px,
+                # quindi coppie con stesso X in sistemi diversi agganciavano lo
+                # STESSO cerchio e disegnavano due archi identici. Si sceglie
+                # il cerchio con X ±40 e Y PIÙ VICINA alla middle_line del
+                # sistema della nota.
+                _ay16 = None
+                _sy_mid16 = _sys16['middle_line_y']
+                _best_dy16 = None
+                for _m16h in re.finditer(r'<circle cx="([\d.]+)" cy="([\d.]+)" r="([\d.]+)"',
+                                         modified):
+                    _hx16 = float(_m16h.group(1)); _hy16 = float(_m16h.group(2))
+                    _hr16 = float(_m16h.group(3))
+                    if abs(_hx16 - _ax16) < 40 and _hr16 > 40:
+                        _dy16 = abs(_hy16 - _sy_mid16)
+                        if _dy16 < 700 and (_best_dy16 is None or _dy16 < _best_dy16):
+                            _best_dy16 = _dy16
+                            _ay16 = _hy16
+                if _ay16 is None:
+                    _ay16 = _sy_mid16
+                # endpoint: bordi interni dei dischi
+                _x1_16 = _ax16 + _r_a16 * 0.55
+                _x2_16 = _bx16 - _r_b16 * 0.55
+                if _x2_16 - _x1_16 < 20:
+                    continue
+                # arco SOPRA i dischi; piccolo e dolce come quelli della
+                # tavola (direttiva Marco 20 Ott: quelli alti/angolati erano
+                # troppo invasivi). Altezza = min(160, max(45, dist*0.22)).
+                _y_base16 = _ay16 - max(_r_a16, _r_b16) - 8
+                _arc_h16 = min(160.0, max(45.0, (_x2_16 - _x1_16) * 0.22))
+                # NB: nessun clamp col top del sistema — con archi max 160px
+                # non serve, e il vecchio max() era INVERTITO (Y SVG crescono
+                # verso il basso: max sceglieva la Y più BASSA = arco capovolto
+                # sotto la nota, sembrava il "vecchio" arco angolato).
+                _y_ctrl16 = _y_base16 - _arc_h16
+                _d16s = (f'M{_x1_16:.1f},{_y_base16:.1f} '
+                         f'Q{(_x1_16 + _x2_16) / 2:.1f},{_y_ctrl16:.1f} {_x2_16:.1f},{_y_base16:.1f}')
+                if _d16s not in _drawn_ties16:
+                    _tie_svg_parts16.append(
+                        f'<path class="Tie" fill="none" stroke="#444444" '
+                        f'stroke-width="14" stroke-linecap="round" d="{_d16s}"/>')
+                    _drawn_ties16.add(_d16s)
+                    _n_tied16[0] += 1
+            if _tie_svg_parts16:
+                modified = modified.replace('</svg>',
+                                            '\n'.join(_tie_svg_parts16) + '\n</svg>')
+        print(f'[PASS16] legature di valore disegnate: {_n_tied16[0]}')
+
         return modified, total_meas_in_page
 
     # 29 Set 2026 (travature sempre dritte): le beams PRIMARIE di MuseScore
@@ -18081,6 +18378,56 @@ def main():
         note_info = extract_notes_via_music21(input_mscz, part_index=part_index)
         print(f"  Ri-estratte {len(note_info['notes'])} note dal file originale (via music21, tie-aware)")
     print(f"  measure_idx range: 0-{max(n['measure_idx'] for n in note_info['notes'])}")
+    
+    # 20 Ott 2026 (legature di portamento same-pitch, direttiva Marco): estrai
+    # le coppie di slur che legano note della stessa altezza dall'ORIGINALE
+    # (indici LOGICI — il rebuild single_part le perde) e marcale sulle note
+    # FISICHE di note_info (campo 'legatura' = 'start'/'stop'), gestendo la
+    # mappa log→fisico del collasso MMRest.
+    slur_pairs = extract_slur_pairs_same_pitch(input_mscz, part_index=part_index)
+    print(f"  Slur same-pitch (legature da disegnare): {len(slur_pairs)}")
+    _phys_of = {}
+    if groups_phys:
+        # log -> fisico: la battuta logica L è la fisica F con F + shift(F) == L
+        # (shift cumulativo del collasso). Cerchiamo per enumerazione.
+        _phys_shift = []
+        for g_phys, n in groups_phys:
+            _phys_shift.append((g_phys, n - 1))
+        def _phys_of_log(log_idx):
+            # trovo la fisica f tale che f + shift_cum(f) = log, con shift
+            # attivo SOLO dopo il gruppo collassato
+            for f in range(log_idx + 1):
+                s = 0
+                for g_phys, sh in _phys_shift:
+                    if f > g_phys:
+                        s += sh
+                if f + s == log_idx:
+                    return f
+            return log_idx
+    else:
+        def _phys_of_log(log_idx):
+            return log_idx
+    _n_marked = 0
+    for sp in slur_pairs:
+        f_a = _phys_of_log(sp['measure_idx'])
+        f_b = _phys_of_log(sp['measure_idx_b'])
+        # nota A: nella misura fisica f_a con onset ~ onset_a e pitch giusto
+        for n in note_info['notes']:
+            if n.get('measure_idx') == f_a and n.get('pitch') == sp['pitch'] \
+               and abs(n.get('onset', -9) - sp['onset_a']) < 0.05 \
+               and not n.get('legatura'):
+                n['legatura'] = 'start'
+                n['legatura_b'] = (f_b, sp['onset_b'], sp['pitch'])
+                _n_marked += 1
+                break
+        for n in note_info['notes']:
+            if n.get('measure_idx') == f_b and n.get('pitch') == sp['pitch'] \
+               and abs(n.get('onset', -9) - sp['onset_b']) < 0.05 \
+               and not n.get('legatura'):
+                n['legatura'] = 'stop'
+                _n_marked += 1
+                break
+    print(f"  Note marcate 'legatura': {_n_marked} (su {len(slur_pairs)} coppie)")
     print()
     
     # 13 Set 2026 (bug "battute da sole"): il piano dei break (in settori grigi)

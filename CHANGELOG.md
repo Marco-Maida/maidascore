@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.4.14] - 20 Ott 2026
+### Fixed
+- Legature di valore (Pass 16): eliminati gli archi duplicati sovrapposti. Il recupero della Y della testa prendeva il primo cerchio entro ±2000px, ma i sistemi distano ~1270px: coppie con lo stesso X in sistemi diversi (frasi ripetute) agganciavano lo stesso cerchio e disegnavano due archi identici. Ora si seleziona il cerchio con Y più vicina al sistema della nota (finestra <700px) + difesa anti-duplicati sul Path D finale.
+- Dedup strutturale delle coppie per chiave geometrica (cx, middle_line_y, pitch) — il dedup per id() non basta: la stessa nota può comparire due volte nella lista con id diversi.
+- Rimosso il clamp col top del sistema (era INVERTITO: le Y SVG crescono verso il basso, max() sceglieva la Y più bassa producendo 29 archi capovolti sotto le note). Con archi max 160px il clamp non serve.
+- Fallback legatura di portamento: non cattura più uno stop già usato da un arco tie; una start con arco tie esistente non riceve un secondo arco.
+
+# Changelog
+
 ## [1.4.13] - 9 Ott 2026
 ### Changed
 - Direttiva: le celle della tavola sonora si calcolano in rapporto ai settori grigi (formula onset/durata pura). Rimosso il calcolo midpoint/confini condivisi basato sui centri reali (v1.4.7-12): una minima = 2 settori, una minima puntata = 3 settori, una pausa = il proprio settore.
