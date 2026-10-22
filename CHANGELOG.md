@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.5.2] - 22 Ott 2026
+### Fixed
+- Gambi specchiati a sinistra (b7 Imperial March): music21 esporta <stem>down/up</stem> per-nota (testa sopra la linea mediana = down) e MuseScore onorava le direzioni miste nei gruppi beamati → i gambi stems-down stavano a sinistra della testa mentre la beam sintetizzata stava sopra; il beamsynth li stirava = gambi fluttuanti. Fix: (1) strip di tutti i tag <stem> dal MusicXML ricostruito (MuseScore ricalcola la direzione auto coerente col gruppo, come nell'originale); (2) strip difensiva dei <StemDirection> dal .mscx.
+- Crome beamate a coppie invece che a gruppi (b6/b7/b10): makeBeams di music21 beama le crome a coppie (begin/end) mentre l'auto-beaming di MuseScore sull'originale crea gruppi per battuta (4 crome = gruppo unico, direzione uniforme). Nuova funzione _merge_eighth_groups: fonde le coppie adiacenti in gruppi fino a 4 crome con beams begin/continue/continue/end (GOTCHA: Beams.fill usa level=, NON number=).
+- Gambi mancanti sulle 2ª/3ª crome dei gruppi fusi (b6/b10): il Pass 13-bis classificava orfani i gambi stems-down delle teste in alto perché (a) la banda di ricerca testa era _yt-67 (il gambo parte ~187px sotto il centro: testa esclusa) e (b) la soglia _d≤60 (gap reale dal bordo = 99px). Fix: banda _yt-260 e soglia _d≤120.
+- Validatore TUTTO OK e audit geometrico pulito (0 gambi mancanti, 0 specchiati) su: Imperial March notation+rhythm, Radetsky notation+rhythm, example notation+rhythm.
+
+# Changelog
+
 ## [1.5.1] - 22 Ott 2026
 ### Fixed
 - Crome senza stanghetta (Imperial March b5/b9): il matching gambo↔testa scartava gambi legittimi stems-down con la testa a 187px dall'endpoint del gambo (soglia hr+60=148px; lo y-stretch amplifica il gap raw ~90px). Soglia allargata a hr+200 su entrambi i rami (dx<130 e dx<200): i gruppi croma di b5/b9 tornano bindati (falliti_bind 2→0, beams 20→22).

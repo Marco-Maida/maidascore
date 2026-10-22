@@ -1140,6 +1140,76 @@ def _merge_16th_beams(score):
                             b.type = 'continue'
 
 
+def _merge_eighth_groups(score):
+    """22 Ott 2026 (gambi specchiati b7 Imperial March): makeBeams di
+    music21 beama le crome a COPPIE (begin/end × n) mentre l'auto-beaming
+    di MuseScore sull'ORIGINALE crea gruppi per battuta (4 crome = gruppo
+    unico, direzione uniforme). Con le coppie + <stem> per-nota di music21
+    (down per teste alte, up per basse) MuseScore disegnava gambi MISTI
+    nello stesso gruppo visivo e il beamsynth li stirava verso la beam
+    unica = gambi specchiati a sinistra della testa (b7).
+    Fonde le coppie di crome adiacenti dello stesso beat-group in gruppi
+    più ampi (fino a 4 crome = 2 quarti, il gruppo standard di 4/4),
+    ricalcolando i beams come begin/continue/.../end.
+    """
+    from music21 import stream as m21stream
+
+    for part in score.parts:
+        for meas in part.getElementsByClass(m21stream.Measure):
+            notes = list(meas.notes)
+            i = 0
+            while i < len(notes):
+                # inizia un run di crome beamed consecutive (beam1 != None)
+                if (notes[i].duration.quarterLength == 0.5 and
+                        notes[i].beams and
+                        any(b.number == 1 and b.type in ('start',)
+                            for b in notes[i].beams.beamsList)):
+                    j = i
+                    run = [notes[i]]
+                    while (j + 1 < len(notes) and
+                           notes[j + 1].duration.quarterLength == 0.5 and
+                           notes[j + 1].beams and
+                           any(b.number == 1 for b in notes[j + 1].beams.beamsList)):
+                        j += 1
+                        run.append(notes[j])
+                    # fondi solo run di 2 crome (coppia) che possono estendersi
+                    # al run successivo: run totale <= 4 e stessa... le pause
+                    # interrompono già il run (le rests non sono in notes).
+                    if 2 <= len(run) < 4 and j + 1 < len(notes):
+                        nxt = notes[j + 1]
+                        if (nxt.duration.quarterLength == 0.5 and
+                                nxt.beams and
+                                any(b.number == 1 and b.type == 'start'
+                                    for b in nxt.beams.beamsList)):
+                            k = j
+                            while (k + 1 < len(notes) and
+                                   notes[k + 1].duration.quarterLength == 0.5 and
+                                   notes[k + 1].beams and
+                                   any(b.number == 1
+                                       for b in notes[k + 1].beams.beamsList)):
+                                k += 1
+                            if len(run) + (k - j) <= 4:
+                                run.extend(notes[j + 1:k + 1])
+                                j = k
+                    # riscrivi i beams del run fuso: begin, continue×, end
+                    if len(run) >= 3:
+                        for idx, n in enumerate(run):
+                            # beam1
+                            n.beams.beamsList = [b for b in n.beams.beamsList
+                                                 if b.number != 1]
+                            if idx == 0:
+                                n.beams.fill(type='start', level=1)
+                            elif idx == len(run) - 1:
+                                n.beams.fill(type='stop', level=1)
+                            else:
+                                n.beams.fill(type='continue', level=1)
+                            # beam2 (se presente, es. croma puntata+semicroma):
+                            # lascialo intatto
+                    i = j + 1
+                else:
+                    i += 1
+
+
 def extract_slur_pairs_same_pitch(input_mscz, part_index=0):
     """Estrae le coppie di legature di portamento (slur) che collegano due
     note della STESSA altezza e stesso nome (20 Ott 2026, direttiva Marco).
@@ -1377,6 +1447,7 @@ def extract_single_part_mscz(input_mscz, part_index=0, key_sig_changes=None, rhy
     # Esporta in MusicXML
     xml_path = '/tmp/single_part_' + str(os.getpid()) + '.xml'
     s.write('musicxml', xml_path)
+
     
     # 12 Ago 2026: inject <cancel> tags for key signature changes.
     # music21 non esporta i <cancel> nel MusicXML, quindi MuseScore non
@@ -1483,6 +1554,7 @@ def extract_single_part_mscz(input_mscz, part_index=0, key_sig_changes=None, rhy
             _rebuilt = _conv.parse(xml_path)
             _rebuilt.parts[0].makeBeams(inPlace=True)
             _merge_16th_beams(_rebuilt)
+            _merge_eighth_groups(_rebuilt)
             import tempfile as _tf, shutil as _shutil
             _tmp_out = _tf.mktemp(suffix='.musicxml')
             _rebuilt.write('musicxml', _tmp_out)
@@ -1732,6 +1804,7 @@ def extract_single_part_mscz(input_mscz, part_index=0, key_sig_changes=None, rhy
             _rebuilt = _conv.parse(xml_path)
             _rebuilt.parts[0].makeBeams(inPlace=True)
             _merge_16th_beams(_rebuilt)
+            _merge_eighth_groups(_rebuilt)
             import tempfile as _tf
             _tmp_out = _tf.mktemp(suffix='.musicxml')
             _rebuilt.write('musicxml', _tmp_out)
@@ -1806,6 +1879,22 @@ def extract_single_part_mscz(input_mscz, part_index=0, key_sig_changes=None, rhy
     
     # Converti in .mscz con MuseScore 4
     mscz_path = '/tmp/single_part_' + str(os.getpid()) + '.mscz'
+    # 22 Ott 2026 (gambi specchiati): music21 esporta <stem>down/up</stem>
+    # PER-NOTA (testa sopra la linea mediana = down, sotto = up). In un gruppo
+    # beamato MuseScore onora le direzioni miste → gambi stems-down a
+    # sinistra della testa e stems-up a destra nello stesso gruppo; il
+    # beamsynth li stira verso la beam unica = gambi specchiati (b7 Imperial
+    # March). L'ORIGINALE non ha direzioni esplicite: MuseScore ricalcola
+    # l'auto-coerente col gruppo. Strip degli <stem> qui, DOPO ogni
+    # possibile re-export di music21 (auto-beaming, injection beam).
+    with open(xml_path, 'r') as f:
+        _xml_pre_mscore = f.read()
+    _n_stems = len(re.findall(r'<stem>[^<]*</stem>', _xml_pre_mscore))
+    if _n_stems:
+        with open(xml_path, 'w') as f:
+            f.write(re.sub(r'<stem>[^<]*</stem>', '', _xml_pre_mscore))
+        print(f"  Rimossi {_n_stems} tag <stem> (direzione auto per gruppo)")
+
     cmd = f'{XVFB} {MUSESCORE_CMD} -o "{mscz_path}" "{xml_path}"'
     result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60)
     
@@ -1829,6 +1918,20 @@ def extract_single_part_mscz(input_mscz, part_index=0, key_sig_changes=None, rhy
         # Rimuovi tutti gli elementi <Accidental>...</Accidental>
         import re as _re
         cleaned = _re.sub(r'<Accidental>.*?</Accidental>', '', mscx_content, flags=_re.DOTALL)
+        # 22 Ott 2026 (gambi specchiati b7 Imperial March): music21 esporta
+        # <stem>down/up</stem> PER-NOTA (in base alla posizione della testa:
+        # C5 sopra la linea mediana = down, F4 sotto = up) e MuseScore li
+        # onora anche nei gruppi beamati → gambi misti nello stesso gruppo
+        # (i primi stems-down a sinistra della testa, gli altri stems-up a
+        # destra): il beamsynth poi li stira verso la beam unica = gambi
+        # specchiati/fluttuanti (b7: prime 2 crome col gambo a sinistra).
+        # L'ORIGINALE non ha direzioni esplicite: MuseScore ricalcola la
+        # direzione AUTO coerente col gruppo beamato. Rimuoviamo gli
+        # <StemDirection> dal .mscx ricostruito.
+        _n_sd = len(_re.findall(r'<StemDirection>[^<]*</StemDirection>', cleaned))
+        if _n_sd:
+            cleaned = _re.sub(r'<StemDirection>[^<]*</StemDirection>', '', cleaned)
+            print(f"  Rimossi {_n_sd} <StemDirection> (direzione auto per gruppo)")
         with open(mscx_path, 'w') as f:
             f.write(cleaned)
         
@@ -12921,9 +13024,20 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
             _my_head = None
             _head_dist = None
             for _hx, _hy, _hr in _bs_heads_geo:
-                if abs(_hx - _x) <= 115 and _yt - 67 <= _hy <= _yb + 67:
+                # 22 Ott 2026: banda allargata a -260 sul lato top: i gambi
+                # stems-down di teste alte partono ~187px sotto il centro
+                # della testa (y-stretch) e la vecchia banda -67 escludeva la
+                # testa stessa → my_head=None → gambo classificato orfano →
+                # rimosso (b6/b10: le 2 Gb5 senza stanghetta).
+                if abs(_hx - _x) <= 115 and _yt - 260 <= _hy <= _yb + 67:
                     _d = min(abs(_hy - _yt), abs(_hy - _yb)) - _hr
-                    if _d <= 60 and (_head_dist is None or _d < _head_dist):
+                    # 22 Ott 2026 (gambi mancanti b6/b10 Imperial March):
+                    # i gambi stems-down di teste alte partono ~187px sotto
+                    # il centro testa (y-stretch): dal bordo (r=88) = 99px.
+                    # La soglia 60 li classificava ORFANI (h>700 → rimossi).
+                    # Allargata a 120 (copre il gap raw senza acchiappare i
+                    # connettori tavola, che partono a ~77px ma ORIZZONTALI).
+                    if _d <= 120 and (_head_dist is None or _d < _head_dist):
                         _my_head = (_hx, _hy, _hr)
                         _head_dist = _d
             # beam sintetizzata raggiunta da un endpoint (range X = INTERA
