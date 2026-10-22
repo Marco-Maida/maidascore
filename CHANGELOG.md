@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.5.1] - 22 Ott 2026
+### Fixed
+- Crome senza stanghetta (Imperial March b5/b9): il matching gambo↔testa scartava gambi legittimi stems-down con la testa a 187px dall'endpoint del gambo (soglia hr+60=148px; lo y-stretch amplifica il gap raw ~90px). Soglia allargata a hr+200 su entrambi i rami (dx<130 e dx<200): i gruppi croma di b5/b9 tornano bindati (falliti_bind 2→0, beams 20→22).
+- Gambi di ripiego neri duplicati/corti (minime A4, crome Gb5/F5/D5): la finestra _has del fallback (±130px, banda Y ±67) non vedeva i gambi legittimi riposizionati dall'equalizzatore fino a ~230px dalla testa → fabbricava un secondo gambo nero corto accanto a quello giusto. Finestra allargata a ±250/±250: 0 gambi fabbricati ex-novo (prima 9).
+- Validatore: nessuna regressione (TUTTO OK su Imperial March notazione+rhythm, Radetsky notazione+rhythm, example notazione+rhythm).
+
+# Changelog
+
 ## [1.5.0] - 20 Ott 2026
 ### Added
 - Legature di valore (tie) e legature di portamento disegnate come archi sopra le note del pentagramma (Pass 16): piccoli, bassi, curvi dolcemente verso l'alto, collegano coppie di note vicine, in entrambe le modalità.

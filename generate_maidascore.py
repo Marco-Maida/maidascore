@@ -12433,7 +12433,14 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
         for _hx, _hy, _hr in _bs_heads_chk:
             if _hr >= 120:
                 continue
-            _has = any(abs(_sx3 - _hx) < 130 and (_sy1b - 67 <= _hy <= _sy2b + 67)
+            # 22 Ott 2026 (crome senza stanghetta, Imperial March): finestra
+            # ±130 troppo stretta — l'equalizzatore X sposta i gambi legittimi
+            # fino a ~230px dalla testa (croma F5 b6: gambo a dx 226) → il
+            # fallback fabbricava un gambo nero CORTO in DUPLICATO accanto a
+            # quello legittimo, o un moncone isolato per teste il cui gambo
+            # era già ripristinato. Finestra allargata a ±250 con banda Y
+            # generosa (copre gambi stems-up che partono sopra la testa).
+            _has = any(abs(_sx3 - _hx) < 250 and (_sy1b - 250 <= _hy <= _sy2b + 250)
                        for _sx3, _sy1b, _sy2b in _bs_stems_now)
             if _has:
                 continue
@@ -17868,7 +17875,7 @@ def _bs_bind(svg_content, groups, note_info, systems_bounds, meas_x=None, sys_fo
                 if min(sy1, sy2) + hr + 60 < hy < max(sy1, sy2) - hr - 60:
                     continue
                 _d_h = min(abs(sy1 - hy), abs(sy2 - hy))
-                if abs(sx - hx) < 130 and _d_h < hr + 60:
+                if abs(sx - hx) < 130 and _d_h < hr + 200:
                     _tip_far = sy1 if abs(sy2 - hy) < abs(sy1 - hy) else sy2
                     _unrel = False
                     if not (_rt_w - _mrg <= _tip_far <= _rb_w + _mrg):
@@ -17880,7 +17887,7 @@ def _bs_bind(svg_content, groups, note_info, systems_bounds, meas_x=None, sys_fo
                             continue
                         _unrel = True
                     _added_base.append((abs(sx - hx), si, _unrel))
-                elif abs(sx - hx) < 200 and _d_h < hr + 60:
+                elif abs(sx - hx) < 200 and _d_h < hr + 200:
                     # 4 Ott 2026: range X a due stadi (130 e 200): l'equalizzatore
                     # sposta teste/gambi con passi non uniformi (2642→2798: dx 156).
                     _tip_far = sy1 if abs(sy2 - hy) < abs(sy1 - hy) else sy2
