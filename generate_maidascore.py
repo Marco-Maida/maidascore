@@ -2195,6 +2195,7 @@ def make_accessible_mscz(input_mscz, output_mscz, part_index=0, rhythm_mode=Fals
                     _all_m_exp = list(re.finditer(r'<Measure[^>]*>.*?</Measure>', mscx, re.DOTALL))
                     _exp_offs = []  # (start, end, replacement, midx)
                     _already_collapsed = []
+                    _split_segments = []  # 8 Nov 2026: sottogruppi da split TimeSig
                     for _ei, _mm in enumerate(_all_m_exp):
                         _is_grp_start = any(mi == _ei for mi, _cnt in mmrest_info)
                         if not _is_grp_start:
@@ -2205,22 +2206,67 @@ def make_accessible_mscz(input_mscz, output_mscz, part_index=0, rhythm_mode=Fals
                         if _ei + _cnt - 1 >= len(_all_m_exp):
                             _already_collapsed.append(_ei)
                             continue
+                        # _rm_full calcolato PRIMA (serve allo split)
+                        _rm_full = mscx[_all_m_exp[_ei + 1].start():_all_m_exp[_ei + _cnt - 1].end()]
                         # Il gruppo è già collassato se la battuta successiva
-                        # contiene note reali (file a 73 battute: il gruppo
-                        # MMR del _add_mmrests_to_mscx comprime già fisicamente).
+                        # contiene contenuto reale (file compresso dal
+                        # _add_mmrests_to_mscx: dopo il gruppo collassato
+                        # vengono note, TimeSig o altri MMRest).
+                        # 8 Nov 2026 (fix Danza delle Spade): il vecchio check
+                        # solo '<pitch>' era insufficiente — quando il gruppo
+                        # compresso è seguito da una battuta TimeSig (pausa col
+                        # cambio di metro), il gruppo veniva scambiato per
+                        # NON-collassato → collasso di battute inesistenti →
+                        # rimozione di battute reali e dell'MMRest successivo
+                        # → file corrotto → exit 40 MuseScore.
                         _next_body = _all_m_exp[_ei + 1].group(0)
-                        if '<pitch>' in _next_body:
+                        if ('<pitch>' in _next_body or '<TimeSig>' in _next_body
+                                or '<multiMeasureRest>' in _next_body
+                                or '<Chord>' in _next_body):
                             _already_collapsed.append(_ei)
                             continue
-                        # ASSERT (Fable 5): le battute RIMOSSE devono contenere
-                        # SOLO pause (vietati TimeSig/KeySig/Tempo/note reali —
-                        # verrebbero distrutte silenziosamente).
-                        _rm_full = mscx[_all_m_exp[_ei + 1].start():_all_m_exp[_ei + _cnt - 1].end()]
-                        for _bad in ('<TimeSig>', '<KeySig>', '<Tempo>', '<RehearsalMark>'):
-                            if _bad in _rm_full:
-                                raise RuntimeError(
-                                    f"Collasso MMRest impossibile: elemento {_bad} "
-                                    f"dentro il gruppo a battuta {_ei+1}")
+                        # 8 Nov 2026 (fix TimeSig dentro gruppo MMR NON ancora
+                        # collassato: caso file NON compresso con pause estese e
+                        # cambio di metro DENTRO il gruppo). Il collasso fisico
+                        # rimuoverebbe il TimeSig → cambio di metro distrutto.
+                        # SOLUZIONE: spezzare il gruppo al TimeSig — il gruppo
+                        # MMR grande diventa sottogruppi omogenei (stesso metro)
+                        # collassati separatamente; la battuta col TimeSig resta
+                        # FISICA (pausa visibile col cambio di tempo).
+                        _bad_in = [b for b in ('<TimeSig>', '<KeySig>', '<Tempo>', '<RehearsalMark>') if b in _rm_full]
+                        if _bad_in:
+                            # individua le battute interne (indici fisici) che
+                            # contengono un elemento vietato
+                            _split_at = []
+                            for _rm_i in range(_ei + 1, _ei + _cnt):
+                                if any(b in _all_m_exp[_rm_i].group(0) for b in _bad_in):
+                                    _split_at.append(_rm_i)
+                            print(f"      ATTENZIONE: gruppo MMR a b{_ei+1} contiene "
+                                  f"{','.join(_bad_in)} — split in sottogruppi "
+                                  f"ai confini di battuta {_split_at}")
+                            # segmenti: [(start_fisico, n_logiche)] — la battuta
+                            # col TimeSig è SEMPRE fisica (non collassabile):
+                            # segmento A = [_ei .. split-1] (se len>=2),
+                            # battuta split fisica (count 1, NON in groups_phys
+                            # per il collasso ma va conteggiata nelle logiche!),
+                            # segmento B = [split+1 .. _ei+_cnt-1] (se len>=2).
+                            _segments = []
+                            _prev = _ei
+                            for _sp in _split_at:
+                                if _sp - _prev >= 2:
+                                    _segments.append((_prev, _sp - _prev))
+                                _prev = _sp
+                            if _ei + _cnt - _prev >= 2:
+                                _segments.append((_prev, _ei + _cnt - _prev))
+                            # salva i segmenti per il collasso: sostituisce il
+                            # gruppo originale. I segmenti hanno lo stesso
+                            # formato dei gruppi (start, count) e vengono
+                            # processati dallo stesso codice qui sotto (ricorsivo
+                            # per iterazione: aggiungiamoli a mmrest_info e
+                            # togliamo il gruppo grande).
+                            for _seg_start, _seg_cnt in _segments:
+                                _split_segments.append((_seg_start, _seg_cnt))
+                            continue
                         for _rm_i in range(_ei + 1, _ei + _cnt):
                             _rm_b = _all_m_exp[_rm_i].group(0)
                             if '<Rest>' not in _rm_b or '<pitch>' in _rm_b:
@@ -2231,6 +2277,19 @@ def make_accessible_mscz(input_mscz, output_mscz, part_index=0, rhythm_mode=Fals
                         _exp_offs.append((_all_m_exp[_ei + 1].start(),
                                           _all_m_exp[_ei + _cnt - 1].end(),
                                           '', _ei))
+                    # Applica le rimozioni in ordine inverso
+                    # 8 Nov 2026: collassa anche i SEGMENTI nati dallo split
+                    # (stesso identico algoritmo dei gruppi, ma su coppie
+                    # (start_fisico, n_logiche) in _split_segments). Le battute
+                    # TimeSig interposte restano FISICHE: tra i due segmenti
+                    # c'è SEMPRE una battuta fisica non collassata.
+                    _seg_offs = []
+                    for _seg_start, _seg_cnt in _split_segments:
+                        # rimuovi battute _seg_start+1 .. _seg_start+_seg_cnt-1
+                        _seg_offs.append((_all_m_exp[_seg_start + 1].start(),
+                                          _all_m_exp[_seg_start + _seg_cnt - 1].end()))
+                    for _s, _e in sorted(_seg_offs, key=lambda t: -t[0]):
+                        mscx = mscx[:_s] + mscx[_e:]
                     # Applica le rimozioni in ordine inverso
                     for _s, _e, _r, _ in sorted(_exp_offs, key=lambda t: -t[0]):
                         mscx = mscx[:_s] + _r + mscx[_e:]
@@ -2248,6 +2307,25 @@ def make_accessible_mscz(input_mscz, output_mscz, part_index=0, rhythm_mode=Fals
                         # collassati dal single_part NON slittano nulla.
                         if _ei in set(t[3] for t in _exp_offs):
                             _sh += _cnt - 1
+                    # 8 Nov 2026: aggiungi i SEGMENTI (hanno slittamenti propri:
+                    # ordinati per start fisico ASC, accumulano shift come i
+                    # gruppi). NOTA: le coppie (start, cnt) dei segmenti sono
+                    # negli INDICI FISICI ORIGINALI (pre-collasso gruppi) —
+                    # il loro shift = tutte le rimozioni effettuate PRIMA di
+                    # loro (gruppi con start minore + segmenti precedenti).
+                    _rem_before = []  # (start_fisico, n_rimosse)
+                    for _ei in _all_starts:
+                        if _ei in set(t[3] for t in _exp_offs):
+                            _cnt = next(c for mi, c in mmrest_info if mi == _ei)
+                            _rem_before.append((_ei, _cnt - 1))
+                    for _seg_start, _seg_cnt in sorted(_split_segments):
+                        _seg_phys = _seg_start
+                        for _rs, _rn in _rem_before:
+                            if _rs < _seg_start:
+                                _seg_phys -= _rn
+                        groups_phys.append((_seg_phys, _seg_cnt))
+                        _rem_before.append((_seg_start, _seg_cnt - 1))
+                    groups_phys.sort()
                     mmrest_info = list(groups_phys)
                     if groups_phys:
                         print(f"      Collasso fisico: {len(groups_phys)} gruppi "
@@ -13379,7 +13457,19 @@ def process_svg(svg_content, note_info=None, note_offset=0, is_first_page=False,
                 # il cerchio con X ±40 e Y PIÙ VICINA alla middle_line del
                 # sistema della nota.
                 _ay16 = None
-                _sy_mid16 = _sys16['middle_line_y']
+                # 8 Nov 2026 (fix Radetsky — legature nel rigo sbagliato):
+                # _sys16['middle_line_y'] è la Y PRE-stretch del sistema RAW,
+                # ma i cerchi in `modified` sono POST-stretch: la ricerca per
+                # "Y più vicina alla middle_line" agganciava il cerchio di un
+                # sistema POST diverso (stessa X, rigo sotto) → l'arco della
+                # legatura veniva disegnato nel rigo sbagliato (b21→22 e
+                # b23→24 finivano due righi più giù). USARE la mappatura
+                # pre→post dei sistemi (stessa del blocco alterazioni 2e3b).
+                _post_sys16 = pre_to_post.get(_ta16.get('system_key', ''))
+                if _post_sys16 is not None:
+                    _sy_mid16 = _post_sys16['middle_line_y']
+                else:
+                    _sy_mid16 = _sys16['middle_line_y']
                 _best_dy16 = None
                 for _m16h in re.finditer(r'<circle cx="([\d.]+)" cy="([\d.]+)" r="([\d.]+)"',
                                          modified):

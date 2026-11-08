@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.5.3] - 8 Nov 2026
+### Fixed
+- Legature di valore disegnate nel rigo sbagliato (Radetsky Flauto 3, b21-22 e b23-24): il Pass 16 cercava i cerchi delle teste usando la middle_line_y PRE-stretch del sistema RAW, ma i cerchi nell'SVG finale sono POST-stretch — con la stessa X in sistemi diversi agganciava il cerchio di un rigo sotto e disegnava lì l'arco (due righi più in giù). Fix: lookup del sistema attraverso la mappatura pre→post dei sistemi (stessa del blocco alterazioni), per chiave system_key della nota.
+- Collasso MMRest con TimeSig dentro il gruppo (Danza delle Spade): il check "gruppo già collassato" testava solo <pitch> — un gruppo seguito da battuta TimeSig (pausa con cambio di metro) veniva scambiato per non-collassato → collasso di battute inesistenti → file corrotto → exit 40 MuseScore. Fix: riconoscimento collassato esteso (TimeSig, multiMeasureRest, Chord) + split del gruppo al cambio di metro quando il gruppo NON è ancora compresso.
+- Audit: validatore TUTTO OK su example/Radetsky notation+rhythm e Danza delle Spade rhythm; archi tie verificati sul rigo corretto (y 4069 vs teste 4168).
+
+# Changelog
+
 ## [1.5.2] - 22 Ott 2026
 ### Fixed
 - Gambi specchiati a sinistra (b7 Imperial March): music21 esporta <stem>down/up</stem> per-nota (testa sopra la linea mediana = down) e MuseScore onorava le direzioni miste nei gruppi beamati → i gambi stems-down stavano a sinistra della testa mentre la beam sintetizzata stava sopra; il beamsynth li stirava = gambi fluttuanti. Fix: (1) strip di tutti i tag <stem> dal MusicXML ricostruito (MuseScore ricalcola la direzione auto coerente col gruppo, come nell'originale); (2) strip difensiva dei <StemDirection> dal .mscx.
