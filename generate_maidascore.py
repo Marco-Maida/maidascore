@@ -4006,8 +4006,80 @@ def draw_tavola_sonora(svg_content, systems_post, equalized_measures, note_info,
                         # settore, pause onset-based).
                         cell_x = m_start + (onset / bpm) * m_width
                         cell_w = (dur / bpm) * m_width
+                        # 8 Nov 2026 (bug Marco Pizzicato Polka: scritte
+                        # UNO/DUE delle pause non simmetriche ai settori
+                        # grigi). Quando la pausa ha onset FRAZIONARIO
+                        # (sincopata, es. pausa eighth a onset 0.5 in 2/4),
+                        # la geometria onset-based mette la cella nella metà
+                        # destra del settore grigio: la scritta UNO/DUE finiva
+                        # nettamente spostata a destra rispetto al centro del
+                        # settore (rigo 4: UNO@1269 vs centro settore 1120
+                        # = +150px = mezzo settore). FIX: se la cella NON è
+                        # allineata ai confini del settore (onset o durata
+                        # frazionari) ma sta DENTRO un unico settore, CENTRA
+                        # la cella nel settore che la contiene, mantenendo la
+                        # larghezza = durata (clampata nei confini settore).
+                        # Le pause a onset intero (es. quarter = settore
+                        # intero) restano identiche.
+                        if e['type'] == 'rest':
+                            _bpm_r = bpm if bpm else 1
+                            _beat_w_r = m_width / _bpm_r
+                            _onset_frac = abs(onset - round(onset)) > 1e-6
+                            _dur_frac = abs(dur - round(dur)) > 1e-6
+                            if _onset_frac or _dur_frac:
+                                _k_sector = int(onset)  # settore che contiene l'onset
+                                _sec_start = m_start + _k_sector * _beat_w_r
+                                _sec_end = _sec_start + _beat_w_r
+                                # 8 Nov 2026 v2: centrala nello SPAZIO LIBERO
+                                # del settore — tra la fine dell'ultima cella
+                                # che la precede nel settore e l'inizio della
+                                # prima che la segue. Così una pausa eighth
+                                # sincopata (onset .5) condividendo il settore
+                                # con una nota onset 0 si centra nella metà
+                                # destra libera (sotto il glifo della pausa),
+                                # invece di stare attaccata al bordo destro.
+                                # Se due pause condividono lo spazio, ciascuna
+                                # si centra nel proprio intervallo (niente
+                                # overlap).
+                                _free_lo = _sec_start
+                                _free_hi = _sec_end
+                                for _oe in events_timeline:
+                                    if _oe is e:
+                                        continue
+                                    _o_on = _oe['onset']
+                                    _o_dur = _oe['duration']
+                                    _o_x0 = m_start + (_o_on / _bpm_r) * m_width
+                                    _o_x1 = _o_x0 + (_o_dur / _bpm_r) * m_width
+                                    if _o_x1 <= _sec_start + 1:
+                                        continue  # fuori (a sinistra) dal settore
+                                    if _o_x0 >= _sec_end - 1:
+                                        continue  # fuori (a destra) dal settore
+                                    if _o_x1 <= cell_x + 1:
+                                        _free_lo = max(_free_lo, _o_x1)
+                                    elif _o_x0 >= cell_x + cell_w - 1:
+                                        _free_hi = min(_free_hi, _o_x0)
+                                if _free_hi - _free_lo >= cell_w - 1 and cell_x >= _sec_start - 1 and cell_x + cell_w <= _sec_end + 1:
+                                    # centra nella finestra libera (clamp)
+                                    _ctr = (_free_lo + _free_hi) / 2.0
+                                    cell_x = max(_free_lo,
+                                                 min(_free_hi - cell_w,
+                                                     _ctr - cell_w / 2.0))
                     if cell_w <= 0:
                         cell_w = MIN_CELL_W
+                    # 8 Nov 2026 (bug Marco Pizzicato Polka, UNO/DUE pausa half
+                    # compressa a sinistra): quando _has_real è False (battuta
+                    # di sola pausa senza glifo trovato dall'SVG — es. pausa
+                    # half che riempie la battuta 2/4), cell_x/cell_w NON
+                    # venivano calcolati e restavano STALE dall'ultima cella
+                    # della battuta precedente → la pausa half (che dovrebbe
+                    # coprire l'intera battuta con UNO+DUE) veniva disegnata
+                    # compressa (w=mezzo settore) attaccata al bordo sinistro.
+                    # FIX: geometria onset/settori SEMPRE, anche senza centri
+                    # reali (i centri reali servono solo alla centratura micro
+                    # e al testo centrato sotto il glifo).
+                    if not _has_real:
+                        cell_x = m_start + (onset / bpm) * m_width
+                        cell_w = (dur / bpm) * m_width
                     cell_w_vis = cell_w
                     cell_x_vis = cell_x
                     

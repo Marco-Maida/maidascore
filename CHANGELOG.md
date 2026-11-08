@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.5.4] - 8 Nov 2026
+### Fixed
+- Scritte UNO/DUE delle pause non simmetriche ai settori grigi (Pizzicato Polka, rigo 4). Due fix complementari sulle celle pausa della tavola sonora:
+- (1) Geometria stale quando la battuta non ha centri reali: una battuta di sola pausa senza glifo trovato nell'SVG (es. pausa half che riempie la battuta 2/4) saltava il calcolo onset/settori e riusava cell_x/cell_w STALE dell'ultima cella della battuta precedente — la pausa half veniva disegnata compressa (mezzo settore) attaccata al bordo sinistro invece di coprire l'intera battuta con UNO+DUE. Fix: la geometria onset/settori si calcola SEMPRE, anche senza centri reali (che servono solo alla centratura micro e al testo sotto il glifo).
+- (2) Pause sincopate (onset frazionario, es. eighth a onset 0.5 in 2/4): la geometria onset-based metteva la cella nella metà destra del settore grigio con la scritta nettamente spostata. Fix: se la cella è contenuta in un unico settore con onset o durata frazionari, viene centrata nella finestra libera del settore (tra le celle vicine), mantenendo la larghezza = durata.
+- GOTCHA: cell_x/cell_w sono variabili di loop che persistono tra iterazioni e battute in Python — un ramo `if` che salta l'assegnazione produce stale silenzioso invece di NameError; ogni path del loop deve assegnarle.
+- Audit: validatore TUTTO OK su Pizzicato Polka rhythm (pause half = battuta intera divisa UNO+DUE simmetrica ai settori), regression example/Radetsky/Danza delle Spade notation+rhythm tutte OK.
+
 ## [1.5.3] - 8 Nov 2026
 ### Fixed
 - Legature di valore disegnate nel rigo sbagliato (Radetsky Flauto 3, b21-22 e b23-24): il Pass 16 cercava i cerchi delle teste usando la middle_line_y PRE-stretch del sistema RAW, ma i cerchi nell'SVG finale sono POST-stretch — con la stessa X in sistemi diversi agganciava il cerchio di un rigo sotto e disegnava lì l'arco (due righi più in giù). Fix: lookup del sistema attraverso la mappatura pre→post dei sistemi (stessa del blocco alterazioni), per chiave system_key della nota.
